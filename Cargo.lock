@@ -149,6 +149,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "om-verifier"
+version = "0.1.0"
+dependencies = [
+ "om-circuit",
+ "om-elf",
+ "om-field",
+ "om-format",
+ "om-isa",
+ "om-memcheck",
+ "om-mosaic",
+ "om-pcs",
+ "om-prover",
+ "om-router",
+ "om-spartan",
+ "om-sumcheck",
+ "om-transcript",
+ "serde_json",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
