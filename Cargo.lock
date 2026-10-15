@@ -29,6 +29,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "om-spartan"
+version = "0.1.0"
+dependencies = [
+ "om-field",
+ "om-sumcheck",
+ "om-transcript",
+ "serde_json",
+]
+
+[[package]]
 name = "om-sumcheck"
 version = "0.1.0"
 dependencies = [
