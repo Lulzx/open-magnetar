@@ -24,6 +24,11 @@ log size is `ℓ_seg + s`) and the polynomials the auxiliary arguments commit to
 entry outside `{0, 1}` is a prover error, and no verifier operation depends on
 it except through the ring-switching step (04) that relies on `G` being bits.
 The id and log size of every component are fixed by the verifying key (10, 11).
+The shared claim type (`Claim`, used by 06–08 and 11 as well) carries its
+component id as a signed integer because section 06, when run without a segment
+layout, emits one claim on the whole witness `W` with the sentinel id `−1`;
+that claim never enters a Mosaic layout, and `compute_layout` rejects any id
+outside `[0, 2^32)`.
 
 ### 5.2 Layout algorithm (Q1, Q2)
 
@@ -230,3 +235,5 @@ test_vectors_05_06.py`.
 ## Integration notes
 
 * 2026-10-16 (13): added the normative cap `n ≤ 256` for the powers-of-`γ` batching to 5.4 step 2 (13.2 note 3). `reference/openmagnetar/mosaic.py` gains `MAX_CLAIMS = 256`, enforced in `batch_prove` (ValueError) and `batch_verify` (VerificationError). 11 cites the actual claim count.
+
+* 2026-10-16 (Rust `om-mosaic` port): clarified in 5.1 that the shared `Claim` type's id is signed only to carry 06's whole-`W` sentinel `−1`, which never enters a layout. No behavior change; the Python model already works this way (`spartan.py` emits `Claim(-1, …)`, `compute_layout` enforces `[0, 2^32)`).
