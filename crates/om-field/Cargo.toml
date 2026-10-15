@@ -1,0 +1,8 @@
+[package]
+name = "om-field"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "GF(2^128) field arithmetic for Open Magnetar (spec 01, CONVENTIONS C1)"
