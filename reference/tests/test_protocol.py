@@ -86,6 +86,7 @@ class TestProvable120EndToEnd(unittest.TestCase):
 
     def test_mosaic_claims_within_cap(self):
         self.assertLessEqual(self.claims, 256)      # 05.7: powers-of-gamma batching cap for 120 bits
+        self.assertEqual(self.claims, 68)           # 11.7/13.2: exact count for this layout (audit 13.9(7))
 
     def test_tampered(self):
         n = len(self.blob)

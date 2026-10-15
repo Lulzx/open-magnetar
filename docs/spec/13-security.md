@@ -227,18 +227,53 @@ source before this section moves to `stable`.
    of the gap is bibliographic: the exact `N/|K|` per-challenge form of Lemma A against BCHKS [5] (I could
    confirm only the abstract of TR25-169; the `N/|K|` statement is the earlier BCIKS/Ligero bound).
 2. **04 4.5, ring switching.** Derived from Diamond-Posen ePrint 2024/504 for `beta_j = X^j`; the tensor algebra step and the
-   `7/F` term have been checked by the reference tests only.
+   `7/F` term have been checked by the reference tests only. **Narrowed 2026-10-16:** internal correctness
+   does not depend on the paper — 04 4.5 states the key identity (left/right coordinates of `ŝ`), the
+   verifier's tensor recursion, and a self-contained soundness proof (`7/|K|` is Schwartz–Zippel for the
+   multilinear `Σ_i eq(ρ, i)(c_i − c*_i)` in the 7 variables of `ρ`, plus `2n/|K|` sum-check), and the
+   reference cross-checks the tensor recursion against direct `O(2^n)` evaluation. What remains open is
+   only the bibliographic comparison: that this matches Diamond-Posen §4's construction and error term for
+   a general `B`-basis specialized to `β_j = X^j` (PDF requested in `papers/README.md`).
 3. **07 7.10 and the prover algorithms.** Derived without [55] (Setty-Thaler-Zhu ePrint 2025/105).
-4. **07 7.5 Twist.** The one-sum-check merge of read/write/row-sum with `alpha_0`, and the cycle-first variable order.
+   **Narrowed 2026-10-16:** 7.10 is explicitly *informative* (prover algorithms and costs only); the
+   normative relations and verifier checks of 7.4/7.5 were checked against the identities of Magnetar
+   §4.4 (the `Φ` merge for Shout, the three `Val`/`rv`/`wv` identities and `LT` for Twist, Definition 7,
+   Lemma 2 claim shapes) in `paper.pdf`. What remains open is only the comparison of 7.10's prover
+   algorithms/costs against [55] itself (PDF requested in `papers/README.md`). Completeness of our prover
+   algorithms is established by the reference tests, not by [55].
+4. ~~**07 7.5 Twist.** The one-sum-check merge of read/write/row-sum with `alpha_0`, and the cycle-first
+   variable order.~~ **Resolved 2026-10-16.** This merge is an **[OM-choice]** deviation from the paper
+   (Magnetar §4.4 uses one sum-check per identity plus a separate row-sum argument), so there is no paper
+   text to match; 7.5 step 3 now carries its own soundness proof (the claim-error polynomial in `(α, β)`
+   with the individual claim errors as monomial coefficients, total degree 2; per-variable degree `≤ 3`
+   in either variable order; `V~` pinned by step 4). The `α_0` row-sum trick itself is the paper's
+   (§4.4, BinaryShout), checked verbatim.
 5. ~~**07 7.2, `Delta*` one-hot.**~~ **Resolved 2026-10-16.** The `Δ⋆` formula, `c_h = 1 + r_h + r_h^2`,
    `r'_h = r_h^3/c_h` and resampling on `c_h = 0` were checked verbatim against Magnetar §4.4 (`paper.pdf`
    in the repo root). The paper asserts non-zero-ness without proof; 07 7.2 now proves it (the four
    per-coordinate products `(1+r)(1+r²), (1+r)r², r(1+r²), r³` have triangular coefficient matrix in
    `1, r, r², r³`, hence the `4^a_c` products are independent) and derives the `5n + 5a_c + 1` bound by
    Schwartz–Zippel with the resampling conditioning made explicit. Nothing remains open in this item.
-6. **07 7.6 final-memory** and **06 6.6 cross-step** are ours (no paper counterpart).
-7. **Section 11 composition**: written concurrently; the ledger row list follows 07 and the paper's Construction 3,
-   and MUST be re-derived against 11 once stable (the claim count of Mosaic in particular).
+6. ~~**07 7.6 final-memory** and **06 6.6 cross-step** are ours (no paper counterpart).~~
+   **Resolved 2026-10-16 as [OM-choice] designs with in-spec proofs.** There is no source to check
+   against; correctness rests on the arguments in the sections themselves: 7.6 (the MLE expansion
+   `Val_final~ = M_0~ + Σ_j wa~(r_kf, j)Inc~(r_o^f, j)`, now written out, plus Schwartz–Zippel on the
+   restricted-table MLE; the same `Val_final − Val_init = Σ_j Inc(j)ra(r, j)` identity is independently
+   confirmed by the Jolt cross-check below) and 06 6.6 (the `F1 + γF2 + γ²F3` polynomial argument, the
+   `N~` formula tested against brute force in the reference and pinned by `vectors/06-spartan/next_mle.json`).
+   Both are exercised end-to-end by `test_twist.py` (final-memory vectors) and `test_protocol.py`.
+7. ~~**Section 11 composition**: written concurrently; the ledger row list follows 07 and the paper's Construction 3,
+   and MUST be re-derived against 11 once stable (the claim count of Mosaic in particular).~~
+   **Resolved 2026-10-16 by re-derivation.** (a) `python3 -m openmagnetar.params 22` regenerates the
+   13.2 table row-for-row (40 rows, identical per-round and total bits, union `2^-116.1`, proof ~624 KiB),
+   and `test_params.py` asserts `>= 120` per-round bits at `T ∈ {2^16, 2^20, 2^22, 2^24}`. (b) The rows
+   enumerate exactly the randomized steps of 11.5/11.6: Spartan + cross-step (rows 1-6), bytecode Shout
+   (7-9), register Twist (10-13), RAM Twist incl. final-memory and `inc_extra` (14-19), routers (20-21),
+   Mosaic (22), ring switching (23), Ligerito levels (24-39), hash binding (40); the remaining 11 checks
+   (segment split, the `ridx` consistency check of 11.6 step 4) are deterministic and correctly carry no
+   error term. (c) The Mosaic claim count was measured directly on the reference Fibonacci instance:
+   **68 claims** (as cited in 11 and 13.2 note 3), well under the 256 cap; `test_protocol.py` now asserts
+   the exact count so layout drift is caught.
 
 **Cross-check against the Jolt documentation** (https://jolt.a16zcrypto.com/how/architecture/ram.html; the neighbouring
 pages were not read, for time). *Confirmed:* the `ra` virtualization identity `ra(r, r') = sum_j eq(r', j) prod_i ra_i(r_i, j)`
@@ -267,3 +302,5 @@ cross-check is possible there.
 * 2026-10-16: the repetition composition is specified in 04 4.4a and implemented; 13.5 (composition, sizes), the gap rows 30-38 of 13.2 (`213.4, 221.4, 229.4` for levels 1-3, level 0 unchanged) and 13.9(1) were updated. Corrections of 13.2 notes 1-3 are applied in 06 (6/F per shared round), 07 (`2a + 2`) and 03/05/11 (cap of 256 claims, 68 claims in the reference run).
 
 * 2026-10-16: 04 4.4a now contains the written soundness proof of the repetition composition (Lemmas B/C and the level-reduction theorem), so the "all folds close" part of 13.9(1) is discharged; 13.9(1) now covers only the paper comparison of 04's claim form/query batching/`t` derivation and the exact form of the external Lemma A in [5]. Error terms and ledger numbers are unchanged. ePrint PDF downloads are blocked to automated fetches (Cloudflare), so the three source PDFs are requested in `papers/README.md`.
+
+* 2026-10-16 (audit pass against Magnetar `paper.pdf`, in repo): 13.9(5) resolved (07 7.2 formula is §4.4 verbatim; bound now derived in 7.2); 13.9(4) resolved (the merged Twist sum-check is an [OM-choice] deviation, now proved in 07 7.5 step 3); 13.9(6) resolved as [OM-choice] with in-spec proofs (7.6 MLE expansion written out); 13.9(3) narrowed to informative 7.10 vs [55]; 13.9(2) narrowed to the bibliographic comparison only (04 4.5 is internally proved and cross-checked); 13.9(7) resolved by re-derivation (params regenerates 13.2 exactly; Mosaic claims measured at 68 on the Fibonacci instance and now asserted in `test_protocol.py`). Remaining open: 13.9(1) paper comparison + Lemma A form, 13.9(2) bibliographic, 13.9(3) 7.10 costs — all blocked on the three PDFs in `papers/README.md`.

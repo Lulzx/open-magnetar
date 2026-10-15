@@ -259,6 +259,22 @@ the CPU circuit (RAM address). Twist absorbs all of these claims itself (step 1)
    row-sum-one sum-check into this one (as in Shout, 7.4). The identities are
    homogeneous in `ra`, so without `α_{x,0}` an all-zero address would satisfy them;
    with it the equality forces `Σ_k ra_x~(k, r_c) = 1`. Combined with 7.2 this is weight exactly one.
+   **Why the merge is sound.** All input claims (`v_x`, `f_{x,t}`) are absorbed in
+   step 1, before any `α` or `β` is drawn. Writing `Δv_x`, `Δf_{x,t}` for the errors
+   of those claims against the committed tables and `Δs_x = 1 + Σ_k ra_x~(k, r_c)`
+   for the row-sum error, the difference between the two sides of the merged claim is
+   `Σ_x β_x(Δv_x + α_{x,0}Δs_x + Σ_t α_{x,t+1}Δf_{x,t})`, a polynomial in `(α, β)`
+   whose monomials `β_x`, `β_xα_{x,0}`, `β_xα_{x,t+1}` have exactly these errors as
+   coefficients. If any claim is wrong it is a non-zero polynomial of total degree 2,
+   so the merged claim holds with probability at most `2/F` (conditioning
+   `α_{x,0} ≠ 0` changes this by a factor `F/(F−1)`, absorbed in the ledger's slack).
+   The sum-check itself is over the hypercube `{0,1}^{n+a}` with per-variable degree
+   `≤ 3` (a cycle variable occurs in `eq`, `ra` and `V`; an address variable in `ra`
+   and in `V + Φ`), so binding cycle variables first is sound by 03 for any variable
+   order. The prover-sent `V~` is pinned by step 4 and `I~`, `ε_x` by the output
+   claims, so no freedom remains to compensate a wrong input claim. This is the
+   argument whose absence from the paper (which uses one sum-check per identity)
+   was audit 13.9(4).
 4. **Val evaluation** (label `L‖b"/val"`, `n` variables, **degree 3**). Claim `V~ + M_0~(r_k ∥ r_o)`
    (verifier computes `M_0~`), summand
    `LT(j', r_j)·wa~(r_k, j')·Inc~(r_o, j')` over Boolean `j'`
@@ -313,7 +329,11 @@ sum-check (label `L‖b"/fin"`, `n` variables, **degree 2**) with
 
     claim = Out~(r_low ∥ r_o^f) + M_0~(r_kf ∥ r_o^f),     summand  wa~(r_kf, j)·Inc~(r_o^f, j).
 
-(This is `Val_final~ − M_0~` in characteristic 2.) The prover sends
+(This is `Val_final~ − M_0~` in characteristic 2: expanding the definition,
+`Val_final~(r_kf, r_o^f) = M_0~(r_kf ∥ r_o^f) + Σ_j wa~(r_kf, j)·Inc~(r_o^f, j)`,
+where `wa~(r_kf, j) = Σ_k eq(r_kf, k)·wa(k, j)` and likewise for `Inc`, by
+multilinearity in `(k, o)` for each fixed `j`. So the sum-check tests exactly
+`Val_final~(r_kf, r_o^f) = Out~(r_low ∥ r_o^f)`.) The prover sends
 `fin_evals = [wa~(r_kf ∥ s_f), Inc~(r_o^f ∥ s_f)]` (absorbed `L‖b"/fin/evals"`); the verifier
 checks their product against the final value; the outputs enter as virtualization terms (7.5 step 7) and
 the Inc claim. If the final memory in the region differs from `words`, the polynomial
@@ -424,3 +444,5 @@ write address), `test_vectors_07_08.py`. Vectors: `reference/vectors/07-twist-sh
   `abi.expected_output_mle_eval` (layout `o + 64u`, 14.3) is not used by 11 (see 14 integration notes).
 
 * 2026-10-16 (13): Shout batching error corrected from `2a + 1` to `2a + 2` in 7.4 (the `β` batching is a separate degree-1 challenge, 13.2 note 2). `params.py` already uses `tot_num = 2·rom_a + 2`.
+
+* 2026-10-16 (audit 13.9): 7.2 soundness now derives the `(5n + 5a_c + 1)/F` bound explicitly (formula checked verbatim against Magnetar §4.4); 7.5 step 3 gained the "Why the merge is sound" proof for our [OM-choice] one-sum-check merge and cycle-first order; 7.6 spells out the `Val_final~` MLE expansion. No protocol, transcript, or error-term changes, so vectors are unchanged. See 13.9 items 3–6 for the resulting audit status.
