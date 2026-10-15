@@ -20,20 +20,20 @@ Paper references such as "§5.3" refer to Setty, *Magnetar*, ePrint 2026/2423.
 | # | File | Topic | Paper | Status |
 |---|------|-------|-------|--------|
 | 00 | [00-overview.md](00-overview.md) | Architecture, data flow, claim graph | §2 | outline |
-| 01 | [01-fields.md](01-fields.md) | GF(2), GF(2^128), packing basis, encodings | §3, §4.3 | outline |
-| 02 | [02-transcript.md](02-transcript.md) | Fiat–Shamir transcript, hashing, challenge sampling | §3.4 | outline |
-| 03 | [03-sumcheck.md](03-sumcheck.md) | Multilinear extensions, eq, sum-check, univariate skip | §3.1–3.2 | outline |
-| 04 | [04-pcs.md](04-pcs.md) | PCS trait, Merkle trees, Ligerito, ring switching | §3.6, §6 | outline |
-| 05 | [05-mosaic.md](05-mosaic.md) | MosaicPCS layout, lifting, batching | §5.2 | outline |
-| 06 | [06-spartan.md](06-spartan.md) | SIMD R1CS, BinarySpartan, Virtual Spartan, cross-step constraints | §4.1–4.3, §5.1, §5.3 | outline |
-| 07 | [07-twist-shout.md](07-twist-shout.md) | BinaryTwist, BinaryShout, one-hot check | §4.4 | outline |
-| 08 | [08-router.md](08-router.md) | BinaryRouter for shifts and sub-word stores | §5.4 | outline |
+| 01 | [01-fields.md](01-fields.md) | GF(2), GF(2^128), packing basis, encodings | §3, §4.3 | draft |
+| 02 | [02-transcript.md](02-transcript.md) | Fiat–Shamir transcript, hashing, challenge sampling | §3.4 | draft |
+| 03 | [03-sumcheck.md](03-sumcheck.md) | Multilinear extensions, eq, sum-check, univariate skip | §3.1–3.2 | draft |
+| 04 | [04-pcs.md](04-pcs.md) | PCS trait, Merkle trees, Ligerito, ring switching | §3.6, §6 | draft |
+| 05 | [05-mosaic.md](05-mosaic.md) | MosaicPCS layout, lifting, batching | §5.2 | draft |
+| 06 | [06-spartan.md](06-spartan.md) | SIMD R1CS, BinarySpartan, Virtual Spartan, cross-step constraints | §4.1–4.3, §5.1, §5.3 | draft |
+| 07 | [07-twist-shout.md](07-twist-shout.md) | BinaryTwist, BinaryShout, one-hot check | §4.4 | draft |
+| 08 | [08-router.md](08-router.md) | BinaryRouter for shifts and sub-word stores | §5.4 | draft |
 | 09 | [09-isa.md](09-isa.md) | RV64I semantics, virtual instructions, bytecode table | §2.1, §5 | outline |
 | 10 | [10-cpu-circuit.md](10-cpu-circuit.md) | Witness layout, segments, the two R1CS relations | §5.1 | outline |
 | 11 | [11-protocol.md](11-protocol.md) | Full prover/verifier composition | §5.5 | outline |
 | 12 | [12-proof-format.md](12-proof-format.md) | Proof and key serialization | — | outline |
 | 13 | [13-security.md](13-security.md) | Soundness accounting, parameter selection | §3.2, §6.1, Thm 1 | outline |
-| 14 | [14-guest-abi.md](14-guest-abi.md) | Guest toolchain, memory map, I/O, termination | — | outline |
+| 14 | [14-guest-abi.md](14-guest-abi.md) | Guest toolchain, memory map, I/O, termination | — | draft |
 | 15 | [15-testing.md](15-testing.md) | Reference model, test vectors, conformance | — | outline |
 
 ## Suggested writing order

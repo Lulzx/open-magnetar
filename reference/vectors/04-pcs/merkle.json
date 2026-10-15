@@ -1,0 +1,174 @@
+{
+ "vectors": [
+  {
+   "hash": "sha256",
+   "leaves": [
+    "0007"
+   ],
+   "indices": [
+    0
+   ],
+   "root": "4fca068fbfc9bdfd1a5c16427b0e34c5339c4c5b581769d9e8ced90a8b3efe57",
+   "auth": []
+  },
+  {
+   "hash": "sha256",
+   "leaves": [
+    "0007",
+    "01070107",
+    "020702070207",
+    "0307",
+    "04070407"
+   ],
+   "indices": [
+    1,
+    4
+   ],
+   "root": "bac40b09630373f331ab0d439c4b6db227c6971adb08905e57dc48ddc0b3bc03",
+   "auth": [
+    "4fca068fbfc9bdfd1a5c16427b0e34c5339c4c5b581769d9e8ced90a8b3efe57",
+    "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+    "917a0d7ae52ce5b9ca93b27848e01714bda216f27d5cf9a8c797f8e31b80f6da",
+    "fc39420ec3a5cda3666578b55cce1d2cbf7f11bb1a4dc73b3bc28610bf869462"
+   ]
+  },
+  {
+   "hash": "sha256",
+   "leaves": [
+    "0007",
+    "01070107",
+    "020702070207",
+    "0307",
+    "04070407",
+    "050705070507",
+    "0607",
+    "07070707"
+   ],
+   "indices": [
+    0,
+    1,
+    6
+   ],
+   "root": "35ee684ee53ad83d123e54d5735716605efaf83f63348fa2f59c198d2be8268e",
+   "auth": [
+    "3d6f111b0c7ed92283bb5a88d175b583a412a829a2f318b077f90292a634f8cd",
+    "917a0d7ae52ce5b9ca93b27848e01714bda216f27d5cf9a8c797f8e31b80f6da",
+    "5bc0553b5eaa7553a33ffa85dab1c947a917d05511898620d5e71f22005916ad"
+   ]
+  },
+  {
+   "hash": "sha256",
+   "leaves": [
+    "0007",
+    "01070107",
+    "020702070207",
+    "0307",
+    "04070407",
+    "050705070507",
+    "0607",
+    "07070707",
+    "080708070807",
+    "0907",
+    "0a070a07"
+   ],
+   "indices": [
+    2,
+    3,
+    10
+   ],
+   "root": "0a3e80ad4bba5b365f405aca42b8abb2ff677dcbbfcb644f71b8dd8f4d66dde4",
+   "auth": [
+    "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+    "18bbed165b700271092513fd57a4de06a8d2ef469da7cc690741089e845a3e2f",
+    "5550704296c3116eb630d66cd502c2a2dd1650aee4ed466a88de13ccbb205f99",
+    "f7fc00a861eaaec85956d64fa6968f688e7328701014b3b4703527fb5718f9b8",
+    "9772f48aff8b373774ee468bb189debe4b25a4a2cd8358d6a46a6b5884e7aa8d"
+   ]
+  },
+  {
+   "hash": "sha3-256",
+   "leaves": [
+    "0007"
+   ],
+   "indices": [
+    0
+   ],
+   "root": "0fe7a208dfe7d8d74b9b7d080c198f0cd0546a49b629700c85881cda8c3f7e1c",
+   "auth": []
+  },
+  {
+   "hash": "sha3-256",
+   "leaves": [
+    "0007",
+    "01070107",
+    "020702070207",
+    "0307",
+    "04070407"
+   ],
+   "indices": [
+    1,
+    4
+   ],
+   "root": "0c268a97b202f31b18bd5ac426578b5ba7acd4b1126825af047fdb3180b824c9",
+   "auth": [
+    "0fe7a208dfe7d8d74b9b7d080c198f0cd0546a49b629700c85881cda8c3f7e1c",
+    "0a1e2736777f80a62beb2df72b649878481c0ca10194b832b5136befbae54017",
+    "e50e863aac4b38a6ce479463be796178888401c54fb3efeb6a3c37c55038c84a",
+    "3b567313b919c2d2d50370fcfb9b0dea2ce38bc3e42e7b7f0519fcb260bbde97"
+   ]
+  },
+  {
+   "hash": "sha3-256",
+   "leaves": [
+    "0007",
+    "01070107",
+    "020702070207",
+    "0307",
+    "04070407",
+    "050705070507",
+    "0607",
+    "07070707"
+   ],
+   "indices": [
+    0,
+    1,
+    6
+   ],
+   "root": "886440db3949b91ec89d340d72a5699170df6baa548f42b60d83fea5fc3a10b0",
+   "auth": [
+    "674513b6015ca7e45f2c05733a061d7877bad0fcad9830006cc5fcd1e452fd84",
+    "e50e863aac4b38a6ce479463be796178888401c54fb3efeb6a3c37c55038c84a",
+    "157ceb224d19f9ec153c6a52d8a2ab91d8aeb1dcba6f1e90b7fda1c9dfeeea72"
+   ]
+  },
+  {
+   "hash": "sha3-256",
+   "leaves": [
+    "0007",
+    "01070107",
+    "020702070207",
+    "0307",
+    "04070407",
+    "050705070507",
+    "0607",
+    "07070707",
+    "080708070807",
+    "0907",
+    "0a070a07"
+   ],
+   "indices": [
+    2,
+    3,
+    10
+   ],
+   "root": "4a64462b98dcbe6c00d76cf8c20dc45052c3f480d824ca954664a12be10b926d",
+   "auth": [
+    "0a1e2736777f80a62beb2df72b649878481c0ca10194b832b5136befbae54017",
+    "fe1443feef68402e10c369bafb3958c3493303263c300052911c9b016cb286a0",
+    "cc2cf54ce66f5a003a20dcaed431d4cdf15f0f35315bb23e90858e93bbb37d14",
+    "315ae5cd92b61f63f9997dee4f896a79ed249849beabc54bf75cce02a29014d0",
+    "d2fb21b38210e5714ab7f28a7e25aae6dd9d311d7b04f305822dd86933dda73b"
+   ]
+  }
+ ]
+}

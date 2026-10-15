@@ -1,0 +1,55 @@
+{
+ "vectors": [
+  {
+   "profile": "sha256",
+   "protocol_label": "om/test",
+   "init_state": "094b8233cc2f99bca7fee328a3f2b29eb4bff8915e3eb5b3adf0bbe8206e9882",
+   "script": "absorb_bytes(test/bytes,'hello'); absorb_k(test/k,K(0x0123456789ABCDEF)); absorb_ks(test/ks,[1,X,X+1]); challenge_k(test/c1) x2; challenge_ks(test/cs,2); challenge_nonzero_k(test/nz); challenge_index(test/idx,20); challenge_index(test/idx64,64)",
+   "outputs": [
+    "4c85162be45b05c1f59f2b12a15c73dc",
+    "5733c6c44ed9f94c5a1519ac574aa4c7",
+    [
+     "f35bcd020b3cf51f3426741a833a144b",
+     "967a1c72fbdd750ccf143c4dfa6a500c"
+    ],
+    "37410dd286009e56ddb0b277a12a7c6b",
+    316459,
+    12779998978630712155
+   ]
+  },
+  {
+   "profile": "sha3-256",
+   "protocol_label": "om/test",
+   "init_state": "f31a8620eba31624f6a84d013f212c1440a4af3158b0711b5583034ecf324d12",
+   "script": "absorb_bytes(test/bytes,'hello'); absorb_k(test/k,K(0x0123456789ABCDEF)); absorb_ks(test/ks,[1,X,X+1]); challenge_k(test/c1) x2; challenge_ks(test/cs,2); challenge_nonzero_k(test/nz); challenge_index(test/idx,20); challenge_index(test/idx64,64)",
+   "outputs": [
+    "5660ab2dbca91a2dfe5e583afa57d880",
+    "e8fd728bc44540a031381cd3dca40be8",
+    [
+     "8fa1dcfb8ff1350eb326fd6db36b7a91",
+     "55025bee90573037452dddbc030cf1af"
+    ],
+    "830366f60ee6919bd50851ea3d24b2dd",
+    395485,
+    9593948473409042036
+   ]
+  },
+  {
+   "profile": "sha384",
+   "protocol_label": "om/test",
+   "init_state": "6e5d42a94003bebe07134277eab53b6224a4dac167aaff52af596b8b195dde7afe7c211a4d2ef8eb5c691eeb9c3aa3ff",
+   "script": "absorb_bytes(test/bytes,'hello'); absorb_k(test/k,K(0x0123456789ABCDEF)); absorb_ks(test/ks,[1,X,X+1]); challenge_k(test/c1) x2; challenge_ks(test/cs,2); challenge_nonzero_k(test/nz); challenge_index(test/idx,20); challenge_index(test/idx64,64)",
+   "outputs": [
+    "0e001e02e0a7af41b9f4e2417f2aeb5d",
+    "993cb5fc63bcc0858f1cc092a6955939",
+    [
+     "bfeb2b4283b46172d112a10a47e19da7",
+     "02eb6a9a31209dcf355c2fdbbded839f"
+    ],
+    "a466fe05b48b46da51043e21f46e84aa",
+    828248,
+    5744995639315848102
+   ]
+  }
+ ]
+}

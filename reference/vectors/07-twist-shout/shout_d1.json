@@ -1,0 +1,177 @@
+{
+ "addrs": [
+  6,
+  2,
+  6,
+  6,
+  3,
+  4,
+  4,
+  7
+ ],
+ "claim_groups": [
+  {
+   "bits": [
+    "0c0b6b0f3e4a80c43a3537589a10994e",
+    "9bcbf4fec35ab020065b4404bd96c6ab",
+    "4740d6317d2bae07b9183a10c114afb1"
+   ],
+   "cols": [
+    0,
+    1
+   ],
+   "r_c": [
+    "89083632baa3fa39a9e3052d144619b0",
+    "6ead2d22b2ecb9412ffb9bb74a842849",
+    "96c09ff1fd1030e43c6e735c27865fe5"
+   ],
+   "rv": [
+    "4fc12a23aa2417f070fd81c18b3a921c",
+    "e84baf7b2a8205355a6bb0e56d523a1e"
+   ]
+  },
+  {
+   "bits": null,
+   "cols": [
+    0
+   ],
+   "r_c": [
+    "d20b17c22f02b6032f18c3d1c02fa4f1",
+    "69f7e4875fd4cbdd746f49780042e44b",
+    "816a45d7a1518937f76a67e390464bc5"
+   ],
+   "rv": [
+    "dac579fb8c2fcf6b55152298a212400f"
+   ]
+  }
+ ],
+ "output_claims": [
+  {
+   "point": [
+    "9757de5b37e072b3c115c71d42de6748",
+    "5b66ea5af8768d8ed829f8d1ebc504fc",
+    "640c084f892a76d008e81f1cec0f9577",
+    "89083632baa3fa39a9e3052d144619b0",
+    "6ead2d22b2ecb9412ffb9bb74a842849",
+    "96c09ff1fd1030e43c6e735c27865fe5"
+   ],
+   "poly": "sh/ra/1",
+   "value": "1a1f9839da4efd91c3dabfb096695bcd"
+  },
+  {
+   "point": [
+    "9757de5b37e072b3c115c71d42de6748",
+    "5b66ea5af8768d8ed829f8d1ebc504fc",
+    "640c084f892a76d008e81f1cec0f9577",
+    "d20b17c22f02b6032f18c3d1c02fa4f1",
+    "69f7e4875fd4cbdd746f49780042e44b",
+    "816a45d7a1518937f76a67e390464bc5"
+   ],
+   "poly": "sh/ra/1",
+   "value": "b6db04e4f98059b72f53c6784173da45"
+  },
+  {
+   "point": [
+    "0bca99beb1a01263dcd81ba0ae2dcaaf",
+    "be31eb55c3d4c953857d73e01053ce3b",
+    "8d59e87d13dcca9be45e2f72cf60c3d5",
+    "bbf73f81d1c9d880bb329ecd4c6f1f22",
+    "9a283b5e0d1f3b43af4cbd7e812db0ee",
+    "ea91ddccc6e99f92e1ef452e387a26c9"
+   ],
+   "poly": "sh/ra/1",
+   "value": "84695a96e0cc7612c60c33bff6c87c09"
+  },
+  {
+   "point": [
+    "29c3157ced670c4e6d293b8ea0b2b2f2",
+    "afe363a7890caa48988c3c2c3f05e9ee",
+    "e23c10b4b73beb96f05872fcb61f8c48",
+    "bbf73f81d1c9d880bb329ecd4c6f1f22",
+    "9a283b5e0d1f3b43af4cbd7e812db0ee",
+    "ea91ddccc6e99f92e1ef452e387a26c9"
+   ],
+   "poly": "sh/ra/1",
+   "value": "7fcbac74c705300c1e3d2749ca96a34e"
+  }
+ ],
+ "params": {
+  "a": 3,
+  "c": 2,
+  "d": 1,
+  "label": "S",
+  "n": 3,
+  "name": "sh",
+  "protocol_label": "vec/07/shout"
+ },
+ "proof": {
+  "onehot_evals": [
+   [
+    "84695a96e0cc7612c60c33bff6c87c09",
+    "7fcbac74c705300c1e3d2749ca96a34e"
+   ]
+  ],
+  "onehot_msgs": [
+   [
+    "00000000000000000000000000000000",
+    "3e9ce2d75e2ab84ff96baac5533bb76e",
+    "465172720360362fd77d0f8c6054ea79",
+    "595cab8260f0035fba712caf0f3df2cb"
+   ],
+   [
+    "444b5300a4a45efc82d035f5ac769b5d",
+    "9e02364ec1f650e790acb313763aec95",
+    "8443fd1c22a9382eeb0c95128db80e03",
+    "5c4995c05c3fb814e5d90f18cea60d77"
+   ],
+   [
+    "72eee75a020df056d56ec7ffe7e1281f",
+    "2377fff3536bc7bb8acc1d6951c4e502",
+    "ce1ab3bba6daa4fa7e321c112d8b7fec",
+    "84ff1336fd565736760c9ab8a4481b3c"
+   ]
+  ],
+  "ra_evals": [
+   "1a1f9839da4efd91c3dabfb096695bcd",
+   "b6db04e4f98059b72f53c6784173da45"
+  ],
+  "read": [
+   [
+    "d21be121fac5d29a9422b3ce09644047",
+    "eb53b9e0f3f0afe01bba64387ce05900"
+   ],
+   [
+    "4e7986e53fbbebc28e7fa194c76e105b",
+    "7c71f0d75f871d1ef410a3690903286f"
+   ],
+   [
+    "b3cd5d733473db2534d82bcb4d6b10bf",
+    "16fbd985242b2a090aad90cdd5db43ae"
+   ]
+  ],
+  "virt_evals": null,
+  "virt_msgs": null
+ },
+ "table": [
+  [
+   "760d609da7a8367ca68b8c64ce4bc3b2",
+   "d552cc6cea8b2e5ab6e9043a5e8c106e",
+   "827e2dd39abd103f19b4ef381d6b19fa",
+   "3f735c45e101c37b599f8da37901d754",
+   "bdb10bf6a35a8c26aa11c918e6d254a8",
+   "78e63c0b143f4f676a6ed900127eb372",
+   "fbb8136ecf5592f883fc76a6a6bf2d25",
+   "8a4bd9ed58c8753ce863e589982ab52d"
+  ],
+  [
+   "00000000000000000000000000000000",
+   "01000000000000000000000000000000",
+   "00000000000000000000000000000000",
+   "01000000000000000000000000000000",
+   "00000000000000000000000000000000",
+   "01000000000000000000000000000000",
+   "01000000000000000000000000000000",
+   "01000000000000000000000000000000"
+  ]
+ ]
+}

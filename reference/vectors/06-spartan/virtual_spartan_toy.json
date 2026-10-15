@@ -1,0 +1,300 @@
+{
+ "vectors": [
+  {
+   "protocol_label": "vec-spartan",
+   "prefix": "vsp",
+   "q": 4,
+   "rho": 3,
+   "nu": 6,
+   "W_rows": [
+    "00001010101000001101110110000000",
+    "10100100101101011100110010000000",
+    "01000011010100101101000000000000",
+    "00110111010000000111011110000000"
+   ],
+   "init": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "fin": [
+    0,
+    1,
+    1,
+    1
+   ],
+   "segments": [
+    [
+     1,
+     "virtual",
+     2,
+     0
+    ],
+    [
+     2,
+     "virtual",
+     2,
+     1
+    ],
+    [
+     3,
+     "direct",
+     2,
+     2
+    ],
+    [
+     4,
+     "direct",
+     2,
+     3
+    ],
+    [
+     5,
+     "direct",
+     2,
+     4
+    ],
+    [
+     6,
+     "direct",
+     2,
+     5
+    ],
+    [
+     7,
+     "direct",
+     0,
+     24
+    ],
+    [
+     8,
+     "pad",
+     2,
+     7
+    ]
+   ],
+   "cross_step": {
+    "in_id": 1,
+    "out_id": 2
+   },
+   "outer_msgs": {
+    "bin": [
+     [
+      "00000000000000000000000000000000",
+      "27e8ed974ce9a26db873b78bd45bbf77",
+      "927cee1d184eb4a4240115c5a916856d"
+     ],
+     [
+      "00000000000000000000000000000000",
+      "d16810b237654c553c1f6ea86d7ac8fe",
+      "c236048116216f7dee702b989b68a5bc"
+     ],
+     [
+      "00000000000000000000000000000000",
+      "4468b9d9419fb2679c8c6ed4be253b68",
+      "1e333eee5d986dad36bdf068405c56fe"
+     ],
+     [
+      "6dbf7986f1e6c9cca93046045a57f68f",
+      "cf383b18dd91455c6a31d3c17abe057c",
+      "72a737ab20d134b400bc594bfa1d4f09"
+     ],
+     [
+      "7ce0bed82ecc2d7221d3553fd8368ded",
+      "c45fd35720ca3ee1204e53f071e45cef",
+      "526250b72fbb74d6e3a05fc607a3e02a"
+     ]
+    ],
+    "fld": [
+     [
+      "00000000000000000000000000000000",
+      "00000000000000000000000000000000",
+      "00000000000000000000000000000000"
+     ],
+     [
+      "00000000000000000000000000000000",
+      "25789358497a02c5e76b69074e4ac977",
+      "981ef7c811169087d7963135d683c2a1"
+     ],
+     [
+      "71693d48989990d2f16660a9637c870a",
+      "d149f4c13cb126e632c797f95ee04a2a",
+      "0ba33300fc672067a2cf5f856ab2dfeb"
+     ],
+     [
+      "b5be8e4e71fc0e1f6d575c9d02ab7dc2",
+      "155106e69be1d4756d3f3924ae3b2eb8",
+      "ff2d403a7749c939a0b402aced58d4e0"
+     ],
+     [
+      "8b77b2a50b80992b8d7a2cc541a61cfa",
+      "6aa80252637c5f26f27319dae60df5a0",
+      "ecaf1fbd50bda0b3c31d3bdbcfb0c21e"
+     ]
+    ]
+   },
+   "outer_finals": {
+    "bin": [
+     "02b06eb753cfac91fd24e3ebb4759493",
+     "a26e3d857d8e3c1b7ef78f8b6cc1d029",
+     "9c8f2c48b2a8a607dba7d727b649f8ee"
+    ],
+    "fld": [
+     "24ac7daaa0e1787c3377fa5472c0790f",
+     "6ad40764b981e90dfdeca6f27663af3e",
+     "5b59d08c4fe87d04688a2ba9118cb935"
+    ]
+   },
+   "inner_msgs": [
+    [
+     "be10435074f36ce05945fe246494c161",
+     "2b57f18d72662773c71ff9736bb72bef"
+    ],
+    [
+     "77afc3435ace38b0dd5e5cbfe9ab074f",
+     "c6312dcd661677ef774bbbf5d0b9caf2"
+    ],
+    [
+     "0b99c367ae23020437047876fa9ffc2f",
+     "878f3c967d8231d42e7bf6b476d42897"
+    ],
+    [
+     "8ada9e3bf7361d7500625a43699454ff",
+     "6ec9ee214e722aad8fba139bd0b862eb"
+    ],
+    [
+     "1a3f5c3663a0341422a239675f5f66f1",
+     "c575d805e44d31ed68c17f1671ac62ba"
+    ],
+    [
+     "2caf3f64f827fec0549cbf910459475b",
+     "ffd49292acb1fe2bcdc72c973164c5f4"
+    ]
+   ],
+   "v_W": "573d80f7163633f64adc5f3cbcd6503c",
+   "seg_vals": [
+    "d7e485674f6c45ab17ce4c7d53aaeb02",
+    "14c658ac0033eeba7dc2884b59dc5736",
+    "e3ff1d5dde0a731e3e79eccafc75e8a4",
+    "20ddc0969155d80f547528fcf6035490",
+    "16c0463beeecea960616f5bd35f5d680",
+    "74ee0c45190c8ea40e65ce265fb80b03",
+    "ed837d97c5780c89b730f7b20920627f"
+   ],
+   "xs_msgs": [
+    [
+     "e531ba12170b744f87203dee83112734",
+     "4748c15a92d210c33e8d04e8bffa3515"
+    ],
+    [
+     "b51d549a1c48815654eb52b994916cfe",
+     "17002fca66b1edafc3aa4e23066fecdd"
+    ],
+    [
+     "f3118abfe655e41bc9c5d37c76da2b7a",
+     "49fa19631e224b35270a615b6bd61328"
+    ],
+    [
+     "8d11e964ba3c8cb5c84b7e4a9623a249",
+     "317270c5682e3ab11633bfe5e1779fb5"
+    ]
+   ],
+   "xs_vals": [
+    "712dc92f8e36b92510e517ed1b93f125",
+    "984703451b37303cf51fdbe682412995"
+   ],
+   "claims": [
+    {
+     "id": 1,
+     "point": [
+      "d867753af4333f0fcaf3dd49088461b5",
+      "a5e4077098259e7be54cf59226926ef1",
+      "681f8ed69c3a2566ff75a37d1b121b9f",
+      "269f8d170eab91bbdeb96f91ca6c8e9a"
+     ],
+     "value": "d7e485674f6c45ab17ce4c7d53aaeb02"
+    },
+    {
+     "id": 2,
+     "point": [
+      "d867753af4333f0fcaf3dd49088461b5",
+      "a5e4077098259e7be54cf59226926ef1",
+      "681f8ed69c3a2566ff75a37d1b121b9f",
+      "269f8d170eab91bbdeb96f91ca6c8e9a"
+     ],
+     "value": "14c658ac0033eeba7dc2884b59dc5736"
+    },
+    {
+     "id": 3,
+     "point": [
+      "d867753af4333f0fcaf3dd49088461b5",
+      "a5e4077098259e7be54cf59226926ef1",
+      "681f8ed69c3a2566ff75a37d1b121b9f",
+      "269f8d170eab91bbdeb96f91ca6c8e9a"
+     ],
+     "value": "e3ff1d5dde0a731e3e79eccafc75e8a4"
+    },
+    {
+     "id": 4,
+     "point": [
+      "d867753af4333f0fcaf3dd49088461b5",
+      "a5e4077098259e7be54cf59226926ef1",
+      "681f8ed69c3a2566ff75a37d1b121b9f",
+      "269f8d170eab91bbdeb96f91ca6c8e9a"
+     ],
+     "value": "20ddc0969155d80f547528fcf6035490"
+    },
+    {
+     "id": 5,
+     "point": [
+      "d867753af4333f0fcaf3dd49088461b5",
+      "a5e4077098259e7be54cf59226926ef1",
+      "681f8ed69c3a2566ff75a37d1b121b9f",
+      "269f8d170eab91bbdeb96f91ca6c8e9a"
+     ],
+     "value": "16c0463beeecea960616f5bd35f5d680"
+    },
+    {
+     "id": 6,
+     "point": [
+      "d867753af4333f0fcaf3dd49088461b5",
+      "a5e4077098259e7be54cf59226926ef1",
+      "681f8ed69c3a2566ff75a37d1b121b9f",
+      "269f8d170eab91bbdeb96f91ca6c8e9a"
+     ],
+     "value": "74ee0c45190c8ea40e65ce265fb80b03"
+    },
+    {
+     "id": 7,
+     "point": [
+      "681f8ed69c3a2566ff75a37d1b121b9f",
+      "269f8d170eab91bbdeb96f91ca6c8e9a"
+     ],
+     "value": "ed837d97c5780c89b730f7b20920627f"
+    },
+    {
+     "id": 1,
+     "point": [
+      "68a94eae89a3231729dca2eba46b1d80",
+      "b126cee0bd1413023ca9311c4d5285ba",
+      "f408e5981bef0f1172a027c5e4cbf995",
+      "44edcf5e292dbc46534f509b1a5ad3c1"
+     ],
+     "value": "712dc92f8e36b92510e517ed1b93f125"
+    },
+    {
+     "id": 2,
+     "point": [
+      "68a94eae89a3231729dca2eba46b1d80",
+      "b126cee0bd1413023ca9311c4d5285ba",
+      "f408e5981bef0f1172a027c5e4cbf995",
+      "44edcf5e292dbc46534f509b1a5ad3c1"
+     ],
+     "value": "984703451b37303cf51fdbe682412995"
+    }
+   ],
+   "transcript_final": "af7248b24cb6adb4086bca3546ed9ba8"
+  }
+ ]
+}

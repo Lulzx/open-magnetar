@@ -1,0 +1,88 @@
+{
+ "vectors": [
+  {
+   "protocol_label": "vec-spartan1",
+   "prefix": "vsp",
+   "relation": "bin",
+   "q": 4,
+   "W_rows": [
+    "00001010101000001101110110000000",
+    "10100100101101011100110010000000",
+    "01000011010100101101000000000000",
+    "00110111010000000111011110000000"
+   ],
+   "outer_msgs": [
+    [
+     "00000000000000000000000000000000",
+     "8ef3c979b704fcc260e7ae555afbc753",
+     "e56cd5e66ec30af946b0e030cdb427d9"
+    ],
+    [
+     "00000000000000000000000000000000",
+     "6add631622a51ee4d38511ec6291c126",
+     "cbf304d99f4c7cf2d33d4865c889436a"
+    ],
+    [
+     "00000000000000000000000000000000",
+     "ed55612680edc9834fda7542a80a7f80",
+     "90274ca05b450a788eee8ab04ab0b608"
+    ],
+    [
+     "f8b23f7bed8b09357bce209bb67200ec",
+     "7ade8474f4526a2326a64f8fab3635a7",
+     "03caf257ac1c857f38c613a0629d5625"
+    ],
+    [
+     "c933ef5e66dfda3890ff0fd715eb9b35",
+     "1bce706972045bc19b9fa63494b3ac35",
+     "e78df290dc17b3431cf71137f064bea9"
+    ]
+   ],
+   "outer_finals": [
+    "334952d037e9db58e0afbbc538ffe0e4",
+    "b4e0b1b894f8974cfe04ca37e2f408e9",
+    "6a427a6775204a1057e1ae654ee0427c"
+   ],
+   "inner_msgs": [
+    [
+     "59bba04add083fb6725a686e8d0cac19",
+     "5b777967601541c7a3f54fb6579ba37a"
+    ],
+    [
+     "ad1bd2d3ebb754bad57b7ba8df39cee9",
+     "c24e2e537cf8ceafd02ac13207dde059"
+    ],
+    [
+     "e6e2aa28f58113354360e20d716756dc",
+     "b845a7adfa2ed2700b4740d554bfe7ee"
+    ],
+    [
+     "758f9277106666be4a0556160928966b",
+     "e7360e22aafd213248a9513c7be7eaad"
+    ],
+    [
+     "299bcd83061445c4e4ee59eeec2c6817",
+     "50b5d1bae17d1b1e6b5546f26fa9e105"
+    ],
+    [
+     "53d17c6d0a65d02550138b85eff2fde9",
+     "f139223e4e738ae676d333e8a1675da6"
+    ]
+   ],
+   "v_W": "b3ecb56e92698b70df71d57ec8b42953",
+   "claim": {
+    "point": [
+     "54d230d36e0c0a7f6e7b7d8b3ad106c7",
+     "13370ef811e40f05d829c1fe9819e14b",
+     "c49a0763587f55820e3ff6a30fa43d75",
+     "392a0cfd0c16dcfe3173ec811a1cde64",
+     "acce6767c3c329a149cba35f8d4f6722",
+     "5adb832a600cdffed930b83ff10cb912",
+     "d0d00cb3b20b221ed06fcd343b1efdb8"
+    ],
+    "value": "b3ecb56e92698b70df71d57ec8b42953"
+   },
+   "transcript_final": "fe8b6ee5a810ca69399531d510b56414"
+  }
+ ]
+}

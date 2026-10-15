@@ -1,0 +1,166 @@
+{
+ "vectors": [
+  {
+   "degree": 1,
+   "num_vars": 3,
+   "summand": "g = T0",
+   "protocol_label": "om/sc",
+   "label": "sc/round",
+   "tables": [
+    [
+     "5051f1cbd5f1b7edf320020f6e54b9c2",
+     "fb129fc2ad7cb232fb26dadcfeefd5f1",
+     "22bc5d1712753b8e9cbe09e7f43a9760",
+     "ec7b30c9c564042989281c6823afd3b8",
+     "7e70dd5f2c967090279526a6e08f0fc6",
+     "a0ffa2662c7ffbc784dc7592a4fff632",
+     "7e53989b660215e1c13dfc0c81efd707",
+     "beccb1bca86507f31f5d5fb55a5530bf"
+    ]
+   ],
+   "claim": "7b9455c96112a33d60b93dd1d8e436a7",
+   "round_msgs": [
+    [
+     "72cee9188d10e9128936d142fb0ef663"
+    ],
+    [
+     "a8c18604a92be6abe266def7d05ae8a5"
+    ],
+    [
+     "77c2e91f7ec457c4991bc4e69ffa7e7c"
+    ]
+   ],
+   "challenges": [
+    "6ea446de9571ac45bacc561a0de73ec4",
+    "6e9526f586c7297572ba904351a80d78",
+    "3c296c59f56f2029240b952698575682"
+   ],
+   "table_evals": [
+    "b6d046ad2467721aa75c3a2fbf125142"
+   ],
+   "final_claim": "b6d046ad2467721aa75c3a2fbf125142"
+  },
+  {
+   "degree": 2,
+   "num_vars": 3,
+   "summand": "g = T0*T1",
+   "protocol_label": "om/sc",
+   "label": "sc/round",
+   "tables": [
+    [
+     "f8df5c851ec97f98890dd76ba4bc38e6",
+     "e3dc8f38b215d02462c55d21a7ac0647",
+     "07a8e47b0a5e8320d35d47a0553c5695",
+     "3dd7019fb867d917e22410b57fa6effe",
+     "031b766f234e9782ae26500c14bbf53d",
+     "935db9391e3a11fffd48dec9016c540a",
+     "9e7bcc6b93d12207ff23b190283f688e",
+     "7ad428adbd032e21abc7bfc17e934195"
+    ],
+    [
+     "87529a29a0ebd74f36ce5a77c517cfc0",
+     "e9a114a76f1535c8582c51ef990336a6",
+     "ce93eb47966e7814b7ac85e64ba670db",
+     "218d4dd9dd8a81d2e6a144863b7c21f0",
+     "ec2b229444628ba7798082efa725f1b0",
+     "c431ae70bb534e9fdab9134af4703fb3",
+     "b81421ccfb5c5e121344ec190819956d",
+     "407ffeb7aeb9d216eedb1ba5fcffa611"
+    ]
+   ],
+   "claim": "e73a9ea5a00f0071256f7f2fa30b87cc",
+   "round_msgs": [
+    [
+     "09b122866c05a85883402c580e227833",
+     "d097d7525a0b256edb2bd771c7fff9ee"
+    ],
+    [
+     "bd034e02ae36d13222b3d7bbca7085a6",
+     "a05548e215c6bd851331b5fb3bb2be3d"
+    ],
+    [
+     "8e1b89905cbb80cfce3a09a9596ba1d6",
+     "f2ee8f889e62656f2e60e0d6cc153ca9"
+    ]
+   ],
+   "challenges": [
+    "a7385b8d190fc01cfd1c958536591aa0",
+    "dc94036d9cfaff34cc4b73763415c3b1",
+    "c5bafad74200129778ac28a7cf7b62eb"
+   ],
+   "table_evals": [
+    "92657214adafb390e4743ed112954062",
+    "6db538d6b0098c4d33bd71b02e59f567"
+   ],
+   "final_claim": "77b5baf335463b406930fe96b1ab7484"
+  },
+  {
+   "degree": 3,
+   "num_vars": 3,
+   "summand": "g = T0*T1*T2",
+   "protocol_label": "om/sc",
+   "label": "sc/round",
+   "tables": [
+    [
+     "6ec4517f8c9d0f8fba55285ca3f9b138",
+     "1b0ad9b81ebe907638535c7201b20c8a",
+     "c9600f748ed87467a810a306582c65b0",
+     "a510bc557fc6e810db40bd79e3328380",
+     "e8f089734148a9802ef17f16e1f686e5",
+     "48758b4bb1da8edfea9bb0563f55d494",
+     "c7c1efe64ecf8381d413a4b708a99dab",
+     "45b10be61e388ab18d8072087b42baa4"
+    ],
+    [
+     "84e47c3a82d8c7ae8901c489273bee8b",
+     "aeb9af0f15fcd451710db73aa68242af",
+     "c91d508f3567708d478537001a74dd23",
+     "8b6c5c6486f1c257049605089d9b6e8a",
+     "0ae9953da0b4fbb24a8b37e506c335c5",
+     "c8fdfb620cd0890f703d9244db918367",
+     "bf5d4fe99a0eac2126e32ddbad2962f5",
+     "04bb3e41bfcfa460cb925b6d8af442eb"
+    ],
+    [
+     "d45b7b32bff1d8329712b5c343aca241",
+     "73244774101772d3622c28c5cfa9d132",
+     "27a126c18e685aad32290822263535db",
+     "b468d622391d159517c600be4ff6ff9e",
+     "b50dfcde709d2b400fe9612e20327806",
+     "ff21b0db69147d618e17e733d4610eba",
+     "7fae4d5786bc7172d97121a3947e625d",
+     "4e522826e43aae8c4fffca825f02ebd8"
+    ]
+   ],
+   "claim": "cb7cc5c84d1224bce4e38edf78310877",
+   "round_msgs": [
+    [
+     "37d9622771bdda8bf07117d8e9560979",
+     "4e8d9c8a02d7695d18b65e1bb505099f",
+     "43c1d9584ec98f786a1789987236e0d1"
+    ],
+    [
+     "7ad6c4f9111ce1a250fad44e7f647cb5",
+     "45889f32b4643f6aaa080afbb762f085",
+     "a4b393a120524f48d1591a903c514372"
+    ],
+    [
+     "e64e60ffc0d1a945a2681847f6ab8685",
+     "2ffc1e27d67fdcec6a510c819b4369a3",
+     "39dca9e2c89d2dc76e112f324f3c6f0b"
+    ]
+   ],
+   "challenges": [
+    "84293ac2f915c8bf2986612486fc54ae",
+    "8fdc4034c63acfee0df2faa3706a73ae",
+    "37e03924a8bdce5697912d00c3b73ba6"
+   ],
+   "table_evals": [
+    "c2ecc5e8dbc2438a7155371a0325336c",
+    "3d0609d7589f8cc43fcbdeca580c8567",
+    "77ccc40b6fc54d87afafbc2256d58ccc"
+   ],
+   "final_claim": "ca9118a99e80301c51c0b036188fdfe1"
+  }
+ ]
+}

@@ -1,0 +1,114 @@
+{
+ "aux": [
+  {
+   "C": "998aa9d6e78cc5c225c8a20430d0aeae",
+   "r": [
+    "e48f44bf2ba39247b6f3d57f2ad46d1a"
+   ],
+   "r_prime": [
+    "c17d8fb8034d88c94fdc91b8ea2712e5"
+   ]
+  },
+  {
+   "C": "c8ef5d2b8f841a180fd292ec5e905eaf",
+   "r": [
+    "5e7d6b1ca4a769c90648ba8cbfb38f95",
+    "68d9e63d176515ef5f0689884a682b39",
+    "99662eff474c4278cca6ea8987e95d88"
+   ],
+   "r_prime": [
+    "ced09b0e6922af895fdc2d6d4837a353",
+    "285077e1a4bd48d955f2b4ce0be21d1c",
+    "e8833c63bd33ce98d6fa79f9f9c416e2"
+   ]
+  },
+  {
+   "C": "1af0fd58c8cbb8a12a35dfc67b57f073",
+   "r": [
+    "f14cc10aa63da44947946b2d2a1bc19a",
+    "877e2ce664bdfd1e1a6c8f279e78c78f",
+    "d92fd6607274c7feabce4c0b3f57eff3",
+    "959c9f525c9cfc6e2a238b5c3b299554"
+   ],
+   "r_prime": [
+    "f71aeda7b1b5bbcba4a2655b71bacc60",
+    "4c8b78a311c9dca8433adee00017fde1",
+    "8afb1d888053f7240bab0b366e1691a0",
+    "13cad7630cac980c705d34fce6ef21d3"
+   ]
+  }
+ ],
+ "claims": [
+  {
+   "point": [
+    "dcc43fa7912c516a355b2c25ef889077",
+    "e99791b993731747fc58bde9a7a26184",
+    "a0326a0d9232ce3d43730bf520672cd9",
+    "f6ff52749c2433beba0c329e7d3a3d10",
+    "e9cc2ff082f961e835cefbce115894c0",
+    "bf138b86af7a58f533ced36bc9b9af05"
+   ],
+   "poly": "A",
+   "value": "7e145feefc4b825d3607a430be61b9ae"
+  },
+  {
+   "point": [
+    "71a6f577412014eff288f494da839f40",
+    "87c8e5b75b1c06938470eca695e71986",
+    "488d13b12b3740b4ea6498a478821628",
+    "f6ff52749c2433beba0c329e7d3a3d10",
+    "e9cc2ff082f961e835cefbce115894c0",
+    "bf138b86af7a58f533ced36bc9b9af05"
+   ],
+   "poly": "A",
+   "value": "9c1847f335d7a61f36e08717049dc1c0"
+  }
+ ],
+ "cube_root_of_unity_c_zero": {
+  "w": "090bb2a49fac6a67f91a73f4b1c05a29"
+ },
+ "instance": {
+  "ac": 3,
+  "addrs": [
+   4,
+   4,
+   1,
+   4,
+   2,
+   1,
+   6,
+   7
+  ],
+  "label": "oh",
+  "n": 3,
+  "protocol_label": "vec/07/onehot"
+ },
+ "proof": {
+  "evals": [
+   [
+    "7e145feefc4b825d3607a430be61b9ae",
+    "9c1847f335d7a61f36e08717049dc1c0"
+   ]
+  ],
+  "round_msgs": [
+   [
+    "00000000000000000000000000000000",
+    "9e6968d8e42757d7b5818f67384a3fa2",
+    "62a76484c7c02b2c1bdbc82e205142c0",
+    "2ff91745a0992ae34931af4f3b4a6968"
+   ],
+   [
+    "c4bc706ded3040c440fb4731e1f4e276",
+    "a3b0c3ac084d95f101b7a7ee97036ef2",
+    "2855bbcfdca38c8a865857be2cde8d49",
+    "2cd647e1beb7f7b9f197e3c1474547cb"
+   ],
+   [
+    "0f6db272fe9ed66bff418346b12dff6d",
+    "60895f20c73982cad0f4a44abcb992aa",
+    "b12eb3a2b645448d1364f0b30a3d41c7",
+    "fc607ceb6bb3f7ff1e7ba217ebb6c121"
+   ]
+  ]
+ }
+}
