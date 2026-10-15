@@ -91,6 +91,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "om-prover"
+version = "0.1.0"
+dependencies = [
+ "om-circuit",
+ "om-elf",
+ "om-field",
+ "om-format",
+ "om-isa",
+ "om-memcheck",
+ "om-mosaic",
+ "om-pcs",
+ "om-router",
+ "om-spartan",
+ "om-sumcheck",
+ "om-transcript",
+ "serde_json",
+]
+
+[[package]]
 name = "om-router"
 version = "0.1.0"
 dependencies = [

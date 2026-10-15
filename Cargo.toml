@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/om-field", "crates/om-transcript", "crates/om-sumcheck", "crates/om-pcs", "crates/om-mosaic", "crates/om-spartan", "crates/om-memcheck", "crates/om-router", "crates/om-isa", "crates/om-circuit", "crates/om-elf", "crates/om-format"]
+members = ["crates/om-field", "crates/om-transcript", "crates/om-sumcheck", "crates/om-pcs", "crates/om-mosaic", "crates/om-spartan", "crates/om-memcheck", "crates/om-router", "crates/om-isa", "crates/om-circuit", "crates/om-elf", "crates/om-format", "crates/om-prover"]
 
 [workspace.package]
 edition = "2024"
