@@ -1,0 +1,10 @@
+[package]
+name = "om-isa"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Strict RV64I decoder, interpreter, virtual-instruction expansion and bytecode ROM for Open Magnetar (spec 09)"
+
+[dependencies]
