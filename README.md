@@ -16,7 +16,7 @@ transparent, hash-based, post-quantum proof system for RV64I program executions
 
 ## Status
 
-**Pre-alpha: specification complete, Rust implementation in progress.**
+**Pre-alpha: specification complete, Rust implementation working end to end.**
 
 - **Specification.** All sections 00–15 of [`docs/spec/`](docs/spec/) are at
   `draft` status. Start with [`00-overview.md`](docs/spec/00-overview.md) and
@@ -29,16 +29,22 @@ transparent, hash-based, post-quantum proof system for RV64I program executions
   prover and verifier that prove tiny RV64I programs: Fibonacci, loads and
   stores, and register-amount shifts, including at the real provable-120
   profile. It is slow by design and exists to pin down the spec and generate
-  test vectors. The suite has 222 tests.
-- **Rust implementation.** In progress in [`crates/`](crates/), built crate
-  by crate against the reference vectors (byte for byte) with crypto written
-  from scratch. Done so far: `om-field` (GF(2^128) with PMULL/PCLMULQDQ),
-  `om-transcript` (hash chain; SHA-256/SHA3-256/SHA-384 from scratch),
-  `om-sumcheck` (MLE utilities, sum-check, claim batching). Next: `om-pcs`
-  (Ligerito + ring switching), then Spartan/Mosaic, memory checking, ISA,
-  circuit, prover/verifier, and the `om` CLI. CI runs fmt, clippy
-  (`-D warnings`), the workspace tests (including vector conformance), and
-  the Python suite.
+  test vectors. The suite has 223 tests.
+- **Rust implementation.** Complete in [`crates/`](crates/): sixteen crates
+  from `om-field` (GF(2^128) with PMULL/PCLMULQDQ) through `om-prover` /
+  `om-verifier` to `om-sdk` and the `om` CLI (`keygen` / `prove` / `verify` /
+  `run`), with all cryptography written from scratch (field arithmetic,
+  SHA-256/SHA3-256/SHA-384, additive NTT, Ligerito). Every reference test
+  vector is reproduced byte for byte (331 Rust tests), and real RV64I C
+  guests are proved and verified end to end, including at the provable-120
+  profile. All fifteen of the paper's Table 1 workloads exist as guests in
+  [`guest/examples/`](guest/examples/) and pass host-oracle execution tests.
+  Measured numbers are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md): the
+  verifier is in the paper's ballpark (tens of ms), the prover is the dense
+  reference algorithm parallelised with rayon and is much slower than the
+  paper's (the sparse prover of spec 07.10 is future work). CI runs fmt,
+  clippy (`-D warnings`), the workspace tests (including vector
+  conformance), and the Python suite.
 
 Known open items are tracked in
 [`13-security.md` §13.9](docs/spec/13-security.md), the "unverified against
@@ -62,6 +68,18 @@ python3 reference/gen_vectors_01_03.py   # likewise gen_vectors_04.py ... gen_ve
 
 # run the Rust workspace tests (includes reference-vector conformance)
 cargo test --workspace
+
+# build a guest and prove it (needs Homebrew LLVM/lld for the guest build).
+# The A/I/O values must match between the guest link and keygen; A=16 keeps
+# the current dense prover's memory use tractable (see docs/BENCHMARKS.md).
+export PATH=/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/lld/bin:$PATH
+make -C guest A=16
+ABI="--ram-log-words 16 --input-log-words 14 --output-log-words 14"
+cargo run -p om --release -- keygen --elf guest/examples/fib.elf --out /tmp/fib.vk $ABI
+printf '\x13\0\0\0\0\0\0\0' > /tmp/in.bin    # input: u64 19
+cargo run -p om --release -- prove --vk /tmp/fib.vk --elf guest/examples/fib.elf \
+    --input /tmp/in.bin --out /tmp/fib.pf --instance /tmp/fib.inst
+cargo run -p om --release -- verify --vk /tmp/fib.vk --instance /tmp/fib.inst --proof /tmp/fib.pf
 ```
 
 ## Design at a glance
@@ -92,8 +110,11 @@ reference/            executable Python reference model
   openmagnetar/       one module per protocol component, plus protocol.py (end to end)
   tests/              unit, sub-protocol, end-to-end and negative tests
   vectors/            JSON test vectors for future implementations
-guest/                guest toolchain: linker script, runtime, Rust target JSON (untested)
-crates/               Rust workspace members (om-field, om-transcript, om-sumcheck, ...)
+guest/                guest toolchain (linker script, runtime) and the 15 Table-1 workload guests
+crates/               Rust workspace: om-field, om-transcript, om-sumcheck, om-pcs, om-spartan,
+                      om-mosaic, om-memcheck, om-router, om-isa, om-circuit, om-elf,
+                      om-format, om-prover, om-verifier, om-sdk, om (CLI)
+docs/BENCHMARKS.md    measured prover/verifier numbers vs the paper
 papers/               source-paper PDFs for the section-13.9 audit (gitignored; see README there)
 ```
 
