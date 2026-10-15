@@ -1,0 +1,13 @@
+[package]
+name = "om-elf"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Guest ABI and ELF64 loader for Open Magnetar (spec 14, CONVENTIONS C5/C6)"
+
+[dependencies]
+om-field = { path = "../om-field" }
+om-sumcheck = { path = "../om-sumcheck" }
+om-transcript = { path = "../om-transcript" }

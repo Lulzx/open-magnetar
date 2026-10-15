@@ -25,6 +25,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "om-elf"
+version = "0.1.0"
+dependencies = [
+ "om-field",
+ "om-sumcheck",
+ "om-transcript",
+]
+
+[[package]]
 name = "om-field"
 version = "0.1.0"
 
