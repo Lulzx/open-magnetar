@@ -62,6 +62,25 @@ class TestAbi(unittest.TestCase):
         self.assertNotEqual(base, program_digest(c, 0x1000_0000, {1: 3}, P))
         self.assertEqual(base, program_digest(c, 0x1000_0000, {1: 2, 5: 0}, P))
 
+    def test_digest_hash_profiles(self):
+        # 14.3: first 32 bytes of the configured H under every profile.
+        import dataclasses
+        import hashlib
+
+        from openmagnetar.abi import DIGEST_DOMAIN, Params
+
+        c = {0x1000_0000: 0x93}
+        for profile, name in (("sha256", "sha256"), ("sha3-256", "sha3_256"), ("sha384", "sha384")):
+            p = dataclasses.replace(P, hash_profile=profile)
+            d = program_digest(c, 0x1000_0000, {1: 2}, p)
+            self.assertEqual(len(d), 32)
+            u64 = lambda x: (x & (2**64 - 1)).to_bytes(8, "little")
+            pre = (DIGEST_DOMAIN + bytes([p.ram_log_words, p.input_log_words, p.output_log_words])
+                   + u64(p.max_code_words) + u64(0x1000_0000) + u64(1)
+                   + u64(0x1000_0000) + (0x93).to_bytes(4, "little")
+                   + u64(1) + u64(1) + u64(2))
+            self.assertEqual(d, hashlib.new(name, pre).digest()[:32], profile)
+
     def test_output_mle(self):
         try:
             from openmagnetar.field import K, random_k

@@ -150,8 +150,15 @@ def expected_output_mle_eval(output: bytes, p: Params, r: list):
 
 def program_digest(code: dict[int, int], entry_pc: int, ram_words: dict[int, int],
                    p: Params) -> bytes:
-    """Hash of the canonical program image (code, entry, data image, ABI params)."""
-    h = hashlib.new("sha3_256" if p.hash_profile == "sha3-256" else "sha256")
+    """Hash of the canonical program image (code, entry, data image, ABI params).
+
+    First 32 bytes of the configured hash H (14.3): the whole output for
+    sha256/sha3-256, truncated for the 48-byte sha384 profile.
+    """
+    _hashlib_names = {"sha256": "sha256", "sha3-256": "sha3_256", "sha384": "sha384"}
+    if p.hash_profile not in _hashlib_names:
+        raise AbiError(f"unknown hash profile {p.hash_profile!r}")
+    h = hashlib.new(_hashlib_names[p.hash_profile])
     u64 = lambda x: (x & MASK64).to_bytes(8, "little")
     h.update(DIGEST_DOMAIN)
     h.update(bytes([p.ram_log_words, p.input_log_words, p.output_log_words]))
@@ -164,7 +171,7 @@ def program_digest(code: dict[int, int], entry_pc: int, ram_words: dict[int, int
     h.update(u64(len(nz)))
     for w, v in nz:
         h.update(u64(w) + u64(v))
-    return h.digest()
+    return h.digest()[:32]
 
 
 @dataclass(frozen=True)

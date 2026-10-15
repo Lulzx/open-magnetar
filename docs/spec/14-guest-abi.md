@@ -67,7 +67,7 @@ Whether each instruction word is a valid RV64I instruction is decided by section
 
 The prover and verifier agree on the verifying key, which contains the parameters of 14.1 and the program digest. The public instance of a claim is `(program_digest, input, output, exit_code)`:
 
-- `program_digest = H(DOMAIN || A || I || O || MAX_CODE || entry_pc || |code| || sorted (pc, word)* || |m0| || sorted (w, v)*)`, where `DOMAIN = "open-magnetar/program/v1"`; `A, I, O` are single bytes; all other integers are 8-byte little-endian (instruction words 4 bytes); `H` is the configured hash (C4); and `m0` lists only non-zero words of the program's data image **excluding** the input region. (`reference/openmagnetar/abi.py: program_digest`.)
+- `program_digest = H(DOMAIN || A || I || O || MAX_CODE || entry_pc || |code| || sorted (pc, word)* || |m0| || sorted (w, v)*)[0:32]`, where `DOMAIN = "open-magnetar/program/v1"`; `A, I, O` are single bytes; all other integers are 8-byte little-endian (instruction words 4 bytes); `H` is the configured hash (C4) and the digest is its **first 32 bytes** (the whole output for `sha256`/`sha3-256`; truncated for the 48-byte `sha384` profile, so the field is 32 bytes under every profile, as 12.2 fixes); and `m0` lists only non-zero words of the program's data image **excluding** the input region. (`reference/openmagnetar/abi.py: program_digest`.)
 - `input` and `output` are byte strings; `exit_code` is the 64-bit value of `a0` at HALT.
 
 **Inputs.** The verifier reconstructs `M_0 = m0_program ∪ input_words(input)` (14.1 encoding; the input region is disjoint from the data image by 14.2 step 4). `M̃_0` is evaluated in time linear in its non-zero words, as C6 states. Section 11 binds `program_digest` to the committed bytecode table and the program part of `M_0`.
@@ -113,3 +113,5 @@ Only HALT (C6). The runtime writes the output region, then executes `li a7, 0; e
   (`k_low + 2^m·o`, word index low, bit index high) inside `twist_verify`, from `final.words = abi.encode_region(output, O)`. The helper with layout `o + 64u`
   and point order `(bit, word)` is kept (tested) but is informative only; if a Rust implementation prefers it, 07's table order must be changed with it.
 * The verifying key carries `A, I, O, MAX_CODE`, the hash profile and `program_digest` (12.2); it also carries the code and data images so that the verifier derives the ROM and `M_0` (11.2).
+
+* 2026-10-16 (Rust `om-elf` port): 14.3 now defines `program_digest` as the first 32 bytes of the configured `H`. The Python model previously hashed with SHA-256 under every profile except `sha3-256`, so a `sha384` vk silently carried a SHA-256 program digest, contradicting "`H` is the configured hash"; `abi.program_digest` now uses the configured hash and truncates to the 32-byte field of 12.2 (regression test `test_digest_hash_profiles`). Digests under `sha256`/`sha3-256` are unchanged, so no vectors change.
