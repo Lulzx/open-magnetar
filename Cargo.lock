@@ -50,6 +50,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "om-router"
+version = "0.1.0"
+dependencies = [
+ "om-field",
+ "om-memcheck",
+ "om-sumcheck",
+ "om-transcript",
+ "serde_json",
+]
+
+[[package]]
 name = "om-spartan"
 version = "0.1.0"
 dependencies = [
