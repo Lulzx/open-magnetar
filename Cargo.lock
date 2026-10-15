@@ -19,6 +19,17 @@ name = "om-field"
 version = "0.1.0"
 
 [[package]]
+name = "om-memcheck"
+version = "0.1.0"
+dependencies = [
+ "om-field",
+ "om-mosaic",
+ "om-sumcheck",
+ "om-transcript",
+ "serde_json",
+]
+
+[[package]]
 name = "om-mosaic"
 version = "0.1.0"
 dependencies = [
