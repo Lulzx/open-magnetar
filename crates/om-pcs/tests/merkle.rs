@@ -117,3 +117,24 @@ fn sha384_profile_48_byte_digests() {
     let opened: Vec<Vec<u8>> = idx.iter().map(|&i| l[i].clone()).collect();
     verify_multi(h, &t.root(), 5, &idx, &opened, &t.open(&idx).unwrap()).unwrap();
 }
+
+/// 4096 leaves cross the parallel-hashing threshold; the root must equal
+/// the sequential layer-by-layer definition, and openings must verify.
+#[test]
+fn large_tree_matches_sequential_root() {
+    use om_pcs::merkle::empty_hash;
+    let l = leaves(4096);
+    let t = MerkleTree::new(H, &l);
+    let mut layer: Vec<Vec<u8>> = l.iter().map(|x| hash_leaf(H, x)).collect();
+    layer.resize(4096, empty_hash(H));
+    while layer.len() > 1 {
+        layer = layer
+            .chunks(2)
+            .map(|pair| hash_node(H, &pair[0], &pair[1]))
+            .collect();
+    }
+    assert_eq!(t.root(), layer[0]);
+    let idx = [0usize, 17, 2048, 4095];
+    let opened: Vec<Vec<u8>> = idx.iter().map(|&i| l[i].clone()).collect();
+    verify_multi(H, &t.root(), 4096, &idx, &opened, &t.open(&idx).unwrap()).unwrap();
+}

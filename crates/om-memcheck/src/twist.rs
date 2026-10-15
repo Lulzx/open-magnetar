@@ -8,16 +8,30 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, eq_eval, eq_table, mle_eval_bits, sumcheck_prove,
-    sumcheck_verify,
+    SumcheckProof, VerificationError, combine_sum, eq_eval, eq_table, mle_eval_bits,
+    sumcheck_prove, sumcheck_verify,
 };
 use om_transcript::Transcript;
+use rayon::prelude::*;
 
+use crate::onehot::PAR_THRESHOLD;
 use crate::onehot::{
     EvalClaim, OneHotProof, VirtGroup, VirtProof, VirtTerm, bits_of, comp_tables, full_table,
     onehot_prove, onehot_verify, virt_prove, virt_verify,
 };
 use crate::sublabel;
+
+/// `Σ_j f(j)` in `K` (XOR), parallel for large `n` — exact in any order.
+fn xor_sum(n: usize, f: &(dyn Fn(usize) -> K + Sync)) -> K {
+    if n >= PAR_THRESHOLD {
+        (0..n)
+            .into_par_iter()
+            .map(f)
+            .reduce(|| K::ZERO, |a, b| a + b)
+    } else {
+        (0..n).fold(K::ZERO, |acc, j| acc + f(j))
+    }
+}
 
 /// Parameters of one BinaryTwist instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,9 +166,17 @@ pub fn lt_eval(x: &[K], y: &[K]) -> K {
 /// The table `j ↦ LT~(bits(j), y)` of length `2^len(y)`.
 pub fn lt_table(y: &[K]) -> Vec<K> {
     let n = y.len();
-    (0..(1usize << n))
-        .map(|j| lt_eval(&bits_of(j as u64, n), y))
-        .collect()
+    let size = 1usize << n;
+    if size >= PAR_THRESHOLD {
+        (0..size)
+            .into_par_iter()
+            .map(|j| lt_eval(&bits_of(j as u64, n), y))
+            .collect()
+    } else {
+        (0..size)
+            .map(|j| lt_eval(&bits_of(j as u64, n), y))
+            .collect()
+    }
 }
 
 /// All component names in one-hot order: reads `0..p-1` each with
@@ -172,13 +194,13 @@ pub fn comp_names_tw(params: &TwistParams) -> Vec<String> {
 /// `words[j]`).
 pub fn word_table(words: &[u64], ell: usize) -> Vec<bool> {
     let l = 1usize << ell;
-    let mut out = Vec::with_capacity(words.len() * l);
-    for &w in words {
-        for o in 0..l {
-            out.push((w >> o) & 1 == 1);
-        }
+    let total = words.len() * l;
+    let at = |idx: usize| (words[idx / l] >> (idx % l)) & 1 == 1;
+    if total >= PAR_THRESHOLD {
+        (0..total).into_par_iter().map(at).collect()
+    } else {
+        (0..total).map(at).collect()
     }
-    out
 }
 
 /// From an access trace (`reads[s][j]`, `writes[j]`, `new_words[j]`)
@@ -253,26 +275,32 @@ pub fn honest_claims(params: &TwistParams, info: &TwistInfo, r_o: &[K], r_c: &[K
 
 /// The `M_0` bit table, index `k + 2^a * o` (bit `o` of `m0[k]`).
 pub fn m0_table(m0: &[u64], a: usize, ell: usize) -> Vec<bool> {
-    let nk = 1usize << a;
-    let mut out = Vec::with_capacity(nk << ell);
-    for o in 0..(1usize << ell) {
-        for &w in m0.iter().take(nk) {
-            out.push((w >> o) & 1 == 1);
-        }
+    let rows = m0.len().min(1usize << a);
+    if rows == 0 {
+        return Vec::new();
     }
-    out
+    let total = rows << ell;
+    let at = |idx: usize| (m0[idx % rows] >> (idx / rows)) & 1 == 1;
+    if total >= PAR_THRESHOLD {
+        (0..total).into_par_iter().map(at).collect()
+    } else {
+        (0..total).map(at).collect()
+    }
 }
 
 /// The output-region bit table, index `k_low + 2^m * o` (bit `o` of
 /// `words[k_low]`), where `2^m = words.len()`.
 pub fn out_table(words: &[u64], ell: usize) -> Vec<bool> {
-    let mut out = Vec::with_capacity(words.len() << ell);
-    for o in 0..(1usize << ell) {
-        for &w in words {
-            out.push((w >> o) & 1 == 1);
-        }
+    if words.is_empty() {
+        return Vec::new();
     }
-    out
+    let total = words.len() << ell;
+    let at = |idx: usize| (words[idx % words.len()] >> (idx / words.len())) & 1 == 1;
+    if total >= PAR_THRESHOLD {
+        (0..total).into_par_iter().map(at).collect()
+    } else {
+        (0..total).map(at).collect()
+    }
 }
 
 fn absorb(tr: &mut Transcript, label: &[u8], c: &TwistClaims) {
@@ -296,17 +324,21 @@ fn coeffs(tr: &mut Transcript, label: &[u8], p: usize, a: usize) -> (Vec<K>, Vec
 
 /// `Φ(k) = alpha0 + Σ_t alphas[t] k_t` as a table over Boolean `k`.
 fn phi_k(alpha0: K, alphas: &[K], a: usize) -> Vec<K> {
-    let mut out = Vec::with_capacity(1usize << a);
-    for k in 0..(1usize << a) {
+    let nk = 1usize << a;
+    let at = |k: usize| {
         let mut v = alpha0;
         for (t, &al) in alphas.iter().enumerate().take(a) {
             if (k >> t) & 1 == 1 {
                 v += al;
             }
         }
-        out.push(v);
+        v
+    };
+    if nk >= PAR_THRESHOLD {
+        (0..nk).into_par_iter().map(at).collect()
+    } else {
+        (0..nk).map(at).collect()
     }
-    out
 }
 
 /// Table layout: `[eq, V, I, ra_0..ra_p, phi_0..phi_p]`.
@@ -325,17 +357,20 @@ fn rw_combine(p: usize, beta: &[K], v: &[K]) -> K {
 /// `g(j) = Σ_k eq(r_k, k) full[k + NK j]`.
 fn k_rows(full: &[bool], nk: usize, t: usize, r_k: &[K]) -> Vec<K> {
     let e = eq_table(r_k);
-    let mut out = Vec::with_capacity(t);
-    for j in 0..t {
+    let row = |j: usize| {
         let mut acc = K::ZERO;
         for k in 0..nk {
             if full[k + nk * j] {
                 acc += e[k];
             }
         }
-        out.push(acc);
+        acc
+    };
+    if full.len() >= PAR_THRESHOLD {
+        (0..t).into_par_iter().map(row).collect()
+    } else {
+        (0..t).map(row).collect()
     }
-    out
 }
 
 fn s_out_bits(final_mem: &FinalMem, a: usize) -> Vec<K> {
@@ -462,8 +497,7 @@ pub fn twist_prove(
     // V(k, j) = Val~(k, r_o, j) by replaying the increments; I(j) = Inc~(r_o, j)
     let mut state = m0.to_vec();
     let mut big_v = vec![vec![K::ZERO; t]; nk];
-    let (mut big_i, mut incs) = (Vec::with_capacity(t), Vec::with_capacity(t));
-    for j in 0..t {
+    let inc_at = |j: usize| {
         let (mut iv, mut acc) = (0u64, K::ZERO);
         for (o, &e) in eo.iter().enumerate() {
             if wit.inc[o + l * j] {
@@ -471,36 +505,71 @@ pub fn twist_prove(
                 acc += e;
             }
         }
-        incs.push(iv);
-        big_i.push(acc);
-    }
-    for j in 0..t {
-        for k in 0..nk {
-            let mut acc = K::ZERO;
-            let sv = state[k];
-            for (o, &e) in eo.iter().enumerate() {
-                if (sv >> o) & 1 == 1 {
-                    acc += e;
-                }
+        (iv, acc)
+    };
+    let pairs: Vec<(u64, K)> = if t * l >= PAR_THRESHOLD {
+        (0..t).into_par_iter().map(inc_at).collect()
+    } else {
+        (0..t).map(inc_at).collect()
+    };
+    let (incs, big_i): (Vec<u64>, Vec<K>) = pairs.into_iter().unzip();
+    // `state` is indexed by `k < nk` below (the sequential code panicked on
+    // a short `m0`; the parallel zip would silently truncate instead).
+    assert_eq!(state.len(), nk, "twist_prove: m0 must have 2^a words");
+    // The state update across `j` is sequential; within one `j` the `V(·, j)`
+    // row and the state XOR are independent across `k`.
+    let val_at = |sv: u64| {
+        let mut acc = K::ZERO;
+        for (o, &e) in eo.iter().enumerate() {
+            if (sv >> o) & 1 == 1 {
+                acc += e;
             }
-            big_v[k][j] = acc;
         }
-        for k in 0..nk {
-            if fulls[p][k + nk * j] {
-                state[k] ^= incs[j];
+        acc
+    };
+    for j in 0..t {
+        if nk * l >= PAR_THRESHOLD {
+            big_v
+                .par_iter_mut()
+                .zip(state.par_iter())
+                .for_each(|(row, &sv)| row[j] = val_at(sv));
+            let wa_j = &fulls[p][nk * j..nk * (j + 1)];
+            state
+                .par_iter_mut()
+                .zip(wa_j.par_iter())
+                .for_each(|(sv, &hit)| {
+                    if hit {
+                        *sv ^= incs[j];
+                    }
+                });
+        } else {
+            for k in 0..nk {
+                big_v[k][j] = val_at(state[k]);
+            }
+            for k in 0..nk {
+                if fulls[p][k + nk * j] {
+                    state[k] ^= incs[j];
+                }
             }
         }
     }
 
     // Sum-check domain index j + T*k (cycle variables first, §7.5 step 3).
-    let dom = |f: &dyn Fn(usize, usize) -> K| -> Vec<K> {
-        let mut out = Vec::with_capacity(t * nk);
-        for k in 0..nk {
-            for j in 0..t {
-                out.push(f(j, k));
+    let dom = |f: &(dyn Fn(usize, usize) -> K + Sync)| -> Vec<K> {
+        if t * nk >= PAR_THRESHOLD {
+            (0..t * nk)
+                .into_par_iter()
+                .map(|idx| f(idx % t, idx / t))
+                .collect()
+        } else {
+            let mut out = Vec::with_capacity(t * nk);
+            for k in 0..nk {
+                for j in 0..t {
+                    out.push(f(j, k));
+                }
             }
+            out
         }
-        out
     };
     let eqc = eq_table(&claims.r_c);
     let mut tables = vec![
@@ -520,13 +589,7 @@ pub fn twist_prove(
         move |v: &[K]| rw_combine(p, &beta, v)
     };
     // The honest prover sums its actual tables (not the claimed value).
-    let mut claim = K::ZERO;
-    let mut vals: Vec<K> = Vec::with_capacity(tables.len());
-    for i in 0..t * nk {
-        vals.clear();
-        vals.extend(tables.iter().map(|tb| tb[i]));
-        claim += combine(&vals);
-    }
+    let claim = combine_sum(&tables, &combine);
     let (rw, r, mles) = sumcheck_prove(
         claim,
         tables,
@@ -544,10 +607,7 @@ pub fn twist_prove(
     // Val evaluation
     let wa_r = k_rows(&fulls[p], nk, t, &r_k);
     let lt = lt_table(&r_j);
-    let mut claim = K::ZERO;
-    for j in 0..t {
-        claim += lt[j] * wa_r[j] * big_i[j];
-    }
+    let claim = xor_sum(t, &|j| lt[j] * wa_r[j] * big_i[j]);
     let mul3 = |v: &[K]| v[0] * v[1] * v[2];
     let (val, s_v, mles) = sumcheck_prove(
         claim,
@@ -570,20 +630,21 @@ pub fn twist_prove(
         rkf.extend(s_out_bits(final_mem, a));
         let eof = eq_table(&rof);
         let wa_f = k_rows(&fulls[p], nk, t, &rkf);
-        let mut i_f = Vec::with_capacity(t);
-        for j in 0..t {
+        let if_at = |j: usize| {
             let mut acc = K::ZERO;
             for (o, &e) in eof.iter().enumerate() {
                 if wit.inc[o + l * j] {
                     acc += e;
                 }
             }
-            i_f.push(acc);
-        }
-        let mut claim = K::ZERO;
-        for j in 0..t {
-            claim += wa_f[j] * i_f[j];
-        }
+            acc
+        };
+        let i_f: Vec<K> = if t * l >= PAR_THRESHOLD {
+            (0..t).into_par_iter().map(if_at).collect()
+        } else {
+            (0..t).map(if_at).collect()
+        };
+        let claim = xor_sum(t, &|j| wa_f[j] * i_f[j]);
         let mul2 = |v: &[K]| v[0] * v[1];
         let (fin_sc, sf, mles) = sumcheck_prove(
             claim,

@@ -7,7 +7,9 @@ use core::fmt;
 use om_field::K;
 use om_transcript::{Transcript, u64le};
 
-use crate::mle::bind_low;
+use rayon::prelude::*;
+
+use crate::mle::{PAR_THRESHOLD, bind_low};
 
 /// Verification failure (Python `sumcheck.VerificationError`; defined here
 /// and reused by every later crate, per C8).
@@ -44,7 +46,8 @@ pub struct SumcheckProof {
 
 /// A boxed summand combine function over per-table values, as built by
 /// [`batched_combine`] and as accepted (by reference) by [`sumcheck_prove`].
-pub type BoxedCombine = Box<dyn Fn(&[K]) -> K>;
+/// `Send + Sync` so the prover may evaluate it from rayon threads.
+pub type BoxedCombine = Box<dyn Fn(&[K]) -> K + Send + Sync>;
 
 /// Normative cap on one powers-of-γ claim batch (spec 03 §3.6):
 /// `(n−1)/|K| < 2^{-120}` only up to `n = 256`.
@@ -98,6 +101,125 @@ pub fn interpolate_eval(ys: &[K], r: K) -> K {
     acc
 }
 
+/// `Σ_i combine([T[i] for T in tables])` over equal-length tables.
+///
+/// Parallel for large tables: `K` addition is XOR, so the reduction order
+/// does not affect the result. This is the honest prover's claim sum that
+/// callers compute before [`sumcheck_prove`].
+///
+/// # Panics
+/// Panics if `tables` is empty.
+pub fn combine_sum(tables: &[Vec<K>], combine: &(dyn Fn(&[K]) -> K + Sync)) -> K {
+    assert!(!tables.is_empty(), "combine_sum: no tables");
+    let size = tables[0].len();
+    if size >= PAR_THRESHOLD {
+        let n = tables.len();
+        let (acc, _) = (0..size)
+            .into_par_iter()
+            .fold(
+                || (K::ZERO, Vec::with_capacity(n)),
+                |(mut acc, mut vals), i| {
+                    vals.clear();
+                    vals.extend(tables.iter().map(|tb| tb[i]));
+                    acc += combine(&vals);
+                    (acc, vals)
+                },
+            )
+            .reduce(
+                || (K::ZERO, Vec::new()),
+                |(a, _), (b, scratch)| (a + b, scratch),
+            );
+        acc
+    } else {
+        let mut acc = K::ZERO;
+        let mut vals: Vec<K> = Vec::with_capacity(tables.len());
+        for i in 0..size {
+            vals.clear();
+            vals.extend(tables.iter().map(|tb| tb[i]));
+            acc += combine(&vals);
+        }
+        acc
+    }
+}
+
+/// One round's evaluations `[g(t_0), …, g(t_degree)]` for the low variable
+/// of `tables`, i.e. `Σ_i combine` of the pair interpolants
+/// `T[2i] + t·(T[2i] + T[2i+1])` at each `t_k`, `k = 0..=degree`.
+///
+/// Parallel for large tables (exact: each `g(t_k)` is a XOR-sum of the same
+/// per-`i` terms as the sequential loop).
+pub fn sumcheck_round_evals(
+    tables: &[Vec<K>],
+    combine: &(dyn Fn(&[K]) -> K + Sync),
+    degree: usize,
+) -> Vec<K> {
+    let half = tables[0].len() / 2;
+    if tables[0].len() >= PAR_THRESHOLD {
+        let n = tables.len();
+        let (ev, ..) = (0..half)
+            .into_par_iter()
+            .fold(
+                || {
+                    (
+                        vec![K::ZERO; degree + 1],
+                        vec![K::ZERO; n],
+                        vec![K::ZERO; n],
+                        vec![K::ZERO; n],
+                    )
+                },
+                |(mut ev, mut base, mut diff, mut vals), i| {
+                    for (idx, table) in tables.iter().enumerate() {
+                        let (a, b) = (table[2 * i], table[2 * i + 1]);
+                        base[idx] = a;
+                        diff[idx] = a + b;
+                    }
+                    for (k, slot) in ev.iter_mut().enumerate() {
+                        let t = K::t(k as u128);
+                        for idx in 0..n {
+                            vals[idx] = base[idx] + t * diff[idx];
+                        }
+                        *slot += combine(&vals);
+                    }
+                    (ev, base, diff, vals)
+                },
+            )
+            .reduce(
+                || {
+                    (
+                        vec![K::ZERO; degree + 1],
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                },
+                |(mut a, _, _, _), (b, base, diff, vals)| {
+                    for (x, y) in a.iter_mut().zip(&b) {
+                        *x += *y;
+                    }
+                    (a, base, diff, vals)
+                },
+            );
+        ev
+    } else {
+        let mut ev = Vec::with_capacity(degree + 1);
+        let mut vals: Vec<K> = Vec::with_capacity(tables.len());
+        for k in 0..=degree {
+            let t = K::t(k as u128);
+            let mut acc = K::ZERO;
+            for i in 0..half {
+                vals.clear();
+                for table in tables {
+                    let (a, b) = (table[2 * i], table[2 * i + 1]);
+                    vals.push(a + t * (a + b));
+                }
+                acc += combine(&vals);
+            }
+            ev.push(acc);
+        }
+        ev
+    }
+}
+
 /// Prove `Σ_b combine([T[b] for T in tables]) == claim`, where `combine`
 /// must have degree at most `degree` in each variable (spec 03 §3.5).
 ///
@@ -116,7 +238,7 @@ pub fn interpolate_eval(ys: &[K], r: K) -> K {
 pub fn sumcheck_prove(
     claim: K,
     mut tables: Vec<Vec<K>>,
-    combine: &dyn Fn(&[K]) -> K,
+    combine: &(dyn Fn(&[K]) -> K + Sync),
     degree: usize,
     transcript: &mut Transcript,
     label: &[u8],
@@ -135,24 +257,9 @@ pub fn sumcheck_prove(
     let mut msgs = Vec::with_capacity(m);
     let mut rs = Vec::with_capacity(m);
     let mut cur = claim;
-    let mut vals: Vec<K> = Vec::with_capacity(tables.len());
     for _ in 0..m {
-        let half = tables[0].len() / 2;
         // Evaluations of g_i at t_0, t_1 (check only), t_2..t_degree.
-        let mut ev = Vec::with_capacity(degree + 1);
-        for k in 0..=degree {
-            let t = K::t(k as u128);
-            let mut acc = K::ZERO;
-            for i in 0..half {
-                vals.clear();
-                for table in &tables {
-                    let (a, b) = (table[2 * i], table[2 * i + 1]);
-                    vals.push(a + t * (a + b));
-                }
-                acc += combine(&vals);
-            }
-            ev.push(acc);
-        }
+        let ev = sumcheck_round_evals(&tables, combine, degree);
         assert_eq!(
             ev[0] + ev[1],
             cur,

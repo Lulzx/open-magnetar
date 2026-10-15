@@ -3,6 +3,10 @@
 //! `ŵ[i][b] = Ŵ_i(β_b)` for `b ≥ i` (recomputed on demand here).
 
 use om_field::K;
+use rayon::prelude::*;
+
+/// Codewords at least this large use rayon within `encode` stages.
+const PAR_THRESHOLD: usize = 1 << 14;
 
 fn wh_table(m: usize) -> Vec<Vec<K>> {
     let mut wh: Vec<Vec<K>> = Vec::with_capacity(m);
@@ -95,19 +99,47 @@ pub fn encode(msg: &[K], log_rate: usize) -> Vec<K> {
     a[..msg.len()].copy_from_slice(msg);
     for i in (0..m).rev() {
         let half = 1 << i;
-        for c in 0..1 << (m - 1 - i) {
-            let mut t = 0u128;
-            for d in 0..(m - 1 - i) {
-                if (c >> d) & 1 == 1 {
-                    t ^= wh[i][i + 1 + d].value();
+        let blocks = 1usize << (m - 1 - i);
+        let tks: Vec<K> = (0..blocks)
+            .map(|c| {
+                let mut t = 0u128;
+                for d in 0..(m - 1 - i) {
+                    if (c >> d) & 1 == 1 {
+                        t ^= wh[i][i + 1 + d].value();
+                    }
                 }
+                K::from_u128(t)
+            })
+            .collect();
+        // Blocks of one stage touch disjoint pairs, as do the pairs within
+        // a block, so either level parallelises exactly.
+        let butterfly = |lo: &mut K, hi: &mut K, tk: K| {
+            let new_lo = *lo + tk * *hi;
+            *lo = new_lo;
+            *hi += new_lo;
+        };
+        if a.len() >= PAR_THRESHOLD && blocks >= 4 {
+            a.par_chunks_mut(2 * half)
+                .zip(tks.par_iter())
+                .for_each(|(block, &tk)| {
+                    let (lo, hi) = block.split_at_mut(half);
+                    for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
+                        butterfly(l, h, tk);
+                    }
+                });
+        } else if a.len() >= PAR_THRESHOLD && half >= 4096 {
+            for (block, &tk) in a.chunks_mut(2 * half).zip(&tks) {
+                let (lo, hi) = block.split_at_mut(half);
+                lo.par_iter_mut()
+                    .zip(hi.par_iter_mut())
+                    .for_each(|(l, h)| butterfly(l, h, tk));
             }
-            let tk = K::from_u128(t);
-            let base = c << (i + 1);
-            for j in base..base + half {
-                let lo = a[j] + tk * a[j + half];
-                a[j] = lo;
-                a[j + half] += lo;
+        } else {
+            for (block, &tk) in a.chunks_mut(2 * half).zip(&tks) {
+                let (lo, hi) = block.split_at_mut(half);
+                for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
+                    butterfly(l, h, tk);
+                }
             }
         }
     }

@@ -32,5 +32,6 @@ pub mod sumcheck;
 pub use mle::{bind_low, eq_eval, eq_table, mle_eval, mle_eval_bits};
 pub use sumcheck::{
     BoxedCombine, MAX_BATCH_CLAIMS, SumcheckProof, VerificationError, batch_claims,
-    batched_combine, interpolate_eval, sumcheck_init, sumcheck_prove, sumcheck_verify,
+    batched_combine, combine_sum, interpolate_eval, sumcheck_init, sumcheck_prove,
+    sumcheck_round_evals, sumcheck_verify,
 };

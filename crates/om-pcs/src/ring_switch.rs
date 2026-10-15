@@ -7,6 +7,10 @@
 use om_field::K;
 use om_sumcheck::{SumcheckProof, VerificationError, eq_table, sumcheck_prove, sumcheck_verify};
 use om_transcript::Transcript;
+use rayon::prelude::*;
+
+/// Tables at least this large use rayon (exact elementwise maps).
+const PAR_THRESHOLD: usize = 1 << 14;
 
 /// `κ = 7` (§4.5).
 pub const KAPPA: usize = 7;
@@ -31,23 +35,30 @@ pub fn pack(bits: &[bool]) -> Vec<K> {
         bits.len().is_multiple_of(W),
         "bit vector length must be a multiple of 128"
     );
-    bits.chunks(W).map(K::pack).collect()
+    if bits.len() >= PAR_THRESHOLD {
+        bits.par_chunks(W).map(K::pack).collect()
+    } else {
+        bits.chunks(W).map(K::pack).collect()
+    }
 }
 
 /// `s_j = Σ_v eq(r_hi, v) · bits[j + 128v]`.
 pub fn partial_evals(bits: &[bool], r_hi: &[K]) -> Vec<K> {
     let eqt = eq_table(r_hi);
-    (0..W)
-        .map(|j| {
-            let mut acc = 0u128;
-            for (v, e) in eqt.iter().enumerate() {
-                if bits[j + W * v] {
-                    acc ^= e.value();
-                }
+    let at = |j: usize| {
+        let mut acc = 0u128;
+        for (v, e) in eqt.iter().enumerate() {
+            if bits[j + W * v] {
+                acc ^= e.value();
             }
-            K::from_u128(acc)
-        })
-        .collect()
+        }
+        K::from_u128(acc)
+    };
+    if bits.len() >= PAR_THRESHOLD {
+        (0..W).into_par_iter().map(at).collect()
+    } else {
+        (0..W).map(at).collect()
+    }
 }
 
 /// `c_i = pack_j(bit_i(s_j))` (left coordinates → right coordinates).
@@ -66,20 +77,23 @@ pub fn transpose_bits(s: &[K]) -> Vec<K> {
 /// `a[v] = Σ_i eq(ρ, i) · bit_i(eq(r_hi, v))`.
 pub fn a_table(r_hi: &[K], rho: &[K]) -> Vec<K> {
     let er: Vec<u128> = eq_table(rho).iter().map(|e| e.value()).collect();
-    eq_table(r_hi)
-        .iter()
-        .map(|e| {
-            let (mut acc, mut x, mut i) = (0u128, e.value(), 0usize);
-            while x != 0 {
-                if x & 1 == 1 {
-                    acc ^= er[i];
-                }
-                x >>= 1;
-                i += 1;
+    let eqt = eq_table(r_hi);
+    let at = |e: &K| {
+        let (mut acc, mut x, mut i) = (0u128, e.value(), 0usize);
+        while x != 0 {
+            if x & 1 == 1 {
+                acc ^= er[i];
             }
-            K::from_u128(acc)
-        })
-        .collect()
+            x >>= 1;
+            i += 1;
+        }
+        K::from_u128(acc)
+    };
+    if eqt.len() >= PAR_THRESHOLD {
+        eqt.par_iter().map(at).collect()
+    } else {
+        eqt.iter().map(at).collect()
+    }
 }
 
 fn mul_tensor(t: &[K], x: K, y: K) -> Vec<K> {

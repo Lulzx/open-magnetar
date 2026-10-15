@@ -28,6 +28,7 @@ use om_sumcheck::{
     mle_eval_bits, sumcheck_prove, sumcheck_verify,
 };
 use om_transcript::{Transcript, u64le};
+use rayon::prelude::*;
 
 use crate::r1cs::{R1CS, build_z, check_witness_bits, public_part, simd_satisfied};
 
@@ -192,15 +193,41 @@ pub fn segment_table(w: &[Vec<bool>], sg: &Segment) -> Vec<bool> {
 /// `g(t) = sum_i E(t)(A(t)B(t) + C(t))` at `t_0..t_3`, where
 /// `T(t) = T[2i] + t (T[2i] + T[2i+1])`.
 fn g_evals(e: &[K], a: &[K], b: &[K], c: &[K]) -> [K; 4] {
-    let mut acc = [K::ZERO; 4];
-    for i in 0..e.len() / 2 {
+    let half = e.len() / 2;
+    let add_i = |acc: &mut [K; 4], i: usize| {
         for (k, slot) in acc.iter_mut().enumerate() {
             let t = K::t(k as u128);
             let at = |tab: &[K]| tab[2 * i] + t * (tab[2 * i] + tab[2 * i + 1]);
             *slot += at(e) * (at(a) * at(b) + at(c));
         }
+    };
+    // Each slot is a XOR-sum over `i`, so a parallel reduction is exact.
+    if e.len() >= 1 << 14 {
+        (0..half)
+            .into_par_iter()
+            .fold(
+                || [K::ZERO; 4],
+                |mut acc, i| {
+                    add_i(&mut acc, i);
+                    acc
+                },
+            )
+            .reduce(
+                || [K::ZERO; 4],
+                |mut x, y| {
+                    for (s, v) in x.iter_mut().zip(y) {
+                        *s += v;
+                    }
+                    x
+                },
+            )
+    } else {
+        let mut acc = [K::ZERO; 4];
+        for i in 0..half {
+            add_i(&mut acc, i);
+        }
+        acc
     }
-    acc
 }
 
 fn default_names(t: usize) -> Vec<Vec<u8>> {

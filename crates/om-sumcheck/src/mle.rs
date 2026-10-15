@@ -10,6 +10,13 @@
 //! `ValueError` → panic mapping used by `om-transcript`.
 
 use om_field::K;
+use rayon::prelude::*;
+
+/// Tables at least this large use rayon; smaller ones stay sequential to
+/// avoid thread-pool overhead in the many small sum-checks. All parallel
+/// maps/reductions here are exact: elementwise maps preserve order and
+/// `K` addition is XOR (associative and commutative).
+pub(crate) const PAR_THRESHOLD: usize = 1 << 14;
 
 /// `eq(x, y) = Π_i (1 + x_i + y_i)` (characteristic 2).
 ///
@@ -32,9 +39,26 @@ pub fn eq_eval(x: &[K], y: &[K]) -> K {
 pub fn eq_table(r: &[K]) -> Vec<K> {
     let mut t = vec![K::ONE];
     for &rj in r {
-        let mut next = Vec::with_capacity(2 * t.len());
-        next.extend(t.iter().map(|&e| e * (K::ONE + rj)));
-        next.extend(t.iter().map(|&e| e * rj));
+        // Each doubling step is elementwise over the previous table, so
+        // large steps can be built in parallel with order preserved.
+        let next = if 2 * t.len() >= PAR_THRESHOLD {
+            let half = t.len();
+            (0..2 * half)
+                .into_par_iter()
+                .map(|i| {
+                    if i < half {
+                        t[i] * (K::ONE + rj)
+                    } else {
+                        t[i - half] * rj
+                    }
+                })
+                .collect()
+        } else {
+            let mut next = Vec::with_capacity(2 * t.len());
+            next.extend(t.iter().map(|&e| e * (K::ONE + rj)));
+            next.extend(t.iter().map(|&e| e * rj));
+            next
+        };
         t = next;
     }
     t
@@ -51,9 +75,16 @@ pub fn bind_low(table: &[K], r: K) -> Vec<K> {
         table.len().is_multiple_of(2),
         "bind_low: table length must be even"
     );
-    (0..table.len() / 2)
-        .map(|i| table[2 * i] + r * (table[2 * i] + table[2 * i + 1]))
-        .collect()
+    if table.len() >= PAR_THRESHOLD {
+        (0..table.len() / 2)
+            .into_par_iter()
+            .map(|i| table[2 * i] + r * (table[2 * i] + table[2 * i + 1]))
+            .collect()
+    } else {
+        (0..table.len() / 2)
+            .map(|i| table[2 * i] + r * (table[2 * i] + table[2 * i + 1]))
+            .collect()
+    }
 }
 
 fn check_table_len(len: usize, num_vars: usize) {
@@ -90,7 +121,11 @@ pub fn mle_eval(table: &[K], r: &[K]) -> K {
 /// Panics if `table.len() != 2^r.len()`.
 pub fn mle_eval_bits(table: &[bool], r: &[K]) -> K {
     check_table_len(table.len(), r.len());
-    let mut t: Vec<K> = table.iter().map(|&b| K::from_bit(b)).collect();
+    let mut t: Vec<K> = if table.len() >= PAR_THRESHOLD {
+        table.par_iter().map(|&b| K::from_bit(b)).collect()
+    } else {
+        table.iter().map(|&b| K::from_bit(b)).collect()
+    };
     for &ri in r {
         t = bind_low(&t, ri);
     }

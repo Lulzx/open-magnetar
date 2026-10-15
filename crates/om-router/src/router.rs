@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use om_field::K;
 use om_memcheck::onehot::EvalClaim;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, bind_low, eq_eval, eq_table, interpolate_eval, sumcheck_init,
-    sumcheck_prove, sumcheck_verify,
+    SumcheckProof, VerificationError, bind_low, combine_sum, eq_eval, eq_table, interpolate_eval,
+    sumcheck_init, sumcheck_prove, sumcheck_round_evals, sumcheck_verify,
 };
 use om_transcript::Transcript;
 
@@ -439,11 +439,7 @@ pub fn shift_prove(
             }
         }
     }
-    let mut claim = K::ZERO;
-    for i in 0..tabs[0].len() {
-        let vals: Vec<K> = tabs.iter().map(|tab| tab[i]).collect();
-        claim += mul5(&vals);
-    }
+    let claim = combine_sum(&tabs, &mul5);
     let (sc, r, mles) = sumcheck_prove(claim, tabs, &mul5, 4, transcript, &sublabel(label, b"/sc"));
     let evals = vec![mles[1], mles[2], mles[3]];
     transcript.absorb_ks(&sublabel(label, b"/evals"), &evals);
@@ -579,11 +575,7 @@ pub fn store_prove(
         }
     }
     let f = store_combine(na);
-    let mut claim = K::ZERO;
-    for i in 0..tabs[0].len() {
-        let vals: Vec<K> = tabs.iter().map(|tab| tab[i]).collect();
-        claim += f(&vals);
-    }
+    let claim = combine_sum(&tabs, &f);
     let (sc, r, mles) = sumcheck_prove(
         claim,
         tabs,
@@ -653,9 +645,9 @@ fn tpt(a: K, b: K, t: K) -> K {
 }
 
 fn bind_table(table: &[K], r: K) -> Vec<K> {
-    (0..table.len() / 2)
-        .map(|i| tpt(table[2 * i], table[2 * i + 1], r))
-        .collect()
+    // Identical to `bind_low` (`tpt(a, b, r) = a + r·(a + b)`), which
+    // parallelises large tables.
+    bind_low(table, r)
 }
 
 /// Continue a sum-check (already initialised) for `nrounds` rounds on
@@ -663,7 +655,7 @@ fn bind_table(table: &[K], r: K) -> Vec<K> {
 #[allow(clippy::too_many_arguments)]
 fn dense_rounds(
     mut tabs: Vec<Vec<K>>,
-    combine: &dyn Fn(&[K]) -> K,
+    combine: &(dyn Fn(&[K]) -> K + Sync),
     degree: usize,
     mut cur: K,
     transcript: &mut Transcript,
@@ -675,20 +667,7 @@ fn dense_rounds(
     let msg_label = sublabel(label, b"/msg");
     let chal_label = sublabel(label, b"/chal");
     for _ in 0..nrounds {
-        let half = tabs[0].len() / 2;
-        let mut ev = Vec::with_capacity(degree + 1);
-        for k in 0..=degree {
-            let t = K::t(k as u128);
-            let mut acc = K::ZERO;
-            for i in 0..half {
-                let vals: Vec<K> = tabs
-                    .iter()
-                    .map(|tab| tab[2 * i] + t * (tab[2 * i] + tab[2 * i + 1]))
-                    .collect();
-                acc += combine(&vals);
-            }
-            ev.push(acc);
-        }
+        let ev = sumcheck_round_evals(&tabs, combine, degree);
         assert_eq!(
             ev[0] + ev[1],
             cur,

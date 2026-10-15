@@ -411,3 +411,12 @@ fn final_untouched_region_equals_m0() {
     )
     .unwrap();
 }
+
+/// `T·NK = 2^15` crosses the rayon threshold for the `dom` tables,
+/// `full_table`, the per-`j` `V` rows (`NK·2^ell = 2^14`) and the rw
+/// sum-check; prove/verify and every output claim are checked exactly as
+/// in the small cases (`run_case`).
+#[test]
+fn parallel_threshold_case() {
+    run_case(8, 2, 1, 7, 6, 99, Some((2, 3)), true);
+}

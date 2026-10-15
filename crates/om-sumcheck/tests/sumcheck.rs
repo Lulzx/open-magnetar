@@ -2,8 +2,8 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, batch_claims, batched_combine, eq_eval, eq_table, interpolate_eval, mle_eval,
-    sumcheck_prove, sumcheck_verify,
+    SumcheckProof, batch_claims, batched_combine, bind_low, combine_sum, eq_eval, eq_table,
+    interpolate_eval, mle_eval, sumcheck_prove, sumcheck_round_evals, sumcheck_verify,
 };
 use om_transcript::Transcript;
 
@@ -334,4 +334,55 @@ fn test_verify_degree_zero_panics() {
         &mut Transcript::new_default(b"x"),
         b"s",
     );
+}
+
+/// Tables of `2^15` entries cross the rayon threshold (`2^14`): every
+/// parallel result must equal the sequential definition computed here.
+#[test]
+fn test_parallel_large_tables_match_sequential() {
+    let (d, m) = (3usize, 15usize);
+    let (tables, claim) = setup(d, m, 42);
+    let f = combine(d);
+    assert_eq!(combine_sum(&tables, &f), claim);
+
+    // Round evals vs the sequential per-point definition.
+    let ev = sumcheck_round_evals(&tables, &f, d);
+    let mut expect = Vec::new();
+    for k in 0..=d {
+        let t = K::t(k as u128);
+        let mut acc = K::ZERO;
+        for i in 0..tables[0].len() / 2 {
+            let vals: Vec<K> = tables
+                .iter()
+                .map(|tab| tab[2 * i] + t * (tab[2 * i] + tab[2 * i + 1]))
+                .collect();
+            acc += f(&vals);
+        }
+        expect.push(acc);
+    }
+    assert_eq!(ev, expect);
+
+    // bind_low / eq_table vs their sequential formulas.
+    let r = K::from_u128(0x0123_4567_89ab_cdef_fedc_ba98_7654_3210);
+    let bound = bind_low(&tables[0], r);
+    let expect_bound: Vec<K> = (0..tables[0].len() / 2)
+        .map(|i| tables[0][2 * i] + r * (tables[0][2 * i] + tables[0][2 * i + 1]))
+        .collect();
+    assert_eq!(bound, expect_bound);
+
+    let mut rng = Rng(7);
+    let pt: Vec<K> = (0..m).map(|_| rng.k()).collect();
+    let eqt = eq_table(&pt);
+    for (i, &e) in eqt.iter().enumerate() {
+        let bits: Vec<K> = (0..m).map(|j| K::from_bit((i >> j) & 1 == 1)).collect();
+        assert_eq!(e, eq_eval(&pt, &bits), "eq_table[{i}]");
+    }
+
+    // Full prove/verify over the parallel path, final evals cross-checked
+    // against direct MLE evaluations.
+    let pv = run_pv(d, m, 42);
+    assert_eq!(pv.r, pv.rs);
+    assert_eq!(pv.exp, combine(d)(&pv.evals));
+    let direct: Vec<K> = pv.tables.iter().map(|t| mle_eval(t, &pv.r)).collect();
+    assert_eq!(pv.evals, direct);
 }

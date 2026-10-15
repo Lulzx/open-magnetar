@@ -3,10 +3,13 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, eq_table, mle_eval, sumcheck_prove, sumcheck_verify,
+    SumcheckProof, VerificationError, combine_sum, eq_table, mle_eval, sumcheck_prove,
+    sumcheck_verify,
 };
 use om_transcript::{Transcript, u64le};
+use rayon::prelude::*;
 
+use crate::onehot::PAR_THRESHOLD;
 use crate::onehot::{
     EvalClaim, OneHotProof, VirtGroup, VirtProof, VirtTerm, full_table, onehot_prove,
     onehot_verify, virt_prove, virt_verify,
@@ -60,17 +63,20 @@ fn ra_at(params: &ShoutParams, comps: &[Vec<bool>], r_c: &[K]) -> Vec<K> {
     let (nk, t) = (1usize << a, 1usize << n);
     let full = full_table(comps, a, params.d, t);
     let e = eq_table(r_c);
-    let mut out = Vec::with_capacity(nk);
-    for k in 0..nk {
+    let at_k = |k: usize| {
         let mut acc = K::ZERO;
         for j in 0..t {
             if full[k + nk * j] {
                 acc += e[j];
             }
         }
-        out.push(acc);
+        acc
+    };
+    if full.len() >= PAR_THRESHOLD {
+        (0..nk).into_par_iter().map(at_k).collect()
+    } else {
+        (0..nk).map(at_k).collect()
     }
-    out
 }
 
 /// The honest claim group at cycle point `r_c` for the given table and
@@ -127,8 +133,8 @@ fn phi_table(
     cols: &[usize],
     a: usize,
 ) -> Vec<K> {
-    let mut out = Vec::with_capacity(1usize << a);
-    for k in 0..(1usize << a) {
+    let nk = 1usize << a;
+    let base = |k: usize| {
         let mut v = alpha0;
         if let Some(alphas) = alphas {
             for (t, &al) in alphas.iter().enumerate().take(a) {
@@ -137,11 +143,22 @@ fn phi_table(
                 }
             }
         }
-        out.push(v);
-    }
+        v
+    };
+    let mut out: Vec<K> = if nk >= PAR_THRESHOLD {
+        (0..nk).into_par_iter().map(base).collect()
+    } else {
+        (0..nk).map(base).collect()
+    };
     for (&g, &h) in gammas.iter().zip(cols) {
-        for (v, &tv) in out.iter_mut().zip(&table[h]) {
-            *v += g * tv;
+        if nk >= PAR_THRESHOLD {
+            out.par_iter_mut()
+                .zip(&table[h])
+                .for_each(|(v, &tv)| *v += g * tv);
+        } else {
+            for (v, &tv) in out.iter_mut().zip(&table[h]) {
+                *v += g * tv;
+            }
         }
     }
     out
@@ -240,13 +257,7 @@ pub fn shout_prove(
     let mut tables = ra_rs;
     tables.extend(phis);
     // The honest prover sums its actual tables (not the claimed value).
-    let mut claim = K::ZERO;
-    let mut vals: Vec<K> = Vec::with_capacity(tables.len());
-    for k in 0..(1usize << a) {
-        vals.clear();
-        vals.extend(tables.iter().map(|t| t[k]));
-        claim += combine(&vals);
-    }
+    let claim = combine_sum(&tables, &combine);
     let (sc, r_k, mles) = sumcheck_prove(
         claim,
         tables,

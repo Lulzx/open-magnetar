@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Multilinear extensions and sum-check for Open Magnetar (spec 03, CONVENTIONS C2/C3)"
 
 [dependencies]
+rayon.workspace = true
 om-field = { path = "../om-field" }
 om-transcript = { path = "../om-transcript" }
 

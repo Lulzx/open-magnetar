@@ -7,6 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use om_sumcheck::VerificationError;
 use om_transcript::Hasher;
+use rayon::prelude::*;
+
+/// Layers with at least this many hashes are built in parallel (hashing is
+/// comparatively expensive, so the threshold is lower than for field maps;
+/// digest order is preserved by `collect`).
+const PAR_HASHES: usize = 1024;
 
 /// A hash digest (length depends on the configured [`Hasher`]).
 pub type Digest = Vec<u8>;
@@ -68,15 +74,24 @@ impl MerkleTree {
     pub fn new(h: Hasher, leaves: &[Vec<u8>]) -> Self {
         let num_leaves = leaves.len();
         let depth = tree_depth(num_leaves);
-        let mut layer: Vec<Digest> = leaves.iter().map(|x| hash_leaf(h, x)).collect();
+        let mut layer: Vec<Digest> = if leaves.len() >= PAR_HASHES {
+            leaves.par_iter().map(|x| hash_leaf(h, x)).collect()
+        } else {
+            leaves.iter().map(|x| hash_leaf(h, x)).collect()
+        };
         layer.resize(1 << depth, empty_hash(h));
         let mut layers = vec![layer];
         while layers.last().expect("layers").len() > 1 {
             let prev = layers.last().expect("layers");
-            let next: Vec<Digest> = prev
-                .chunks(2)
-                .map(|pair| hash_node(h, &pair[0], &pair[1]))
-                .collect();
+            let next: Vec<Digest> = if prev.len() / 2 >= PAR_HASHES {
+                prev.par_chunks(2)
+                    .map(|pair| hash_node(h, &pair[0], &pair[1]))
+                    .collect()
+            } else {
+                prev.chunks(2)
+                    .map(|pair| hash_node(h, &pair[0], &pair[1]))
+                    .collect()
+            };
             layers.push(next);
         }
         MerkleTree {

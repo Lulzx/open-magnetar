@@ -11,11 +11,16 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, eq_eval, eq_table, sumcheck_prove, sumcheck_verify,
+    SumcheckProof, VerificationError, combine_sum, eq_eval, eq_table, sumcheck_prove,
+    sumcheck_verify,
 };
 use om_transcript::Transcript;
+use rayon::prelude::*;
 
 use crate::sublabel;
+
+/// Tables at least this large use rayon (exact elementwise maps / XOR sums).
+pub(crate) const PAR_THRESHOLD: usize = 1 << 14;
 
 /// An evaluation claim on a committed polynomial: `poly~(point) = value`
 /// (Python `onehot.EvalClaim`; spec 07 §7.1's `(poly, point, value)`).
@@ -88,20 +93,18 @@ pub fn comp_tables(addrs: &[usize], a: usize, d: usize) -> Vec<Vec<bool>> {
 pub fn full_table(comps: &[Vec<bool>], a: usize, d: usize, t: usize) -> Vec<bool> {
     let (ac, nk) = (a / d, 1usize << a);
     let nu = 1usize << ac;
-    let mut out = vec![false; nk * t];
-    for j in 0..t {
-        for k in 0..nk {
-            let mut v = true;
-            for (i, ch) in split_addr(k, a, d).into_iter().enumerate() {
-                v &= comps[i][ch + nu * j];
-                if !v {
-                    break;
-                }
-            }
-            out[k + nk * j] = v;
-        }
+    let mask = nu - 1;
+    // Flat index `k + nk * j`; each entry is an AND of `d` component bits,
+    // independent per entry.
+    let entry = |idx: usize| {
+        let (k, j) = (idx % nk, idx / nk);
+        (0..d).all(|i| comps[i][((k >> (i * ac)) & mask) + nu * j])
+    };
+    if nk * t >= PAR_THRESHOLD {
+        (0..nk * t).into_par_iter().map(entry).collect()
+    } else {
+        (0..nk * t).map(entry).collect()
     }
-    out
 }
 
 /// Split an address point `r_k ∈ K^a` into its `d` chunk points of
@@ -116,17 +119,20 @@ pub fn split_point(r_k: &[K], a: usize, d: usize) -> Vec<Vec<K>> {
 pub fn partial_eval_rows(table: &[bool], ac: usize, t: usize, r: &[K]) -> Vec<K> {
     let e = eq_table(r);
     let nu = 1usize << ac;
-    let mut out = Vec::with_capacity(t);
-    for j in 0..t {
+    let row = |j: usize| {
         let mut acc = K::ZERO;
         for u in 0..nu {
             if table[u + nu * j] {
                 acc += e[u];
             }
         }
-        out.push(acc);
+        acc
+    };
+    if table.len() >= PAR_THRESHOLD {
+        (0..t).into_par_iter().map(row).collect()
+    } else {
+        (0..t).map(row).collect()
     }
-    out
 }
 
 // ------------------------------------------------------------ one-hot check
@@ -205,13 +211,7 @@ pub fn onehot_prove(
     let lam_c = lam.clone();
     let combine = move |v: &[K]| onehot_combine(&lam_c, c, v);
     // The honest prover sums its actual tables (0 for valid rows).
-    let mut claim = K::ZERO;
-    let mut vals: Vec<K> = Vec::with_capacity(tables.len());
-    for j in 0..t {
-        vals.clear();
-        vals.extend(tables.iter().map(|tb| tb[j]));
-        claim += combine(&vals);
-    }
+    let claim = combine_sum(&tables, &combine);
     let (sc, s, mles) = sumcheck_prove(
         claim,
         tables,
@@ -407,13 +407,7 @@ pub fn virt_prove(
         }
     };
     // The honest prover sums the actual tables (not the claimed value).
-    let mut claim = K::ZERO;
-    let mut vals: Vec<K> = Vec::with_capacity(tables.len());
-    for j in 0..t {
-        vals.clear();
-        vals.extend(tables.iter().map(|tb| tb[j]));
-        claim += combine(&vals);
-    }
+    let claim = combine_sum(&tables, &combine);
     let (sc, s, mles) = sumcheck_prove(
         claim,
         tables,

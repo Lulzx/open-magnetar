@@ -80,3 +80,21 @@ fn monomials() {
         (0..4).map(K::t).collect::<Vec<_>>()
     );
 }
+
+/// A `2^14`-entry codeword crosses the rayon threshold in `encode`;
+/// sampled positions must match the defining sum over `basis_row`.
+#[test]
+fn large_encode_matches_definition_at_samples() {
+    let mut rng = Rng(11);
+    let (mu, r) = (13usize, 1usize);
+    let msg = rng.ks(1 << mu);
+    let cw = ntt::encode(&msg, r);
+    assert_eq!(cw.len(), 1 << (mu + r));
+    for q in [0usize, 1, 17, 4095, 8192, 12345, (1 << (mu + r)) - 1] {
+        let expect = msg
+            .iter()
+            .zip(ntt::basis_row(q, mu, mu + r))
+            .fold(K::ZERO, |acc, (&mj, g)| acc + mj * g);
+        assert_eq!(cw[q], expect, "q={q}");
+    }
+}

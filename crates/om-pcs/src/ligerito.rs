@@ -5,6 +5,10 @@
 use om_field::K;
 use om_sumcheck::{SumcheckProof, VerificationError, eq_table, sumcheck_prove, sumcheck_verify};
 use om_transcript::{Hasher, Transcript, u64le};
+use rayon::prelude::*;
+
+/// Tables at least this large use rayon (exact elementwise maps / XOR sums).
+const PAR_THRESHOLD: usize = 1 << 14;
 
 use crate::merkle::{Digest, MerkleTree, verify_multi};
 use crate::ntt;
@@ -339,13 +343,20 @@ pub fn column_bytes(col: &[K]) -> Vec<u8> {
 pub fn commit_level(h: Hasher, f: Vec<K>, k: usize, r: usize) -> LevelData {
     let rows = 1 << k;
     let cols = f.len() / rows;
-    let cw: Vec<Vec<K>> = (0..rows)
-        .map(|i| ntt::encode(&(0..cols).map(|j| f[i + rows * j]).collect::<Vec<_>>(), r))
-        .collect();
+    let encode_row =
+        |i: usize| ntt::encode(&(0..cols).map(|j| f[i + rows * j]).collect::<Vec<_>>(), r);
+    let cw: Vec<Vec<K>> = if f.len() >= PAR_THRESHOLD && rows > 1 {
+        (0..rows).into_par_iter().map(encode_row).collect()
+    } else {
+        (0..rows).map(encode_row).collect()
+    };
     let n_cw = cw[0].len();
-    let leaves: Vec<Vec<u8>> = (0..n_cw)
-        .map(|q| column_bytes(&(0..rows).map(|i| cw[i][q]).collect::<Vec<_>>()))
-        .collect();
+    let leaf = |q: usize| column_bytes(&(0..rows).map(|i| cw[i][q]).collect::<Vec<_>>());
+    let leaves: Vec<Vec<u8>> = if n_cw * rows >= PAR_THRESHOLD {
+        (0..n_cw).into_par_iter().map(leaf).collect()
+    } else {
+        (0..n_cw).map(leaf).collect()
+    };
     let tree = MerkleTree::new(h, &leaves);
     LevelData { f, k, r, cw, tree }
 }
@@ -397,13 +408,16 @@ pub fn sample_indices(tr: &mut Transcript, bits: usize, t: usize) -> Vec<usize> 
 pub fn fold_table(f: &[K], k: usize, rho: &[K]) -> Vec<K> {
     let rows = 1 << k;
     let er = eq_table(rho);
-    f.chunks(rows)
-        .map(|chunk| {
-            er.iter()
-                .zip(chunk)
-                .fold(K::ZERO, |acc, (&e, &x)| acc + e * x)
-        })
-        .collect()
+    let fold = |chunk: &[K]| {
+        er.iter()
+            .zip(chunk)
+            .fold(K::ZERO, |acc, (&e, &x)| acc + e * x)
+    };
+    if f.len() >= PAR_THRESHOLD {
+        f.par_chunks(rows).map(fold).collect()
+    } else {
+        f.chunks(rows).map(fold).collect()
+    }
 }
 
 /// Product-form `(γ, d)` of `eq(bits(j), ·)` over `s` extra variables (§4.4a).
@@ -456,10 +470,26 @@ fn open_inner(
     for i in 0..p.levels() {
         let (k, reps, s, m) = (p.ks[i], p.reps(i), p.sbits(i), p.m_i(i));
         let (rows, cols) = (1 << k, f.len() >> k);
-        let mut tabs: Vec<Vec<K>> = (0..cols)
-            .map(|y_| f[y_ * rows..(y_ + 1) * rows].to_vec())
-            .collect();
-        tabs.extend((0..cols).map(|y_| b[y_ * rows..(y_ + 1) * rows].to_vec()));
+        let tabs: Vec<Vec<K>> = if f.len() >= PAR_THRESHOLD {
+            // `collect` of an indexed parallel iterator preserves order, so
+            // the `f` tables precede the `b` tables exactly as sequentially.
+            let mut tabs: Vec<Vec<K>> = (0..cols)
+                .into_par_iter()
+                .map(|y_| f[y_ * rows..(y_ + 1) * rows].to_vec())
+                .collect();
+            let b_tabs: Vec<Vec<K>> = (0..cols)
+                .into_par_iter()
+                .map(|y_| b[y_ * rows..(y_ + 1) * rows].to_vec())
+                .collect();
+            tabs.extend(b_tabs);
+            tabs
+        } else {
+            let mut tabs: Vec<Vec<K>> = (0..cols)
+                .map(|y_| f[y_ * rows..(y_ + 1) * rows].to_vec())
+                .collect();
+            tabs.extend((0..cols).map(|y_| b[y_ * rows..(y_ + 1) * rows].to_vec()));
+            tabs
+        };
         let combine = |v: &[K]| (0..cols).fold(K::ZERO, |acc, a| acc + v[a] * v[cols + a]);
         let (proof, rho, fin) = sumcheck_prove(c, tabs, &combine, 2, tr, b"pcs/sumcheck");
         scs.push(proof);
