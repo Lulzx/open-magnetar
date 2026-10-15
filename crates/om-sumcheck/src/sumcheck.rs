@@ -1,0 +1,285 @@
+//! Sum-check per docs/spec/03-sumcheck.md and CONVENTIONS C3.
+//! Mirrors `reference/openmagnetar/sumcheck.py` byte for byte in its
+//! transcript interaction.
+
+use core::fmt;
+
+use om_field::K;
+use om_transcript::{Transcript, u64le};
+
+use crate::mle::bind_low;
+
+/// Verification failure (Python `sumcheck.VerificationError`; defined here
+/// and reused by every later crate, per C8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerificationError(String);
+
+impl VerificationError {
+    /// A verification error with the given message.
+    pub fn new(message: impl Into<String>) -> Self {
+        VerificationError(message.into())
+    }
+
+    /// The error message.
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for VerificationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for VerificationError {}
+
+/// A sum-check proof: per round, `[g(t_0), g(t_2), …, g(t_d)]` (C3) —
+/// `degree` field elements, omitting `t_1 = 1`, which the verifier derives
+/// as `g(1) = claim + g(0)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SumcheckProof {
+    pub round_msgs: Vec<Vec<K>>,
+}
+
+/// A boxed summand combine function over per-table values, as built by
+/// [`batched_combine`] and as accepted (by reference) by [`sumcheck_prove`].
+pub type BoxedCombine = Box<dyn Fn(&[K]) -> K>;
+
+/// Normative cap on one powers-of-γ claim batch (spec 03 §3.6):
+/// `(n−1)/|K| < 2^{-120}` only up to `n = 256`.
+pub const MAX_BATCH_CLAIMS: usize = 256;
+
+fn sublabel(label: &[u8], suffix: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(label.len() + suffix.len());
+    out.extend_from_slice(label);
+    out.extend_from_slice(suffix);
+    out
+}
+
+/// The transcript binding run by both parties before round 1 (spec 03 §3.4;
+/// Python `sumcheck._init`, also used directly by `router.py`):
+///
+/// ```text
+/// absorb_k    (label ‖ "/claim",  claim)
+/// absorb_bytes(label ‖ "/params", u64le(num_vars) ‖ u64le(degree))
+/// ```
+pub fn sumcheck_init(
+    transcript: &mut Transcript,
+    label: &[u8],
+    claim: K,
+    num_vars: usize,
+    degree: usize,
+) {
+    transcript.absorb_k(&sublabel(label, b"/claim"), claim);
+    let mut params = [0u8; 16];
+    params[..8].copy_from_slice(&u64le(num_vars as u64));
+    params[8..].copy_from_slice(&u64le(degree as u64));
+    transcript.absorb_bytes(&sublabel(label, b"/params"), &params);
+}
+
+/// Evaluate at `r` the unique polynomial of degree `< ys.len()` with value
+/// `ys[k]` at the small-integer point `t_k` (C1), by the Lagrange formula
+/// of spec 03 §3.4 (characteristic 2: subtraction is addition).
+pub fn interpolate_eval(ys: &[K], r: K) -> K {
+    let n = ys.len();
+    let ts: Vec<K> = (0..n).map(|k| K::t(k as u128)).collect();
+    let mut acc = K::ZERO;
+    for k in 0..n {
+        let (mut num, mut den) = (K::ONE, K::ONE);
+        for j in 0..n {
+            if j != k {
+                num *= r + ts[j];
+                den *= ts[k] + ts[j];
+            }
+        }
+        acc += ys[k] * num / den;
+    }
+    acc
+}
+
+/// Prove `Σ_b combine([T[b] for T in tables]) == claim`, where `combine`
+/// must have degree at most `degree` in each variable (spec 03 §3.5).
+///
+/// `tables` is taken by value because the prover binds the tables in place
+/// round by round (Python copies them internally). Bit-valued tables,
+/// which Python accepts and coerces, must be converted by the caller via
+/// [`K::from_bit`].
+///
+/// Returns `(proof, challenges r (x_1 first), [MLE of each table at r])`.
+/// With `0` variables the proof is empty and the evals are `[T_k[0]]`.
+///
+/// # Panics
+/// Panics where Python raises `ValueError`: `degree < 1`; no tables, or
+/// tables not sharing a nonzero power-of-two length; or the claim being
+/// inconsistent with the tables (`g(0) + g(1) != claim` in some round).
+pub fn sumcheck_prove(
+    claim: K,
+    mut tables: Vec<Vec<K>>,
+    combine: &dyn Fn(&[K]) -> K,
+    degree: usize,
+    transcript: &mut Transcript,
+    label: &[u8],
+) -> (SumcheckProof, Vec<K>, Vec<K>) {
+    assert!(degree >= 1, "degree must be >= 1");
+    assert!(!tables.is_empty(), "sumcheck_prove: no tables");
+    let size = tables[0].len();
+    assert!(
+        size != 0 && size.is_power_of_two() && tables.iter().all(|t| t.len() == size),
+        "tables must share a power-of-two length"
+    );
+    let m = size.trailing_zeros() as usize;
+    sumcheck_init(transcript, label, claim, m, degree);
+    let msg_label = sublabel(label, b"/msg");
+    let chal_label = sublabel(label, b"/chal");
+    let mut msgs = Vec::with_capacity(m);
+    let mut rs = Vec::with_capacity(m);
+    let mut cur = claim;
+    let mut vals: Vec<K> = Vec::with_capacity(tables.len());
+    for _ in 0..m {
+        let half = tables[0].len() / 2;
+        // Evaluations of g_i at t_0, t_1 (check only), t_2..t_degree.
+        let mut ev = Vec::with_capacity(degree + 1);
+        for k in 0..=degree {
+            let t = K::t(k as u128);
+            let mut acc = K::ZERO;
+            for i in 0..half {
+                vals.clear();
+                for table in &tables {
+                    let (a, b) = (table[2 * i], table[2 * i + 1]);
+                    vals.push(a + t * (a + b));
+                }
+                acc += combine(&vals);
+            }
+            ev.push(acc);
+        }
+        assert_eq!(
+            ev[0] + ev[1],
+            cur,
+            "claim inconsistent with tables (g(0)+g(1) != claim)"
+        );
+        let mut msg = Vec::with_capacity(degree);
+        msg.push(ev[0]);
+        msg.extend_from_slice(&ev[2..]);
+        transcript.absorb_ks(&msg_label, &msg);
+        let r = transcript.challenge_k(&chal_label);
+        msgs.push(msg);
+        rs.push(r);
+        cur = interpolate_eval(&ev, r);
+        tables = tables.iter().map(|t| bind_low(t, r)).collect();
+    }
+    (SumcheckProof { round_msgs: msgs }, rs, {
+        tables.iter().map(|t| t[0]).collect()
+    })
+}
+
+/// Verify a sum-check proof (spec 03 §3.4), returning
+/// `(r, expected value of the summand at r)`. The verifier never accepts or
+/// rejects a *value*: the caller compares the returned value with `g(r)`.
+///
+/// # Errors
+/// Returns [`VerificationError`] if the number of rounds is not `num_vars`
+/// (checked before any transcript interaction, as in Python) or if a round
+/// message does not have exactly `degree` elements (checked per round, in
+/// round order, before that round is absorbed).
+///
+/// # Panics
+/// Panics if `degree < 1` (Python raises `ValueError`).
+pub fn sumcheck_verify(
+    claim: K,
+    num_vars: usize,
+    degree: usize,
+    proof: &SumcheckProof,
+    transcript: &mut Transcript,
+    label: &[u8],
+) -> Result<(Vec<K>, K), VerificationError> {
+    assert!(degree >= 1, "degree must be >= 1");
+    if proof.round_msgs.len() != num_vars {
+        return Err(VerificationError::new("wrong number of rounds"));
+    }
+    sumcheck_init(transcript, label, claim, num_vars, degree);
+    let msg_label = sublabel(label, b"/msg");
+    let chal_label = sublabel(label, b"/chal");
+    let mut rs = Vec::with_capacity(num_vars);
+    let mut cur = claim;
+    for msg in &proof.round_msgs {
+        if msg.len() != degree {
+            return Err(VerificationError::new("malformed round message"));
+        }
+        transcript.absorb_ks(&msg_label, msg);
+        let r = transcript.challenge_k(&chal_label);
+        // Values at t_0, t_1 (derived), t_2..t_d.
+        let mut ys = Vec::with_capacity(degree + 1);
+        ys.push(msg[0]);
+        ys.push(cur + msg[0]);
+        ys.extend_from_slice(&msg[1..]);
+        cur = interpolate_eval(&ys, r);
+        rs.push(r);
+    }
+    Ok((rs, cur))
+}
+
+/// Random-linear-combination batching of equal-`num_vars` claims
+/// (spec 03 §3.6): absorbs `label ‖ "/claims"`, squeezes
+/// `γ = challenge_k(label ‖ "/gamma")`, and returns
+/// `(coeffs [1, γ, γ^2, …], combined claim Σ_i γ^i claim_i)`.
+///
+/// # Panics
+/// Panics if there are more than [`MAX_BATCH_CLAIMS`] (256) claims, before
+/// any transcript interaction. Python raises `ValueError` here (a caller
+/// bug, not a verification failure), which maps to a panic as in
+/// `om-transcript`.
+pub fn batch_claims(claims: &[K], transcript: &mut Transcript, label: &[u8]) -> (Vec<K>, K) {
+    assert!(
+        claims.len() <= MAX_BATCH_CLAIMS,
+        "powers-of-gamma batching is limited to 256 claims (03.6)"
+    );
+    transcript.absorb_ks(&sublabel(label, b"/claims"), claims);
+    let gamma = transcript.challenge_k(&sublabel(label, b"/gamma"));
+    let mut coeffs = Vec::with_capacity(claims.len());
+    let mut p = K::ONE;
+    for _ in claims {
+        coeffs.push(p);
+        p *= gamma;
+    }
+    let mut combined = K::ZERO;
+    for (&c, &x) in coeffs.iter().zip(claims) {
+        combined += c * x;
+    }
+    (coeffs, combined)
+}
+
+/// Build a single `combine` over the concatenated table list (spec 03 §3.6):
+/// the returned function splits its input by `arities`, applies the
+/// corresponding per-claim `combine`, and returns
+/// `Σ_i coeffs[i] · combines[i](slice_i)`.
+///
+/// # Panics
+/// Panics if `coeffs`, `combines`, and `arities` have different lengths
+/// (Python's `zip` would silently truncate). The returned function panics
+/// if its input is shorter than the sum of `arities`.
+pub fn batched_combine(
+    coeffs: Vec<K>,
+    combines: Vec<BoxedCombine>,
+    arities: Vec<usize>,
+) -> BoxedCombine {
+    assert_eq!(
+        coeffs.len(),
+        combines.len(),
+        "batched_combine: length mismatch"
+    );
+    assert_eq!(
+        coeffs.len(),
+        arities.len(),
+        "batched_combine: length mismatch"
+    );
+    Box::new(move |vals: &[K]| {
+        let mut out = K::ZERO;
+        let mut pos = 0;
+        for ((&c, f), &a) in coeffs.iter().zip(&combines).zip(&arities) {
+            out += c * f(&vals[pos..pos + a]);
+            pos += a;
+        }
+        out
+    })
+}
