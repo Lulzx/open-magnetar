@@ -17,9 +17,9 @@
 //!   including inside [`verify`]) **panic**; `VerificationError` is
 //!   returned as `Err` from [`verify`]. The prover-side `VerificationError`s
 //!   of Python's cross-step setup likewise panic in [`prove`].
-//! - The claim type is [`Claim`], defined in this crate because the
-//!   Mosaic crate (Python's `mosaic.Claim`, spec 05) does not exist yet;
-//!   the whole-`W` claim of the no-layout mode keeps Python's sentinel
+//! - The claim type is [`Claim`], re-exported from `om-mosaic`
+//!   (Python's `spartan.py` imports `Claim` from `mosaic.py`); the
+//!   whole-`W` claim of the no-layout mode keeps Python's sentinel
 //!   `comp_id = -1`, hence `i64` ids.
 
 use om_field::K;
@@ -32,14 +32,10 @@ use om_transcript::{Transcript, u64le};
 use crate::r1cs::{R1CS, build_z, check_witness_bits, public_part, simd_satisfied};
 
 /// An evaluation claim `p~_{comp_id}(point) = value` on a component
-/// polynomial (Python `mosaic.Claim`; `comp_id = -1` denotes the whole
-/// witness matrix `W` in the no-layout mode).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Claim {
-    pub comp_id: i64,
-    pub point: Vec<K>,
-    pub value: K,
-}
+/// polynomial (Python `mosaic.Claim`, re-exported from `om-mosaic`;
+/// `comp_id = -1` denotes the whole witness matrix `W` in the
+/// no-layout mode).
+pub use om_mosaic::Claim;
 
 /// What a column segment is handed to (spec 06 §6.5; Python's
 /// `"direct"` / `"virtual"` / `"pad"`).

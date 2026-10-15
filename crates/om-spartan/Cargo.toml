@@ -9,6 +9,7 @@ description = "SIMD R1CS, BinarySpartan and Virtual Spartan for Open Magnetar (s
 
 [dependencies]
 om-field = { path = "../om-field" }
+om-mosaic = { path = "../om-mosaic" }
 om-sumcheck = { path = "../om-sumcheck" }
 om-transcript = { path = "../om-transcript" }
 

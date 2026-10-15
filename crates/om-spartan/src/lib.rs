@@ -20,10 +20,10 @@
 //! - The string tags of Python (`field: "B"/"K"`, segment
 //!   `kind: "direct"/"virtual"/"pad"`) are the enums
 //!   [`r1cs::RelationField`] and [`spartan::SegmentKind`].
-//! - [`spartan::Claim`] (Python `mosaic.Claim`) is defined in this
-//!   crate because the Mosaic crate does not exist yet; ids are `i64`
-//!   because the no-layout whole-`W` claim uses Python's `comp_id=-1`
-//!   sentinel.
+//! - [`spartan::Claim`] is `om_mosaic::Claim` (Python's `spartan.py`
+//!   imports `Claim` from `mosaic.py`), re-exported here; ids are
+//!   `i64` because the no-layout whole-`W` claim uses Python's
+//!   `comp_id=-1` sentinel.
 
 pub mod r1cs;
 pub mod spartan;
