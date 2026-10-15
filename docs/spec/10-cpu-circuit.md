@@ -45,7 +45,7 @@ vs `num_w_cols`, per instance):
 
 `c = 2` is the least padded. It also keeps the per-instance state (512 direct bits) to 128 bits per cycle, and
 the base matrices small (862 and 123 rows; verifier work is linear in the number of non-zeros, 5750 and
-15961). Smaller `c` wastes space; larger `c` makes the base R1CS (which the verifier evaluates directly) larger
+16089). Smaller `c` wastes space; larger `c` makes the base R1CS (which the verifier evaluates directly) larger
 for no gain. The state chain inside an instance is by ordinary constraints (slot `t` → `t+1`); only the instance
 boundary uses (X1)-(X3).
 
@@ -345,3 +345,5 @@ truncated trace that does not end in `HALTED`; ROM-field tampering is caught whe
 * **`off` is defined on every cycle** (it is `S & 7` of the adder output, also on loads and non-memory cycles); the store router's offset-bit claims
   `store/a_b` are claims on this segment, so the prover's offset tables for the router are the `off` bits of all cycles, not only of stores (the
   router's selector zero kills the non-store cycles). Implemented in `protocol.py`.
+
+* 2026-10-16 (Rust `om-circuit` port): corrected the `s_2` non-zero count in 10.2 from 15961 to 16089 (the value in `cpu_circuit.stats()` and `vectors/10-cpu/cpu.json`; the spec prose was stale, behavior unchanged).
