@@ -239,3 +239,7 @@ Tests: `tests/test_merkle.py`, `test_ntt.py`, `test_ligerito.py`, `test_ring_swi
 ## Integration notes
 
 * 2026-10-16 (agent for 13/15): replaced the "Known gap" paragraph, the table and the gap column of 4.7 by the gap-amplification text above; added the optional `gs` field to `LigeritoParams` (4.6) and `reference/openmagnetar/ligerito.py` (`gs`, `reps`, `gap_reps`, `make_params`, `soundness_bits`, `encode`; `open_`/`verify` raise `NotImplementedError` when `gs_i > 1`). Existing vectors are unchanged (`gs` is absent from `encode()` when all 1). The `soundness_bits()` gap column now includes the repetition factor. Request to 12: serialize `gs` in the verifying key when present.
+
+* **Proof framing (12).** The Ligerito openings are serialized with a `u32` count of columns and a `u32` count of authentication hashes per level, instead of deriving
+  the path length from the query set while parsing as the request to 12 above suggests; this keeps the parser independent of the transcript. `gs` is not stored in the vk: the vk holds
+  `(profile, r, t)` and the parameters, including `gs`, are re-derived by `make_params` (12.2). The reference `open_`/`verify` still raise for `gs > 1`, so `protocol.py` end-to-end tests use the `test` profile (`t = 8`, `gs = 1`).

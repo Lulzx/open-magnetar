@@ -349,3 +349,209 @@ def store_verify(n: int, r_o: list, r_j: list, y: K, proof: RouterProof,
     if val != expected:
         raise VerificationError("store: final check failed")
     return _store_claims(n, wbits, r, proof.evals)
+
+
+# ------------------------------------------------------------------ fast provers
+# Same transcript and proof as shift_prove / store_prove (checked by test_protocol.py), but the
+# first n rounds (cycle variables) exploit that Q is sparse per cycle, which makes the prover
+# practical in pure Python at W = 64.  Informative only; the spec is the dense definition.
+
+def _ks(x):
+    return x if isinstance(x, K) else K(int(x))
+
+
+def _tpt(a: K, b: K, t: K) -> K:
+    return a + t * (a + b)
+
+
+def _dense_rounds(tabs, combine, degree, cur, tr, label, nrounds, rs, msgs):
+    """Continue a sum-check (already initialised) for `nrounds` rounds on dense tables."""
+    from .mle import bind_low
+    from .sumcheck import interpolate_eval
+    for _ in range(nrounds):
+        half = len(tabs[0]) // 2
+        ev = []
+        for k in range(degree + 1):
+            t = K.t(k)
+            acc = K.ZERO
+            for i in range(half):
+                acc = acc + combine([T[2 * i] + t * (T[2 * i] + T[2 * i + 1]) for T in tabs])
+            ev.append(acc)
+        if ev[0] + ev[1] != cur:
+            raise ValueError("claim inconsistent with tables (g(0)+g(1) != claim)")
+        msg = [ev[0]] + ev[2:]
+        tr.absorb_ks(label + b"/msg", msg)
+        r = tr.challenge_k(label + b"/chal")
+        msgs.append(msg)
+        rs.append(r)
+        cur = interpolate_eval(ev, r)
+        tabs = [bind_low(T, r) for T in tabs]
+    return tabs
+
+
+def _sparse_phase(n, state, evals_fn, bind_fn, degree, claim_hint, tr, label, m_total):
+    """Run the n cycle rounds. evals_fn(state) -> [g(t_0)..g(t_degree)] (full, incl. t_1)."""
+    from .sumcheck import _init, interpolate_eval
+    ev = evals_fn(state)
+    claim = ev[0] + ev[1]
+    _init(tr, label, claim, m_total, degree)
+    rs, msgs, cur = [], [], claim
+    for i in range(n):
+        if i:
+            ev = evals_fn(state)
+        if ev[0] + ev[1] != cur:
+            raise ValueError("claim inconsistent with tables (g(0)+g(1) != claim)")
+        msg = [ev[0]] + ev[2:]
+        tr.absorb_ks(label + b"/msg", msg)
+        r = tr.challenge_k(label + b"/chal")
+        msgs.append(msg)
+        rs.append(r)
+        cur = interpolate_eval(ev, r)
+        state = bind_fn(state, r)
+    return state, rs, msgs, cur
+
+
+def shift_prove_fast(n: int, wit: dict, r_o: list, r_j: list, y: K, transcript: Transcript,
+                     label: bytes, wbits: int = 6):
+    T, W = 1 << n, 1 << wbits
+    _absorb_claim(transcript, label, r_o, r_j, y)
+    eo = eq_table(r_o)
+    Rh: dict[int, dict[int, K]] = {}
+    Rr = [K.ZERO] * (W * 8 * W)
+    for o, u, h in shift_entries(wbits):
+        d = Rh.setdefault(h, {})
+        d[u] = d.get(u, K.ZERO) + eo[o]
+        Rr[u + W * h] = Rr[u + W * h] + eo[o]
+    X, Qlo, Qhi = wit["X"], wit["Qlo"], wit["Qhi"]
+    st = dict(eq=eq_table(r_j),
+              X=[[K(X[u + W * j]) for j in range(T)] for u in range(W)],
+              Ql=[[K(Qlo[h + W * j]) for j in range(T)] for h in range(W)],
+              Qh=[[K(Qhi[h + 8 * j]) for j in range(T)] for h in range(8)])
+    ts = [K.t(k) for k in range(5)]
+
+    def evals(s):
+        half = len(s["eq"]) // 2
+        out = [K.ZERO] * 5
+        for p in range(half):
+            e0, e1 = s["eq"][2 * p], s["eq"][2 * p + 1]
+            lo = [h for h in range(W) if s["Ql"][h][2 * p] or s["Ql"][h][2 * p + 1]]
+            hi = [h for h in range(8) if s["Qh"][h][2 * p] or s["Qh"][h][2 * p + 1]]
+            if not lo or not hi:
+                continue
+            for k in range(5):
+                t = ts[k]
+                et = _tpt(e0, e1, t)
+                xt = [_tpt(s["X"][u][2 * p], s["X"][u][2 * p + 1], t) for u in range(W)]
+                acc = K.ZERO
+                for hh in hi:
+                    qh = _tpt(s["Qh"][hh][2 * p], s["Qh"][hh][2 * p + 1], t)
+                    if not qh:
+                        continue
+                    inner = K.ZERO
+                    for hl in lo:
+                        ql = _tpt(s["Ql"][hl][2 * p], s["Ql"][hl][2 * p + 1], t)
+                        if not ql:
+                            continue
+                        b = K.ZERO
+                        for u, c in Rh.get(hl + W * hh, {}).items():
+                            b = b + xt[u] * c
+                        inner = inner + ql * b
+                    acc = acc + qh * inner
+                out[k] = out[k] + et * acc
+        return out
+
+    def bind(s, r):
+        f = lambda tb: [_tpt(tb[2 * i], tb[2 * i + 1], r) for i in range(len(tb) // 2)]
+        return dict(eq=f(s["eq"]), X=[f(a) for a in s["X"]], Ql=[f(a) for a in s["Ql"]],
+                    Qh=[f(a) for a in s["Qh"]])
+
+    m_total = n + 2 * wbits + 3
+    st, rs, msgs, cur = _sparse_phase(n, st, evals, bind, 4, None, transcript, label + b"/sc", m_total)
+    e = st["eq"][0]
+    NR = W * W * 8
+    tabs = [[e] * NR,
+            [st["X"][i % W][0] for i in range(NR)],
+            [st["Ql"][(i // W) % W][0] for i in range(NR)],
+            [st["Qh"][i // (W * W)][0] for i in range(NR)],
+            Rr]
+    fin = _dense_rounds(tabs, _mul5, 4, cur, transcript, label + b"/sc", m_total - n, rs, msgs)
+    mles = [t[0] for t in fin]
+    evs = [mles[1], mles[2], mles[3]]
+    transcript.absorb_ks(label + b"/evals", evs)
+    return RouterProof(SumcheckProof(msgs), evs), _shift_claims(n, wbits, rs, evs)
+
+
+def store_prove_fast(n: int, wit: dict, r_o: list, r_j: list, y: K, transcript: Transcript,
+                     label: bytes, wbits: int = 6):
+    T, W, na = 1 << n, 1 << wbits, wbits - 3
+    NA = 1 << na
+    _absorb_claim(transcript, label, r_o, r_j, y)
+    eo = eq_table(r_o)
+    Rah: dict[tuple, dict[int, K]] = {}
+    Ra = [[K.ZERO] * (2 * W * 4) for _ in range(NA)]
+    for o, u, h, a in store_entries(wbits):
+        d = Rah.setdefault((a, h), {})
+        d[u] = d.get(u, K.ZERO) + eo[o]
+        Ra[a][u + 2 * W * h] = Ra[a][u + 2 * W * h] + eo[o]
+    X, Q, ab = wit["X"], wit["Q"], wit["abits"]
+    st = dict(eq=eq_table(r_j),
+              X=[[K(X[u + 2 * W * j]) for j in range(T)] for u in range(2 * W)],
+              Q=[[K(Q[h + 4 * j]) for j in range(T)] for h in range(4)],
+              ab=[[K(ab[b][j]) for j in range(T)] for b in range(na)])
+    degree = 3 + na
+    ts = [K.t(k) for k in range(degree + 1)]
+
+    def evals(s):
+        half = len(s["eq"]) // 2
+        out = [K.ZERO] * (degree + 1)
+        for p in range(half):
+            hs = [h for h in range(4) if s["Q"][h][2 * p] or s["Q"][h][2 * p + 1]]
+            if not hs:
+                continue
+            for k in range(degree + 1):
+                t = ts[k]
+                et = _tpt(s["eq"][2 * p], s["eq"][2 * p + 1], t)
+                xt = [_tpt(s["X"][u][2 * p], s["X"][u][2 * p + 1], t) for u in range(2 * W)]
+                abt = [_tpt(s["ab"][b][2 * p], s["ab"][b][2 * p + 1], t) for b in range(na)]
+                La = []
+                for a in range(NA):
+                    v = K.ONE
+                    for b in range(na):
+                        v = v * (K.ONE + abt[b] + K((a >> b) & 1))
+                    La.append(v)
+                acc = K.ZERO
+                for h in hs:
+                    qh = _tpt(s["Q"][h][2 * p], s["Q"][h][2 * p + 1], t)
+                    if not qh:
+                        continue
+                    inner = K.ZERO
+                    for a in range(NA):
+                        if not La[a]:
+                            continue
+                        b_ = K.ZERO
+                        for u, c in Rah.get((a, h), {}).items():
+                            b_ = b_ + xt[u] * c
+                        inner = inner + La[a] * b_
+                    acc = acc + qh * inner
+                out[k] = out[k] + et * acc
+        return out
+
+    def bind(s, r):
+        f = lambda tb: [_tpt(tb[2 * i], tb[2 * i + 1], r) for i in range(len(tb) // 2)]
+        return dict(eq=f(s["eq"]), X=[f(a) for a in s["X"]], Q=[f(a) for a in s["Q"]],
+                    ab=[f(a) for a in s["ab"]])
+
+    m_total = n + wbits + 1 + 2
+    st, rs, msgs, cur = _sparse_phase(n, st, evals, bind, degree, None, transcript, label + b"/sc", m_total)
+    NR = 2 * W * 4
+    tabs = [[st["eq"][0]] * NR,
+            [st["X"][i % (2 * W)][0] for i in range(NR)],
+            [st["Q"][i // (2 * W)][0] for i in range(NR)]]
+    tabs += [[st["ab"][b][0]] * NR for b in range(na)]
+    tabs += [Ra[a] for a in range(NA)]
+    fin = _dense_rounds(tabs, _store_combine(na), degree, cur, transcript, label + b"/sc",
+                        m_total - n, rs, msgs)
+    mles = [t[0] for t in fin]
+    evs = [mles[1], mles[2]] + [mles[3 + b] for b in range(na)]
+    transcript.absorb_ks(label + b"/evals", evs)
+    return RouterProof(SumcheckProof(msgs), evs), _store_claims(n, wbits, rs, evs)

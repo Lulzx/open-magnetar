@@ -175,3 +175,13 @@ Vectors: `reference/vectors/08-router/` (`R_eval_wb6.json`, `shift_wb3.json`, `s
 * **11:** shift claims: input from Spartan; store: input from the RAM Twist `inc_extra` point; outputs `shift/qlo, shift/qhi, store/q` are bytecode
   Shout claims at the points `s_j` (the Shout group mechanism of 07 handles several points).
 * **13:** soundness formulas of 8.4.
+
+## Integration notes
+
+* **Store router input point (changes the request to 11 above).** The input claim is not taken from RAM Twist's `inc_extra` point. RAM Twist's
+  input claim `wv~(r_o ∥ r_c)` needs `Inc~(r_o ∥ r_c) = y_0` at the Spartan point anyway (`wv = rv + Inc` for the single-word RAM access, 11.5), so 11
+  sends `y_0`, uses it for `wv`, and uses the same claim `(r_o, r_j, y) = (r_o, r_c, y_0)` as the store router's input and as a Mosaic claim on
+  `twist/ram/inc`. `inc_extra` (07 7.7) stays in the API and is not used by 11.
+* **Fast provers.** `router.py` gained `shift_prove_fast` and `store_prove_fast`: identical transcripts and proofs to `shift_prove`/`store_prove`
+  (checked in `test_protocol.py::TestFastRouters`), but the `n` cycle rounds exploit that `Q` has one non-zero entry per cycle, which makes `W = 64`
+  provable in pure Python (the dense prover needs about 10 s for `T = 8`). Informative; the dense functions remain the definition.

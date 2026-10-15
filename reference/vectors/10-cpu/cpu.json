@@ -296,16 +296,16 @@
  "stats": {
   "cycles_per_instance": 4,
   "NW": 8192,
-  "used_bits": 8064,
+  "used_bits": 8192,
   "direct_bits_per_cycle": 1108,
   "direct_bits_per_instance_state": 512,
-  "virtual_bits_per_cycle": 780,
+  "virtual_bits_per_cycle": 812,
   "s1_rows": 862,
   "s2_rows": 123,
   "s1_rows_per_cycle": 215,
   "s2_rows_per_cycle": 30,
   "s1_nnz": 5750,
-  "s2_nnz": 15961
+  "s2_nnz": 16089
  },
  "layout": [
   {
@@ -442,128 +442,128 @@
    "owner": "shout-bytecode"
   },
   {
-   "name": "rpc",
+   "name": "ridx",
    "log_size": 8,
    "offset": 5120,
+   "kind": "virtual",
+   "owner": "twist-ram"
+  },
+  {
+   "name": "rpc",
+   "log_size": 8,
+   "offset": 5376,
    "kind": "virtual",
    "owner": "shout-bytecode"
   },
   {
    "name": "rw",
    "log_size": 8,
-   "offset": 5376,
+   "offset": 5632,
    "kind": "virtual",
    "owner": "twist-ram"
   },
   {
    "name": "shsrc",
    "log_size": 8,
-   "offset": 5632,
+   "offset": 5888,
    "kind": "direct",
    "owner": "mosaic"
   },
   {
    "name": "v1",
    "log_size": 8,
-   "offset": 5888,
+   "offset": 6144,
    "kind": "virtual",
    "owner": "twist-reg"
   },
   {
    "name": "v2",
    "log_size": 8,
-   "offset": 6144,
+   "offset": 6400,
    "kind": "virtual",
    "owner": "twist-reg"
   },
   {
    "name": "x1",
    "log_size": 8,
-   "offset": 6400,
+   "offset": 6656,
    "kind": "direct",
    "owner": "mosaic"
   },
   {
    "name": "x2",
    "log_size": 8,
-   "offset": 6656,
+   "offset": 6912,
    "kind": "direct",
    "owner": "mosaic"
   },
   {
    "name": "x3",
    "log_size": 8,
-   "offset": 6912,
+   "offset": 7168,
    "kind": "direct",
    "owner": "mosaic"
   },
   {
    "name": "Dw",
    "log_size": 7,
-   "offset": 7168,
+   "offset": 7424,
    "kind": "direct",
    "owner": "mosaic"
   },
   {
    "name": "dynu",
    "log_size": 7,
-   "offset": 7296,
+   "offset": 7552,
    "kind": "direct",
    "owner": "mosaic"
   },
   {
-   "name": "ridx",
-   "log_size": 7,
-   "offset": 7424,
-   "kind": "virtual",
-   "owner": "twist-ram"
-  },
-  {
    "name": "seq",
-   "log_size": 7,
-   "offset": 7552,
-   "kind": "virtual",
-   "owner": "shout-bytecode"
-  },
-  {
-   "name": "tgt",
    "log_size": 7,
    "offset": 7680,
    "kind": "virtual",
    "owner": "shout-bytecode"
   },
   {
-   "name": "upc",
+   "name": "tgt",
    "log_size": 7,
    "offset": 7808,
    "kind": "virtual",
    "owner": "shout-bytecode"
   },
   {
+   "name": "upc",
+   "log_size": 7,
+   "offset": 7936,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
    "name": "fl",
    "log_size": 6,
-   "offset": 7936,
+   "offset": 8064,
    "kind": "direct",
    "owner": "mosaic"
   },
   {
    "name": "Q_hi",
    "log_size": 5,
-   "offset": 8000,
+   "offset": 8128,
    "kind": "virtual",
    "owner": "shout-bytecode"
   },
   {
    "name": "off",
    "log_size": 4,
-   "offset": 8032,
+   "offset": 8160,
    "kind": "direct",
    "owner": "mosaic"
   },
   {
    "name": "st_w",
    "log_size": 4,
-   "offset": 8048,
+   "offset": 8176,
    "kind": "virtual",
    "owner": "shout-bytecode"
   }

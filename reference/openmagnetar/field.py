@@ -11,21 +11,32 @@ MASK = (1 << 128) - 1
 
 
 def clmul(a: int, b: int) -> int:
-    """Carry-less product of two non-negative integers."""
+    """Carry-less product of two non-negative integers (4-bit windows)."""
+    if a.bit_length() < b.bit_length():
+        a, b = b, a
+    if b < 2:
+        return a if b else 0
+    t1 = a
+    t2 = a << 1
+    t3 = t2 ^ a
+    t4 = a << 2
+    t5 = t4 ^ a
+    t6 = t4 ^ t2
+    t7 = t6 ^ a
+    tbl = (0, t1, t2, t3, t4, t5, t6, t7)
     r = 0
-    while b:
-        if b & 1:
-            r ^= a
-        a <<= 1
-        b >>= 1
+    shift = ((b.bit_length() + 2) // 3 - 1) * 3
+    while shift >= 0:
+        r = (r << 3) ^ tbl[(b >> shift) & 7]
+        shift -= 3
     return r
 
 
 def reduce(r: int) -> int:
-    """Reduce a polynomial (as int) modulo MODULUS."""
-    for i in range(r.bit_length() - 1, 127, -1):
-        if (r >> i) & 1:
-            r ^= MODULUS << (i - 128)
+    """Reduce a polynomial (as int) modulo MODULUS (fold the high part twice)."""
+    while r >> 128:
+        h = r >> 128
+        r = (r & MASK) ^ h ^ (h << 1) ^ (h << 2) ^ (h << 7)
     return r
 
 

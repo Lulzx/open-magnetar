@@ -400,3 +400,14 @@ write address), `test_vectors_07_08.py`. Vectors: `reference/vectors/07-twist-sh
   `O(c·NK)`, linear in program size; a committed-ROM variant would need 04/05 and is out of scope for v1.
 * **13:** soundness formulas of 7.2–7.5.
 * **14:** output region `(m, s_out)` and the words `words` come from the instance.
+
+## Integration notes
+
+* **`wv` of the RAM Twist.** The input value `wv~(r_o ∥ r_c)` of the RAM instance is `rv~ + Inc~(r_o ∥ r_c)` (one word per cycle, `wa ≡ ra`), where `rv~`
+  is Spartan's claim on `rw` and `Inc~(r_o ∥ r_c) = y_0` is sent by the prover (11.5, label `twist/ram/incwv`). `y_0` is also a Mosaic claim on `twist/ram/inc`
+  and the store router's input (08 integration notes). `inc_extra` is not used by 11.
+* **Address-bit claims are at the same cycle point as the value claims.** The RAM bit claims `f_t~(r_c)` are bound to the `ridx` segment by the check
+  `Σ_{t<A} eq(r_o, t)·f_t = v_ridx` (11.7); this is sound because Twist itself binds every `f_t` to the committed address one-hots, so the check says that Spartan's
+  virtual `ridx` polynomial and the committed address bits agree at the random point `(r_o ∥ r_c)`. This needed `ridx` to be 64 bits wide (10 integration notes).
+* **Final-memory layout.** `FinalMem.words` is turned into the table `k_low + 2^m·o` by Twist itself; 11 passes `abi.encode_region(output, O)`. The helper
+  `abi.expected_output_mle_eval` (layout `o + 64u`, 14.3) is not used by 11 (see 14 integration notes).

@@ -70,7 +70,7 @@ FIELDS = [
     ("v2", 64, "virtual", "twist-reg", "rs2 read value"),
     ("rdv", 64, "virtual", "twist-reg", "rd write value"),
     ("rw", 64, "virtual", "twist-ram", "RAM word read (old word)"),
-    ("ridx", 32, "virtual", "twist-ram", "RAM word index (0 if no access)"),
+    ("ridx", 64, "virtual", "twist-ram", "RAM word index (0 if no access); 64 wide so its Spartan claim shares the point of rw (11)"),
     ("Y", 64, "virtual", "router-shift", "shift output"),
     # virtual, decoded bytecode fields
     ("imm", 64, "virtual", "shout-bytecode", ""),
@@ -323,7 +323,7 @@ def _build(params: Params):
             fillw = _add(fillw, {cc.c("rf", FLAG_POS[f"fill{ln}"], t): 0xFF << (8 * ln)})
         k(_add(fl("tb", t), fl("th", t), fl("tw", t)), fillw, _add(P("L", t, R64), P("m", t, R64)), "load-sign-fill")
         k(f("mem", t), PF(lambda j: S(3 + j, t), range(A)), P("ridx", t, range(A)), "ridx")
-        k(ONE, P("ridx", t, range(A, 32)), {}, "ridx-hi")
+        k(ONE, P("ridx", t, range(A, 64)), {}, "ridx-hi")
         win = _add(PF(lambda j: S(j, t), range(3 + A, 31)), PF(lambda j: S(j, t), range(31, 64)),
                    {cc.ONE: 1 << 31})
         k(f("mem", t), win, {}, "ram-window")

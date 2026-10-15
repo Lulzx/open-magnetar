@@ -151,3 +151,8 @@ changed here). Packing is `K.pack`/`K.unpack`; encodings are
 - 04 SHOULD state ring switching in terms of (I1)/(I2) and the `K ⊗_B K` column
   convention above.
 - 05 owns the padding policy for vectors shorter than `2^7`.
+
+## Integration notes
+
+* `field.clmul`/`field.reduce` were rewritten (3-bit windows, two-fold reduction) for speed, about 8x faster `K` multiplication, which the end-to-end reference prover needs. The function is unchanged
+  (checked against the old shift-and-add code on random inputs; `test_field` passes).

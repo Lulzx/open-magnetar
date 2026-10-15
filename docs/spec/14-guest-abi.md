@@ -106,3 +106,10 @@ Only HALT (C6). The runtime writes the output region, then executes `li a7, 0; e
 - **09/10:** confirm the initial register file is all zero and that HALT exposes `a0` as a public `exit_code`; confirm `Machine.__init__` accepts `ram_words` as non-zero-only sparse dict and that the pc keys of `code` are byte addresses.
 - **11/12:** the verifying key carries `A, I, O, MAX_CODE`, the hash profile and `program_digest` as defined in 14.3.
 - **CONVENTIONS (C6):** may cite 14.1 for the I/O region layout.
+
+## Integration notes
+
+* **Output MLE layout.** 11 does not call `abi.expected_output_mle_eval`. The final-memory claim of 07 7.6 evaluates the public output words in 07's own layout
+  (`k_low + 2^m·o`, word index low, bit index high) inside `twist_verify`, from `final.words = abi.encode_region(output, O)`. The helper with layout `o + 64u`
+  and point order `(bit, word)` is kept (tested) but is informative only; if a Rust implementation prefers it, 07's table order must be changed with it.
+* The verifying key carries `A, I, O, MAX_CODE`, the hash profile and `program_digest` (12.2); it also carries the code and data images so that the verifier derives the ROM and `M_0` (11.2).

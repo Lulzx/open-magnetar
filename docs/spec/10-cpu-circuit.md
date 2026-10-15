@@ -39,7 +39,7 @@ vs `num_w_cols`, per instance):
 |---|---|---|---|---|---|
 | 0 | 2400 | 4096 | 41% | 217 | 33 |
 | 1 | 4288 | 8192 | 48% | 432 | 63 |
-| **2** | **8064** | **8192** | **1.6%** | 862 | 123 |
+| **2** | **8192** | **8192** | **0%** | 862 | 123 |
 | 3 | 15616 | 16384 | 4.7% | 1722 | 243 |
 | 4 | 30720 | 32768 | 6.2% | 3442 | 483 |
 
@@ -61,7 +61,7 @@ Segments are aligned power-of-two blocks of columns of `w`. Within a segment, th
 bits, cycle above it" layout that 07 (Twist/Shout value segments) and 08 (router tables `X(u, j)`, `Y(o, j)`)
 expect. The layout is the buddy allocation "sort by descending size, then name, place consecutively"
 (`cpu_circuit._layout`); all sizes are powers of two, so alignment is automatic; the verifier recomputes it.
-Per-instance total 8064 bits; the remaining 128 columns are zero padding (uncovered columns, 06 6.5).
+Per-instance total 8192 bits; no column is uncovered (since the `ridx` widening, see Integration notes).
 
 | Segment | bits/cycle | per-instance log size | Kind | Owner | Role |
 |---|---|---|---|---|---|
@@ -69,7 +69,7 @@ Per-instance total 8064 bits; the remaining 128 columns are zero padding (uncove
 | `v2` | 64 | 8 | virtual | twist-reg | `rs2` read value |
 | `rdv` | 64 | 8 | virtual | twist-reg | `rd` write value |
 | `rw` | 64 | 8 | virtual | twist-ram | RAM word read (old word) |
-| `ridx` | 32 | 7 | virtual | twist-ram | RAM word index (0 when no access) |
+| `ridx` | 64 | 8 | virtual | twist-ram | RAM word index (0 when no access); 64 wide so that its Spartan claim is at the same point as `rw` (11) |
 | `Y` | 64 | 8 | virtual | router-shift | shift output |
 | `imm`, `kc`, `rpc` | 64 each | 8 | virtual | shout-bytecode | ROM fields |
 | `upc`, `seq`, `tgt` | 32 each | 7 | virtual | shout-bytecode | ROM fields |
@@ -101,10 +101,8 @@ shift router; `v1`, `v2`, `rdv`, `rw`, `ridx` are virtual because Twist authenti
 
 **Counts (default parameters, `cpu_circuit.stats`).**
 
-* Witness columns per instance: `NW = 8192`, of which 8064 are in segments (1888 per cycle: 1108 direct + 780
-  virtual, times 4, plus 512 state bits). Total **witness columns per cycle: 2016 used** (1888 + 128 state) out
-  of 2048 allocated. Committed: direct = **1108 bits/cycle** (per-cycle fields) + **128 bits/cycle** (512-bit
-  state / 4 cycles) = **1236 committed bits per cycle**; virtual = 780 bits per cycle (never committed).
+* Witness columns per instance: `NW = 8192`, of which all 8192 are in segments (1920 per cycle: 1108 direct + 812 virtual, times 4, plus 512 state bits). Total **witness columns per cycle: 2048 used** (1920 + 128 state) out of 2048 allocated. Committed: direct = **1108 bits/cycle** (per-cycle fields) + **128 bits/cycle** (512-bit
+  state / 4 cycles) = **1236 committed bits per cycle**; virtual = 812 bits per cycle (never committed).
 * Committed bytes: `1236 / 8 ≈ 154.5 B` per cycle for the CPU witness segments (before the auxiliary Twist/Shout
   one-hot and increment polynomials of 07 and 08, which are counted in those sections).
 * **Comparison with the paper.** Paper §6.5: the prover uses about 1.6 KiB of memory per cycle (1.0 KiB for the
@@ -163,7 +161,7 @@ Rows are `α · β = γ` with each of `α, β, γ` a linear form over K; `P(·)`
 | 7 | **write-back** | `[1] · (P(rdv) + P(T2) + P(Gs) + P(L) + X^0·rdslt + P(kc)) = 0` |
 | 8 | shift source copy | `[1] · (P(shsrc) + P(v1)) = 0` |
 | 9 | RAM index | `mem · Σ_{j<A} X^j S_{3+j} = Σ_{j<A} X^j ridx_j` |
-| 10 | RAM index range | `[1] · Σ_{j=A}^{31} X^j ridx_j = 0` |
+| 10 | RAM index range | `[1] · Σ_{j=A}^{63} X^j ridx_j = 0` |
 | 11 | RAM window | `mem · (Σ_{j=3+A}^{30} X^j S_j + X^{31}(S_31 + 1) + Σ_{j=32}^{63} X^j S_j) = 0` |
 | 12 | exit code | `halted · (P(v1) + Σ_j X^j S_in.ex_j) = 0` |
 | 13 | ECALL a7 | `ecall · P(v2) = 0` |
@@ -299,14 +297,14 @@ datapath, 5 for the packed memory/loads). Direct bits per cycle: 1108 (+128 stat
 
 ## Resolved questions
 
-1. **Cycles per instance. [OM-choice]** `c = 2` (10.2): 1.6% padding, 862/123 rows, state 128 bits/cycle.
+1. **Cycles per instance. [OM-choice]** `c = 2` (10.2): 0% padding, 862/123 rows, state 128 bits/cycle.
 2. **B relation vs K relation. [OM-choice]** B: carries (majority), AND, zero-detect, comparison bits,
    branch decision, sign bits, alignment, TRAP. K: operand and result muxes, word sign-extension, load barrel and
    lane masks, packed copy-bindings (shift source, store sources), RAM address and window, micro-PC update,
    JALR target match, exit-code and ECALL checks. Anything that is a gated 64-bit word is one K row; anything
    that is a per-bit product is B.
 3. **Segment layout / padding. [OM-choice]** Buddy allocation as in 05 (sort by size descending then name);
-   128 of the 8192 columns are padding (1.6%).
+   no column of the 8192 is padding (the 64-bit `ridx` uses the 128 columns that were spare).
 4. **Load path. [OM-choice]** R1CS (barrel + lanes + sign fill, 10.6), no third router in v1. Cost 320
    committed bits per cycle; a load router is future work.
 5. **ADD/SUB/SLT via ripple carry over B. [OM-choice]** Yes (10.4), exactly the paper's XOR + majority.
@@ -336,3 +334,14 @@ truncated trace that does not end in `HALTED`; ROM-field tampering is caught whe
   enforces alignment (`a_h, a_w, a_d`) so the router never sees a misaligned store.
 * **14:** `ex` in `S_in/S_out` is the public exit code (the value of `a0` at HALT); the loader MUST provide
   4-aligned `pc` keys; `A <= 28`.
+
+## Integration notes
+
+* **`ridx` widened from 32 to 64 bits per cycle** (`cpu_circuit.FIELDS`, row 10 of 10.5 now zeroes bits `A..63`). Why: Virtual Spartan's claim on a
+  segment is at `(ρ_i ∥ r_inst)` with `ρ_i` the first `ℓ_i` coordinates of the column point, so a 32-bit segment has its cycle point shifted by one
+  coordinate relative to a 64-bit one. RAM Twist takes the read value (`rw`, 64 bits) and the address-bit claims at **one** cycle point (07 7.5), so
+  `rw` and `ridx` must have the same width. Effect: the 128 columns that were spare are used (`NW` stays 8192, padding 0%); virtual bits per cycle
+  780 → 812; committed bits are unchanged. The checker, the witness and `test_isa_cpu` are unaffected; `vectors/10-cpu/cpu.json` was regenerated.
+* **`off` is defined on every cycle** (it is `S & 7` of the adder output, also on loads and non-memory cycles); the store router's offset-bit claims
+  `store/a_b` are claims on this segment, so the prover's offset tables for the router are the `off` bits of all cycles, not only of stores (the
+  router's selector zero kills the non-store cycles). Implemented in `protocol.py`.
