@@ -236,7 +236,7 @@ are public functions of the claim points (error `0`; the claim that Shout checks
 ## Requests to other sections
 
 * **12:** serialize `(log T, root, …)` in the order of 11.5; shapes are derived from `(vk, T)`.
-* **13:** the accounting of 11.9; also, `gs > 1` in `provable-120` is not yet supported by the reference Ligerito prover, so no end-to-end test runs that profile (04 integration notes).
+* **13:** the accounting of 11.9; `gs > 1` in `provable-120` is now implemented (04.4a) and `tests/test_protocol.py` runs the real profile end to end.
 * **15:** test-vector `11-12/fib_ligerito_test.json` and the negative tests listed under 11.11 belong in the conformance list.
 
 ## 11.11 Reference model and tests
@@ -251,3 +251,5 @@ Measured (Python 3.15, one core): prove 4.5 s, verify 2 s for `T = 32` transpare
 
 * See the integration notes in 01, 04, 07, 08, 10, 14. Summary of the cross-section changes made while composing: `ridx` widened to 64 bits (10); store router input is `y_0` at the Spartan point instead of the `inc_extra` point (07, 08);
   fast router provers (08); `K` multiplication speed-up (01); `off` is defined on all cycles (10); output-MLE helper of 14 unused (14); Ligerito framing with explicit counts (04, 12).
+* 2026-10-16 (Mosaic claim cap, 05.4 / 13.2 note 3): the powers-of-`γ` batching of Mosaic (05.4, 03.6) is limited to **at most 256 claims** for 120 bits. The Mosaic claim list of 11.7 has a fixed length that does not depend on `T`: the 21 direct Spartan claims, `S_in`, `S_out`, the register and RAM Twist outputs, the `shsrc`, `stc`, `off` claims and the Shout outputs. The reference protocol produces **68 claims** for the Fibonacci test program (counted in `tests/test_protocol.py`, `TestProvable120EndToEnd.test_mosaic_claims_within_cap`), and the ledger budget of 13.2 assumes at most 128; both are `<= 256`. `mosaic.batch_prove/batch_verify` reject more than 256 claims.
+* 2026-10-16 (PCS): `provable-120` (`gs = 2`) runs through the whole protocol in the reference tests (04.4a, about 8 s for `T = 32`).

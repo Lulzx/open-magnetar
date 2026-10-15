@@ -135,7 +135,41 @@ where the verifier knows `b_i` as a sparse list of **product-form terms**: `b_i[
         absorb_ks pcs/cols
         i < L-1: challenge_k pcs/beta
 
-**Sizes.** Per level, the proof contains `|Q_i|·16·2^{k_i}` bytes of columns, the deduplicated auth hashes (about `|Q_i|·(log2 N_i − log2 |Q_i| + 2)` of them), `32` bytes of next root, and `32·k_i` bytes of sum-check messages (`2` K per round); plus `16·2^{n_L}` for the final polynomial. Table sizes are in 4.7.
+**Sizes** (for `gs = 1`; 4.4a changes only `N_i` and `n_L`). Per level, the proof contains `|Q_i|·16·2^{k_i}` bytes of columns, the deduplicated auth hashes (about `|Q_i|·(log2 N_i − log2 |Q_i| + 2)` of them), `32` bytes of next root, and `32·k_i` bytes of sum-check messages (`2` K per round); plus `16·2^{n_L}` for the final polynomial. Table sizes are in 4.7.
+
+### 4.4a Gap amplification: `gs_i > 1` (normative)
+
+**[OM-choice]** Let `g = gs_i ≥ 1` be the repetition count of level `i` and `s = ceil(log2 g)`. With `g = 1` (`s = 0`) everything below degenerates to 4.4, byte for byte. Write `m_i = n_i − k_i` (variables of one folded row), so `N_i = 2^{m_i + r_i}`, and redefine `n_{i+1} = m_i + s_i` (4.4 had `s_i = 0`); the final size is `n_L = n_{L-1} − k_{L-1} + s_{L-1}`.
+
+**Idea.** Fold the committed matrix `W_i` with `g` independent challenge vectors `ρ^{(0)}, …, ρ^{(g-1)}` (`ρ^{(0)}` is the sum-check's), put all `g` folded rows into **one** next-level polynomial `F` (block `j` of `F` is `g^{(j)} = f_i(ρ^{(j)}, ·)`), and let the same `t_i` opened columns check every block. No folded row is sent in the clear and no extra Merkle tree is committed; the price is `s` extra variables.
+
+**The next-level polynomial.** `F ∈ K^{2^{m_i + s}}`, `F[y + 2^{m_i}·j] = g^{(j)}[y]` for `j < g`, `y < 2^{m_i}`, and `F[y + 2^{m_i}·j] = 0` for `g ≤ j < 2^s`. The extra variables are the **high** variables `x_{m_i+1..m_i+s}` (LSB-first, C2); block index `j` has bits `j_u`. `f_{i+1} := F` is committed at level `i+1` (4.4), or sent in the clear if `i = L−1`.
+
+**Modified level step.** Steps 1 and 4 of 4.4 and the transcript change as follows; sampling and absorption are in this order.
+
+1. Sum-check as in 4.4: `ρ^{(0)} = ρ_i`, claim `c'_i = ⟨g^{(0)}, b'⟩`.
+2. **Extra folds.** For `j = 1 … g−1` successively, both sides squeeze `ρ^{(j)} = challenge_ks(b"pcs/fold", k_i)`. (None for `g = 1`.) These challenges depend on the transcript through the sum-check, hence after `root_i` was fixed.
+3. **Commit/send** `F` instead of `g`: `root_{i+1}` is the root of the level-`(i+1)` commitment of `F` (`absorb_bytes pcs/root`), or `absorb_ks(b"pcs/final", F)` (all `2^{n_L}` entries, padding included) if `i = L−1`.
+4. **Queries** exactly as 4.4 (`pcs/query/idx`, `pcs/cols`): the same set `Q_i` serves all repetitions. Every query column is used `g` times; no data are added to the opening.
+5. **Consistency.** For `q ∈ Q_i` and `j < g`: `v^{(j)}_q = Σ_a eq(ρ^{(j)}, a)·col_i(q)[a]`; honestly `v^{(j)}_q = Enc(g^{(j)})[q]`.
+   * **If `i = L−1`:** the verifier checks `Σ_y F[y + 2^{m_i} j]·X_y(ω_q) = v^{(j)}_q` for every `q ∈ Q_i`, `j < g` (`basis_row(q)` with `μ = m_i`), and the final claim `Σ_x F[x] b'_{ext}[x] = c'_i` (below).
+   * **Else:** for `j = 0 … g−1` in order, squeeze `β_j = challenge_k(b"pcs/beta")` (for `g = 1` this is the single `β` of 4.4). With `q_1 < … < q_s` the sorted queries,
+     `c_{i+1} = c'_i + Σ_{j<g} Σ_{m} β_j^m · v^{(j)}_{q_m}`,
+     `b_{i+1} = (b' ‖ 0 ‖ …) + Σ_{j<g} Σ_m β_j^m · (e_j ⊗ basis_row(q_m))`,
+     where `b'_{ext}` places `b'` in block 0 and `e_j ⊗ r` places the vector `r` in block `j`. In product form (4.4): the carried terms of the sum-check step get the extra pairs `(γ, d) = (1, 1)` for each of the `s` new variables (that is `eq(0, ·)`, selecting block 0), and each new term is `(α = β_j^m, γ_u = 1, d_u = 1 + Ŵ_u(ω_{q_m}))` for `u ≤ m_i` followed, for `u = 1..s`, by `(γ, d) = (1 + j_u, 1)` (that is `eq(j, ·)`, selecting block `j`). The terms are appended in the order `j` ascending, then `m` ascending.
+
+**Transcript order of one level** (replaces the loop body of 4.4):
+
+    [sum-check pcs/sumcheck]
+    j = 1..g-1:  challenge_ks pcs/fold  (k_i)
+    i < L-1: absorb_bytes pcs/root root_{i+1}     i = L-1: absorb_ks pcs/final F
+    t_i x challenge_index pcs/query/idx
+    absorb_ks pcs/cols
+    i < L-1: g x challenge_k pcs/beta
+
+**Proof contents.** Exactly as 4.4: `root_{i+1}`, sum-check messages, columns and `auth`, final polynomial (now `2^{n_L}` entries). `g` is a function of the parameters, not of the proof; a verifier MUST reject a proof whose final polynomial length differs from `2^{n_L}`.
+
+**Soundness (sketch).** Fix level `i`, a matrix `W_i` committed before any challenge of the level, and a prover message `F` (block `j` committed as `G_j`). (a) *Gap.* If `W_i` is not within `δ` of the (interleaved) code, then for each fold `j` the folded word `Σ_a eq(ρ^{(j)}, a)W_i[a]` is `δ`-far from the code except with probability `ε_gap = kN/|K|` (4.7); the `ρ^{(j)}` are independent and uniform, so **all** `g` folds are close with probability at most `ε_gap^g`. (b) *Queries.* If some fold `j` is `δ`-far, then `Enc(G_j)` differs from it on at least `δN` positions, so a query with `Enc(G_j)[q] ≠ v^{(j)}_q` exists in `Q_i` except with probability `(1 − δ)^{t}`, hence the claim made by one of the `g·|Q_i|` consistency terms is false. (c) *Batching.* The new claim is `c'_i + Σ_{j,m} β_j^m v^{(j)}_{q_m}` against `F`; if the sum-check claim or any consistency term is false for `F`, then `(c_{i+1}) − ⟨F, b_{i+1}⟩`, as a polynomial in `(β_0, …, β_{g-1})`, is non-zero of total degree `≤ |Q_i| ≤ t`, so `(★_{i+1})` is false except with probability `t/|K|` (independent of `g`; this is why the `batch` term of 4.7 is unchanged). The induction continues at level `i+1` with the false claim about `F`. If all folds are close, the case continues as in the `g = 1` argument with the decoded word (the sum-check reduction and the `ρ^{(0)}` fold are exactly 4.4). Total per level: `2k/|K| + t/|K| + (kN/|K|)^g + (1−δ)^t`, as in the ledger (13.5). **Status:** this composition is ours; steps (a)-(c) are a sketch of the reduction under the BCHKS proximity-gap statement, tracked in audit 13.9(1) only for the gap statement itself. Tests: completeness for `g = 2, 3`, wrong value, tampering of every block of the final polynomial, and a prover that commits a level polynomial wrong in block `j` for each `j` (`tests/test_ligerito.py`, `TestGapAmplification`), and the real `provable-120` profile (`TestProvable120`, `test_protocol.TestProvable120EndToEnd`).
 
 ### 4.5 Ring switching
 
@@ -198,17 +232,17 @@ The final-level inner-product check and the final column checks are exact (no er
 
 **Profile `conjectured-100`** (**not provable**: it relies on the conjectured RS proximity-gap/up-to-capacity list decoding behaviour; comparison only; MUST be opt-in, MUST NOT be used for the production claim of 120 bits, and MUST be recorded in the verifying key so a proof cannot be passed off under the default profile). Queries: `t_i = ceil( 100 / r_i )` (soundness `ρ^t`, as if the proximity radius were `1 − ρ`); `r = 2 → t = 50`. The gap and batching terms are not accounted for in this profile.
 
-**Gap amplification (resolves the former open problem; see 13.5).** With the conservative bound `ε_gap = k·N/|K|` one fold challenge reaches only `128 − log2(kN)` bits, which is 104.7 to 118.0 bits for the levels of the default schedules, so `provable-120` additionally uses **`gs_i` independent proximity repetitions per level**: the level's fold, commitment and query phase are run `gs_i` times with independent challenges, so the gap term becomes `(kN/|K|)^{gs_i}`. The profile chooses the smallest `gs_i` with `gs_i·(128 − log2(k_i N_i)) ≥ 120`; this is `gs_i = 2` at every level of every default schedule (gap bits 209 to 236). `LigeritoParams` gains the optional field `gs` (default empty = all 1, encoded in `enc_params` only when some `gs_i > 1`, as the suffix `"GAPREPS" ‖ u64le(gs_i)…`). **Status:** the accounting, parameter selection and size model are implemented (`ligerito.make_params`, `soundness_bits`, `params.py`); the reference `open_`/`verify` raise `NotImplementedError` for `gs_i > 1`; the exact batching of the repeated folds into one next-level claim is **not yet specified** and is the first item of the audit list in 13.9. The alternative (not used): the sharper unique-decoding bound of ECCC TR25-169 might make `gs = 1` sufficient, but I could only confirm its abstract (a constant number of exceptional challenges `O_{ε*}(1)` for proximity loss `ε*`), not an explicit `ε(n, q)`, so no claim rests on it.
+**Gap amplification (see 4.4a and 13.5).** With the conservative bound `ε_gap = k·N/|K|` one fold challenge reaches only `128 − log2(kN)` bits, which is 104.7 to 118.0 bits for the levels of the default schedules, so `provable-120` additionally uses **`gs_i` independent fold-challenge vectors per level**, composed as in 4.4a, so the gap term becomes `(kN/|K|)^{gs_i}`. The profile chooses the smallest `gs_i` with `gs_i·(128 − log2(k_i N_i)) ≥ 120`; this is `gs_i = 2` at every level of every default schedule (gap bits 205 to 232). `LigeritoParams` has the optional field `gs` (default empty = all 1, encoded in `enc_params` only when some `gs_i > 1`, as the suffix `"GAPREPS" ‖ u64le(gs_i)…`). **Status:** implemented and tested (`ligerito.open_/verify`, `make_params`, `soundness_bits`, `params.py`; the real `provable-120` profile runs end to end in `tests/test_ligerito.py` and `tests/test_protocol.py`). The alternative (not used): the sharper unique-decoding bound of ECCC TR25-169 might make `gs = 1` sufficient, but I could only confirm its abstract (a constant number of exceptional challenges `O_{ε*}(1)` for proximity loss `ε*`), not an explicit `ε(n, q)`, so no claim rests on it.
 
-**Table** (`r = 2`, `t = 177` provable or `50` conjectured; sizes in KiB from `params.proof_size_bytes`, an expected-value model including ring switching; repeated levels counted `gs_i` times; the "1 rep" column is what the former conservative accounting would give and is **not** 120-bit).
+**Table** (`r = 2`, `t = 177` provable or `50` conjectured; sizes in KiB from `params.proof_size_bytes`, an expected-value model including ring switching; the "1 rep" column is the former conservative accounting on the same schedule and is **not** 120-bit).
 
-| `n` (packed vars) | levels `ks` | final `n_L` | provable-120 (`gs = 2`) | same schedule, 1 rep (not 120-bit) | conjectured-100 | `gap` bits per level (`gs = 2`) |
+| `n` (packed vars) | levels `ks` | final `n_L` (`gs = 2`) | provable-120 (`gs = 2`) | same schedule, 1 rep (not 120-bit) | conjectured-100 | `gap` bits per level (`gs = 2`) |
 |---|---|---|---|---|---|---|
-| 20 | [5,5,4] | 6 | 641 KiB | 322 KiB | 106 KiB | 217.4, 227.4, 236.0 |
-| 22 | [4,4,4,4] | 6 | 705 KiB | 354 KiB | 117 KiB | 212.0, 220.0, 228.0, 236.0 |
-| 24 | [5,5,4,4] | 6 | 893 KiB | 448 KiB | 144 KiB | 209.4, 219.4, 228.0, 236.0 |
+| 20 | [5,5,4] | 9 | 357 KiB | 322 KiB | 106 KiB | 217.4, 225.4, 232.0 |
+| 22 | [4,4,4,4] | 10 | 415 KiB | 354 KiB | 117 KiB | 212.0, 218.0, 224.0, 230.0 |
+| 24 | [5,5,4,4] | 10 | 509 KiB | 448 KiB | 144 KiB | 209.4, 217.4, 224.0, 230.0 |
 
-(`n` packed variables correspond to `2^{n+7}` witness bits. For the full machine at `T = 2^22` the Mosaic polynomial has about `2^33` bits, i.e. `n = 26`, schedule `[5,5,5,5]`: about 1101 KiB provable, see 13.5.) Per level the sum-check bits are `≥ 124.7`, the batching bits `120.5`, the query bits `≥ 120.0`, the gap bits `≥ 205`. The size model's absolute values are about 15% above the previous sampled estimates for the 1-rep schedule (different auth-path model); treat sizes as estimates until the Rust prover measures them.
+(`n` packed variables correspond to `2^{n+7}` witness bits. For the full machine at `T = 2^22` the Mosaic polynomial has about `2^33` bits, i.e. `n = 26`, schedule `[5,5,5,5]`: about 624 KiB provable, see 13.5.) Per level the sum-check bits are `≥ 124.7`, the batching bits `120.5`, the query bits `≥ 120.0`, the gap bits `≥ 205`. The cost of `gs = 2` is only the one extra variable per level (4.4a): deeper Merkle paths and a final polynomial of `2^{n_L}` entries with `n_L = 6 + L` instead of 6. The size model's absolute values are about 15% above the previous sampled estimates for the 1-rep schedule (different auth-path model); treat sizes as estimates until the Rust prover measures them.
 
 **Derivation of `t` from rate.** The proximity step maps a possibly non-codeword matrix to a folded word; if the prover's next-level polynomial is not the fold, `Enc(g)` and the (decoded) fold differ in at least `δ·N` positions (distance `1−ρ` minus the `δ` slack = `δ`). Each independent query lands there with probability `≥ δ`. Hence escape probability `≤ (1−δ)^t`, and `t ≥ λ/ −log2(1−δ)` with `1 − δ = (1+ρ)/2`.
 
@@ -230,16 +264,18 @@ Tests: `tests/test_merkle.py`, `test_ntt.py`, `test_ligerito.py`, `test_ring_swi
 
 ### Requests to other sections
 
-* **13-security:** (1) **Resolved in 13.5** (gap amplification, `gs_i = 2`). (2) Add `ε_RS ≤ (7 + 2n)/|K|` for ring switching, and the Ligerito terms of 4.7, to the per-step accounting. (3) Round-by-round soundness for the `β`-batching and the query steps is as above.
+* **13-security:** (1) **Resolved in 13.5 and 4.4a** (gap amplification, `gs_i = 2`). (2) Add `ε_RS ≤ (7 + 2n)/|K|` for ring switching, and the Ligerito terms of 4.7, to the per-step accounting. (3) Round-by-round soundness for the `β`-batching and the query steps is as above.
 * **12-proof-format:** serialize `LigeritoParams` (n, ks, rs, ts) and the profile name in the verifying key; the proof layout of 4.1 (roots, per-level sum-check messages, openings with `auth` lists of known length, final polynomial). `auth` is not length-prefixed; its length follows from the index set (derive it during parsing).
 * **05-mosaic / 11-protocol:** the PCS is single-point; `open` consumes the transcript, so 11 must fix where the commitment and `(r, y)` are absorbed relative to the preceding stages (4.1 absorbs `pcs/params`, `pcs/root`, then `pcs/point`, `pcs/value`; ring switching absorbs `rs/point`, `rs/value` again). For witness commitments the number of committed packed variables must be `n = ℓ − 7 ≥ 1` and `ℓ ≥ 8`.
-* **02-transcript:** new labels used here: `pcs/params`, `pcs/root`, `pcs/point`, `pcs/value`, `pcs/sumcheck`, `pcs/final`, `pcs/query/idx`, `pcs/cols`, `pcs/beta`, `rs/point`, `rs/value`, `rs/s`, `rs/rho`, `rs/sumcheck` (the existing table lists `pcs/root` and `pcs/query/idx`).
+* **02-transcript:** new labels used here: `pcs/params`, `pcs/root`, `pcs/point`, `pcs/value`, `pcs/sumcheck`, `pcs/final`, `pcs/query/idx`, `pcs/cols`, `pcs/beta`, `pcs/fold`, `rs/point`, `rs/value`, `rs/s`, `rs/rho`, `rs/sumcheck` (the existing table lists `pcs/root` and `pcs/query/idx`).
 * **01-fields:** the packing `P[v] = K.pack(w[128v .. 128v+127])` and `U_m` as the integers `[0, 2^m)` should be cited from 01.
 
 ## Integration notes
 
-* 2026-10-16 (agent for 13/15): replaced the "Known gap" paragraph, the table and the gap column of 4.7 by the gap-amplification text above; added the optional `gs` field to `LigeritoParams` (4.6) and `reference/openmagnetar/ligerito.py` (`gs`, `reps`, `gap_reps`, `make_params`, `soundness_bits`, `encode`; `open_`/`verify` raise `NotImplementedError` when `gs_i > 1`). Existing vectors are unchanged (`gs` is absent from `encode()` when all 1). The `soundness_bits()` gap column now includes the repetition factor. Request to 12: serialize `gs` in the verifying key when present.
+* 2026-10-16 (agent for 13/15): replaced the "Known gap" paragraph, the table and the gap column of 4.7 by the gap-amplification text above; added the optional `gs` field to `LigeritoParams` (4.6) and `reference/openmagnetar/ligerito.py` (`gs`, `reps`, `gap_reps`, `make_params`, `soundness_bits`, `encode`; `open_`/`verify` raised `NotImplementedError` when `gs_i > 1`, superseded by the 2026-10-16 note below). Existing vectors are unchanged (`gs` is absent from `encode()` when all 1). The `soundness_bits()` gap column now includes the repetition factor. Request to 12: serialize `gs` in the verifying key when present.
 
 * **Proof framing (12).** The Ligerito openings are serialized with a `u32` count of columns and a `u32` count of authentication hashes per level, instead of deriving
   the path length from the query set while parsing as the request to 12 above suggests; this keeps the parser independent of the transcript. `gs` is not stored in the vk: the vk holds
-  `(profile, r, t)` and the parameters, including `gs`, are re-derived by `make_params` (12.2). The reference `open_`/`verify` still raise for `gs > 1`, so `protocol.py` end-to-end tests use the `test` profile (`t = 8`, `gs = 1`).
+  `(profile, r, t)` and the parameters, including `gs`, are re-derived by `make_params` (12.2). `gs > 1` is implemented (4.4a); `protocol.py` end-to-end tests use both the `test` profile (`t = 8`, `gs = 1`, fast) and the real `provable-120` profile.
+
+* 2026-10-16 (gs > 1): specified the composition of repeated folds in the new 4.4a (all folds in one next-level polynomial `F` with `s = ceil(log2 gs)` extra high variables, one root, shared queries, one `β_j` per repetition, new label `pcs/fold`); `LigeritoParams.n_i`, `m_i`, `n_final`, `log_codeword`, `sbits` account for the extra variables; `open_/verify` no longer raise for `gs > 1`; new test classes `TestGapAmplification`, `TestProvable120` and `test_protocol.TestProvable120EndToEnd`. `gs = 1` transcripts and vectors are unchanged. `params.proof_size_bytes` no longer multiplies a level by `gs` (357/415/509 KiB at `n = 20/22/24`, 624 KiB at `n = 26`, was 641/705/893/1101). Label `pcs/fold` is new for 02. The earlier note that `protocol.py` end-to-end tests must use the `test` profile is obsolete: `provable-120` (`t = 177`, `gs = 2`) runs through the whole protocol in the tests (about 8 s for the Fibonacci program, 68 Mosaic claims).

@@ -87,11 +87,10 @@ in `test_size_model`. The proof size is `4 + 2 + |digest| + 16·N_K + |Ligerito 
 * committed bits per cycle `B = 1556` (11.4), `ℓ = 33`, packed variables `n_L = 26`, schedule `ks = [5, 5, 5, 5]`, `r = 2`, `t = 177` queries per level;
 * `N_K(22) = 58·22 + 491 + 4·33 + 115 = 2014` `K` elements: **31.5 KiB** outside the PCS opening (`58n + 4ℓ + 606` for these parameters);
 * Ligerito opening with **one** repetition per level (our size model, `ligerito_expected_bytes`): 493 KiB, total **≈ 525 KiB**;
-* with the **gap amplification `gs = 2`** that 04.7/13.5 require for the 120-bit *provable* claim: the Ligerito opening is about 1101 KiB (04.7), total **≈ 1.13 MiB**. The reference prover/verifier do not implement `gs > 1`
-  (04), so no proof of this size is produced by the reference model.
+* with the **gap amplification `gs = 2`** that 04.7/04.4a/13.5 require for the 120-bit *provable* claim (the repeated folds share one next-level polynomial, so the cost is one extra variable per level, not a second opening): the Ligerito opening is about 624 KiB (`params.proof_size_bytes`, 04.7), total **≈ 656 KiB**. The reference prover/verifier implement `gs = 2` (04.4a); the real profile is exercised end to end by `tests/test_protocol.py`, but at toy size (`T = 32`).
 
 **Comparison with the paper (about 600 KiB).** The one-repetition figure (≈ 525 KiB) is within 15% of the paper's number, which fits a proof that does not pay for gap amplification; the
-sound provable-120 figure is about twice that. The proof is dominated by the Ligerito opening (94% at `gs = 1`); the Twist/Shout/Spartan sum-check messages together are 31.5 KiB. The size of the test proof in the vector
+sound provable-120 figure (≈ 656 KiB) is about 25% above the 1-rep model figure, in the range of the paper's. The proof is dominated by the Ligerito opening (94% at `gs = 1`); the Twist/Shout/Spartan sum-check messages together are 31.5 KiB. The size of the test proof in the vector
 (`T = 32`, `ℓ = 16`, `t = 8`) is 15 630 bytes, of which 12 454 are outside the PCS opening and 3 176 are the Ligerito opening.
 
 ## Resolved questions
@@ -108,3 +107,5 @@ sound provable-120 figure is about twice that. The proof is dominated by the Lig
 ## Integration notes
 
 * The Ligerito opening is serialized with `u32` counts (see 04 integration notes). `gs` is not serialized; it is a function of `(profile, r, n_L)` through `make_params` (04 asked for it in the vk; derivation makes it redundant).
+
+* 2026-10-16: Concrete size paragraph updated for the gs > 1 composition of 04.4a (proof-size model no longer repeats a whole level `gs` times). The framing is unchanged: `gs` is re-derived, the final polynomial has `2^{n_L}` entries with `n_L` from `LigeritoParams.n_final` (6 + number of repeated levels for `provable-120`).

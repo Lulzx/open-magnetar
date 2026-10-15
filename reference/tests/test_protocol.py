@@ -57,6 +57,44 @@ class Fixture(unittest.TestCase):
         cls.blob = pf.encode_proof(cls.vk, cls.proof)
 
 
+class TestProvable120EndToEnd(unittest.TestCase):
+    """The real provable-120 profile (t = 177, gs = 2) through the whole protocol (about 8 s)."""
+
+    @classmethod
+    def setUpClass(cls):
+        code, entry = program(fib_program())
+        cls.vk = keygen.keygen(code, entry, {}, AP, pcs="ligerito")        # default profile
+        counts = []
+        orig = protocol.batch_prove
+        protocol.batch_prove = lambda layout, claims, *a, **k: (counts.append(len(claims)), orig(layout, claims, *a, **k))[1]
+        try:
+            cls.inst, cls.proof = protocol.prove_instance(cls.vk, b"")
+        finally:
+            protocol.batch_prove = orig
+        cls.claims = counts[0]
+        cls.blob = pf.encode_proof(cls.vk, cls.proof)
+
+    def test_profile_is_the_provable_one(self):
+        self.assertEqual(self.vk.pcs_profile, "provable-120")
+        p = self.vk.derived.ligerito_params(self.inst.T.bit_length() - 1 + 11)
+        self.assertEqual(p.ts, (177,) * p.levels)
+        self.assertTrue(p.gs and all(g == 2 for g in p.gs))
+
+    def test_accepts(self):
+        self.assertTrue(protocol.verify(self.vk, self.inst, self.proof))
+        self.assertTrue(protocol.verify(self.vk, self.inst, self.blob))
+
+    def test_mosaic_claims_within_cap(self):
+        self.assertLessEqual(self.claims, 256)      # 05.7: powers-of-gamma batching cap for 120 bits
+
+    def test_tampered(self):
+        n = len(self.blob)
+        for pos in (n - 1, n - 500, n // 2, 100):
+            b = bytearray(self.blob)
+            b[pos] ^= 1
+            self.assertFalse(protocol.verify(self.vk, self.inst, bytes(b)), pos)
+
+
 class TestCompletenessLigerito(Fixture):
     def test_fib_real_ligerito(self):
         self.assertEqual(self.inst.T, 32)

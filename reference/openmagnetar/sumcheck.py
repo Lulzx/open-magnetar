@@ -102,7 +102,10 @@ def sumcheck_verify(claim: K, num_vars: int, degree: int, proof: SumcheckProof,
 
 def batch_claims(claims: list[K], transcript: Transcript, label: bytes) -> tuple[list[K], K]:
     """Random-linear-combination batching of equal-num_vars claims.
-    Returns (coeffs [1, g, g^2, ...], combined claim sum_i g^i claim_i)."""
+    Returns (coeffs [1, g, g^2, ...], combined claim sum_i g^i claim_i).
+    At most 256 claims (spec 03.6: (n-1)/|K| < 2^-120 only up to n = 256)."""
+    if len(claims) > 256:
+        raise ValueError("powers-of-gamma batching is limited to 256 claims (03.6)")
     transcript.absorb_ks(label + b"/claims", claims)
     gamma = transcript.challenge_k(label + b"/gamma")
     coeffs, p = [], K.ONE

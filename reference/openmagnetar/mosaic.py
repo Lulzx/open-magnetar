@@ -117,8 +117,13 @@ def eq_sum_table(layout: Layout, claims: list[Claim], alphas: list[K]) -> list[K
     return T
 
 
+MAX_CLAIMS = 256   # 05.4: powers-of-gamma batching loses (n-1)/|K|; <= 256 keeps 120 bits
+
+
 def batch_prove(layout: Layout, claims: list[Claim], G: list[int], transcript: Transcript):
     """Returns (BatchProof, r_G, v_G). Claims must be true for G."""
+    if len(claims) > MAX_CLAIMS:
+        raise ValueError("too many Mosaic claims for powers-of-gamma batching (05.4)")
     for c in claims:
         lift_point(layout, c)
     alpha = _start(claims, transcript)
@@ -136,6 +141,8 @@ def batch_prove(layout: Layout, claims: list[Claim], G: list[int], transcript: T
 
 def batch_verify(layout: Layout, claims: list[Claim], proof: BatchProof, transcript: Transcript):
     """Returns (r_G, v_G): the claim G~(r_G) = v_G handed to ring switching."""
+    if len(claims) > MAX_CLAIMS:
+        raise VerificationError("too many Mosaic claims for powers-of-gamma batching (05.4)")
     lifted = [lift_point(layout, c) for c in claims]
     alpha = _start(claims, transcript)
     alphas = _alpha_powers(alpha, len(claims))

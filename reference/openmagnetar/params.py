@@ -183,8 +183,8 @@ def ledger(log_t: int, profile: str = "provable-120", machine: Machine | None = 
 
 
 def proof_size_bytes(p: lg.LigeritoParams, n_ring: bool = True) -> float:
-    """Expected proof size of one opening, bytes (13.5). Repetition (gs>1) is modelled as
-    repeating the level's columns, auth paths, root and sum-check messages gs times."""
+    """Expected proof size of one opening, bytes (13.5). Repetition (gs>1) costs only the larger
+    next-level polynomial (one extra variable per level: longer codeword, deeper paths, bigger final)."""
     total = 0.0
     for i in range(p.levels):
         k, t = p.ks[i], p.ts[i]
@@ -193,7 +193,7 @@ def proof_size_bytes(p: lg.LigeritoParams, n_ring: bool = True) -> float:
         q = N * (1 - (1 - 1 / N) ** t)                      # expected distinct queries
         cols = q * 16 * (1 << k)
         auth = q * max(lb - math.log2(q) + 2, 0) * 32
-        total += p.reps(i) * (cols + auth + 32 + 32 * k)
+        total += cols + auth + 32 + 32 * k
     total += 16 * (1 << p.n_final)
     if n_ring:
         total += 2048 + 32 * p.n

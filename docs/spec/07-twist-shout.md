@@ -185,9 +185,9 @@ combination. Together with the one-hot check, every row has weight exactly one.
 the product of component row sums is 1 only if each is 1.) No separate
 non-emptiness check is needed.
 
-**Soundness.** `≤ [2a + 1] + [(d>1) ((d+1)n + 1)] + (5n + 5a_c + 1)`, over `F`
+**Soundness.** `≤ [2a + 2] + [(d>1) ((d+1)n + 1)] + (5n + 5a_c + 1)`, over `F`
 (sum-check degree-2 rounds, coefficient batching, virtualization, one-hot). Group batching `β`
-adds `1/F`.
+adds `1/F`. (`2a + 1` for the degree-2 sum-check and the `α, γ` batching, plus `1` for `β`; the earlier draft omitted the `β` term.)
 
 ### 7.5 BinaryTwist
 
@@ -411,3 +411,5 @@ write address), `test_vectors_07_08.py`. Vectors: `reference/vectors/07-twist-sh
   virtual `ridx` polynomial and the committed address bits agree at the random point `(r_o ∥ r_c)`. This needed `ridx` to be 64 bits wide (10 integration notes).
 * **Final-memory layout.** `FinalMem.words` is turned into the table `k_low + 2^m·o` by Twist itself; 11 passes `abi.encode_region(output, O)`. The helper
   `abi.expected_output_mle_eval` (layout `o + 64u`, 14.3) is not used by 11 (see 14 integration notes).
+
+* 2026-10-16 (13): Shout batching error corrected from `2a + 1` to `2a + 2` in 7.4 (the `β` batching is a separate degree-1 challenge, 13.2 note 2). `params.py` already uses `tot_num = 2·rom_a + 2`.

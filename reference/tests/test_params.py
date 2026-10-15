@@ -73,11 +73,10 @@ class TestLedger(unittest.TestCase):
         self.assertLess(a, b)
         self.assertLess(P.proof_size_bytes(lg.make_params(24, "conjectured-100")), b)
 
-    def test_reference_prover_rejects_reps(self):
+    def test_reps_change_sizes_consistently(self):
         p = lg.make_params(14)
         self.assertTrue(p.gs)
-        with self.assertRaises(NotImplementedError):
-            lg.open_(p, None, None, [], None, None)
+        self.assertEqual(p.n_final, 14 - sum(p.ks) + sum(p.sbits(i) for i in range(p.levels)))
 
     def test_small_n_unchanged_encoding(self):
         p = lg.LigeritoParams(10, (3, 3), (1, 2), (6, 5))

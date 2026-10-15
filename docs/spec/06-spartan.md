@@ -234,7 +234,7 @@ verifier gets the final claim `e′`.
 Soundness error of the reduction for `T` relations, in terms of the
 Schwartz–Zippel lemma and sum-check soundness:
 
-    ε_outer  = T · ( (ρ + s) + 3(ρ + s) ) / |K|            # per relation: τ, then 3 per round
+    ε_outer  = T · ( (ρ + s) + 3(ρ + s) ) / |K|            # per relation: τ, then 3 per round (total)
     ε_batch  = 1 / |K|                                      # six (3T) terminal values, independent α
     ε_inner  = 2ν / |K|                                     # degree 2, ν rounds
     ε_spartan = ε_outer + ε_batch + ε_inner = ( 4T(ρ+s) + 1 + 2ν ) / |K| .
@@ -244,7 +244,7 @@ relation, `Σ_x eq(τ, x)(…)` is the evaluation at `τ` of the MLE of the
 non-zero vector `(Az)∘(Bz) + Cz`, a non-zero multilinear polynomial in `τ` of
 total degree at most `ρ + s`, so it is zero for at most `(ρ+s)/|K|` of the
 `τ`. For non-zero sum the sum-check then fails with probability
-`≥ 1 − 3(ρ+s)/|K|`. Sharing the instance challenges does not change this: each
+`≥ 1 − 3(ρ+s)/|K|`. **Per-round error (round-by-round accounting, 13.2):** the row rounds belong to one relation and have error `3/|K|` each, but the `s` *instance* rounds use one challenge shared by both relations (lockstep), and either relation can be the one with a bad round, so the per-round error of a shared instance round is `T·3/|K| = 6/|K|` (not `3/|K|`). The total `ε_outer` is unchanged. Sharing the instance challenges does not change this: each
 relation's outer sum-check is an ordinary sum-check whose round challenges are
 uniform and independent of the messages of that round, and the messages of the
 other relation are fixed by the prover before the challenge is drawn. If the
@@ -566,3 +566,7 @@ proof element, the output claims and the next challenge after the protocol
 * **Section 03:** none (the module uses `sumcheck_prove/verify` as specified;
   the lockstep outer rounds implement the same message format with a local
   Lagrange helper, `interpolate_eval`, `_interp`).
+
+## Integration notes
+
+* 2026-10-16 (13): corrected the per-round soundness of the shared instance rounds of the lockstep outer sum-check to `6/|K|` (`T = 2` relations, each contributing `3/|K|`); row rounds stay at `3/|K|`; the total `ε_outer` of Lemma 6.1 is unchanged. `params.py` already uses `rbr_num = 6` for this row (13.2 row 2).

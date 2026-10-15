@@ -163,5 +163,105 @@ class TestLigerito(unittest.TestCase):
             b.verify(cm, r, y2, (rs_proof, pf2), tv)
 
 
+class TestGapAmplification(unittest.TestCase):
+    """gs > 1 (spec 4.4a)."""
+
+    P2 = lg.LigeritoParams(10, (3, 3), (1, 2), (30, 30), (2, 2))
+    P3 = lg.LigeritoParams(9, (2, 2), (2, 2), (12, 12), (3, 1))
+
+    def test_completeness(self):
+        for p in (self.P2, self.P3, lg.LigeritoParams(8, (3,), (1,), (5,), (2,))):
+            pcs, tab, cm, r, y, pf = run(p)
+            self.assertEqual(y, mle_eval(tab, r))
+            check(pcs, cm, r, y, pf)
+            self.assertEqual(len(pf.final), 1 << p.n_final)
+
+    def test_wrong_value(self):
+        pcs, tab, cm, r, y, pf = run(self.P2)
+        with self.assertRaises(VerificationError):
+            check(pcs, cm, r, y + K.ONE, pf)
+
+    def test_tamper_each_repetition_in_final(self):
+        # block j of the final polynomial is the j-th folded row; each is checked against the columns
+        for p in (self.P2, self.P3):
+            pcs, tab, cm, r, y, pf = run(p)
+            m = p.m_i(p.levels - 1)
+            for j in range(p.reps(p.levels - 1)):
+                c = dataclasses.replace(pf)
+                c.final = list(pf.final)
+                c.final[j << m] = c.final[j << m] + K.ONE
+                with self.assertRaises(VerificationError):
+                    check(pcs, cm, r, y, c)
+
+    def test_cheating_in_each_repetition(self):
+        # the committed level-1 polynomial is wrong in repetition block `rep` only
+        p = lg.LigeritoParams(10, (3, 3), (1, 2), (30, 30), (3, 3))
+        m = p.m_i(0)
+        for rep in range(3):
+            rng = random.Random(9)
+            pcs = LigeritoPCS(p)
+            tab = [random_k(rng) for _ in range(1 << p.n)]
+            tr = Transcript(b"t")
+            cm, st = pcs.commit(tab, tr)
+            r = [random_k(rng) for _ in range(p.n)]
+            orig = lg.commit_level
+
+            def evil(h, f, k, rr, rep=rep):
+                if len(f) == 1 << p.n_i(1):
+                    f = list(f)
+                    f[(rep << m) + 1] = f[(rep << m) + 1] + K.ONE
+                return orig(h, f, k, rr)
+            lg.commit_level = evil
+            try:
+                y, pf = pcs.open(st, r, tr)
+            finally:
+                lg.commit_level = orig
+            with self.assertRaises(VerificationError):
+                check(pcs, cm, r, y, pf)
+
+    def test_params_encoding_and_shape(self):
+        self.assertEqual(self.P2.n_i(1), 10 - 3 + 1)
+        self.assertEqual(self.P2.n_final, 10 - 6 + 2)
+        self.assertEqual(self.P3.sbits(0), 2)
+        self.assertEqual(self.P3.sbits(1), 0)
+
+
+class TestProvable120(unittest.TestCase):
+    """The real provable-120 profile (t = 177, gs = 2) on the smallest polynomial that needs gs = 2."""
+
+    def test_profile_end_to_end(self):
+        p = lg.make_params(8, "provable-120")
+        self.assertEqual(p.ts, (177,))
+        self.assertEqual(p.gs, (2,))
+        self.assertEqual(p.ks, (2,))
+        for d in lg.soundness_bits(p):
+            self.assertGreaterEqual(min(d["gap"], d["query"], d["sumcheck"], d["batch"]), 120)
+        pcs, tab, cm, r, y, pf = run(p)
+        self.assertEqual(y, mle_eval(tab, r))
+        check(pcs, cm, r, y, pf)
+        with self.assertRaises(VerificationError):
+            check(pcs, cm, r, y + K.ONE, pf)
+
+    def test_profile_two_levels_bitpcs(self):
+        ell = 7 + 12
+        p = lg.make_params(ell - 7, "provable-120")
+        self.assertEqual(len(p.ks), 2)
+        self.assertTrue(all(g == 2 for g in p.gs))
+        rng = random.Random(4)
+        bits = [rng.getrandbits(1) for _ in range(1 << ell)]
+        b = BitPCS(p)
+        tr = Transcript(b"t")
+        cm, st = b.commit(bits, tr)
+        r = [random_k(rng) for _ in range(ell)]
+        y, pf = b.open(st, r, tr)
+        tv = Transcript(b"t")
+        b.pcs.absorb_commitment(cm, tv)
+        b.verify(cm, r, y, pf, tv)
+        tv = Transcript(b"t")
+        b.pcs.absorb_commitment(cm, tv)
+        with self.assertRaises(VerificationError):
+            b.verify(cm, r, y + K.ONE, pf, tv)
+
+
 if __name__ == "__main__":
     unittest.main()

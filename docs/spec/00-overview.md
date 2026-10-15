@@ -82,7 +82,7 @@ The final-memory claim ties the RAM to the public output. Every committed polyno
 | committed bits per cycle (default `A = 20`, ROM `2^16`) | 1556: 1108 direct + 128 state + 112 register Twist + 144 RAM Twist + 64 Shout (11.4) |
 | virtual (uncommitted) bits per cycle | 812 |
 | `G` at `T = 2^22` | `2^33` bits (`ℓ = 33`), packed `n = 26` |
-| proof at `T = 2^22` | about 525 KiB with one proximity repetition, about 1.13 MiB with the gap amplification `gs = 2` of the 120-bit provable profile (12.5); the paper reports about 600 KiB |
+| proof at `T = 2^22` | about 525 KiB with one proximity repetition, about 656 KiB with the gap amplification `gs = 2` of the 120-bit provable profile (12.5); the paper reports about 600 KiB |
 
 ## 0.5 Section map
 
@@ -145,7 +145,7 @@ Grouped by section; each item points at the section that justifies it. Cross-cut
 8. **Circuit:** 4 cycles per instance, concrete constraint families for both relations; the PC is a ROM column, not a witness word (10).
 9. **Protocol composition** (11): the claim graph above, derived Shout columns instead of packed bytecode claims, `T` per proof, a program-carrying verifying key and a ROM evaluated by the verifier in linear time (a committed
    ROM would need more of 04/05 and is future work).
-10. **Proof size:** about 525 KiB at one repetition and about 1.13 MiB at the repetition level required for the provable claim, against about 600 KiB in the paper (12.5).
+10. **Proof size:** about 525 KiB at one repetition and about 656 KiB at the repetition level required for the provable claim, against about 600 KiB in the paper (12.5).
 
 ## 0.8 Where to go next
 

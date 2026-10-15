@@ -115,6 +115,7 @@ transcript and the verifying key; Mosaic absorbs only the values.
 2. `γ ← challenge_k(mos/batch/gamma)`; `α_j = γ^j` for `j = 0 … n−1` (so
    `α_0 = 1`). **[OM-choice]** powers of one challenge rather than `n`
    independent `α_j`: one squeeze, and the soundness loss is only `(n−1)/|K|`.
+   **Cap (normative):** `n ≤ 256`. The error `(n−1)/|K|` is a single-challenge error of degree `n−1`; it stays below `2^{-120}` only for `n ≤ 256` (`255/2^{128} < 2^{-120}`), so provers and verifiers MUST reject a claim list with `n > 256` (above that, independent `γ` per 256-claim chunk would be needed, which this version does not specify). 11 fixes the list; its length is independent of `T` (11 integration notes: 68 claims in the reference run, at most 128 budgeted).
    (This is the paper's `α_i` with the specific choice `α_i = γ^i`; it agrees
    with 03's 3.6 convention.)
 3. The claim is `c = Σ_j α_j · v_j`. Let `R_j = r_j ∥ s_{id_j}` be the lifted
@@ -225,3 +226,7 @@ test_vectors_05_06.py`.
 * **Section 13:** soundness entry `ε_mosaic = (2ℓ + n − 1)/|K|`.
 * **Section 12:** `BatchProof` serialization: `ℓ` messages of 2 elements,
   then `v_G`.
+
+## Integration notes
+
+* 2026-10-16 (13): added the normative cap `n ≤ 256` for the powers-of-`γ` batching to 5.4 step 2 (13.2 note 3). `reference/openmagnetar/mosaic.py` gains `MAX_CLAIMS = 256`, enforced in `batch_prove` (ValueError) and `batch_verify` (VerificationError). 11 cites the actual claim count.

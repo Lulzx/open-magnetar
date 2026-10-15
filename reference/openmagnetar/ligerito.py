@@ -39,19 +39,26 @@ class LigeritoParams:
     def reps(self, i: int) -> int:
         return self.gs[i] if self.gs else 1
 
+    def sbits(self, i: int) -> int:
+        """Extra variables of the level-(i+1) polynomial: ceil(log2 gs_i) (spec 4.4a)."""
+        return (self.reps(i) - 1).bit_length()
+
     @property
     def levels(self) -> int:
         return len(self.ks)
 
-    def n_i(self, i: int) -> int:
-        return self.n - sum(self.ks[:i])
+    def n_i(self, i: int) -> int:  # variables of the level-i polynomial (n_0 = n; i = L: final)
+        return self.n - sum(self.ks[:i]) + sum(self.sbits(j) for j in range(i))
+
+    def m_i(self, i: int) -> int:  # variables of one folded row g^(j) of level i
+        return self.n_i(i) - self.ks[i]
 
     @property
     def n_final(self) -> int:
-        return self.n - sum(self.ks)
+        return self.n_i(self.levels)
 
     def log_codeword(self, i: int) -> int:  # log2 N_i
-        return self.n_i(i) - self.ks[i] + self.rs[i]
+        return self.m_i(i) + self.rs[i]
 
     def encode(self) -> bytes:
         u = lambda x: x.to_bytes(8, "little")
@@ -202,11 +209,21 @@ def sample_indices(tr: Transcript, bits: int, t: int) -> list[int]:
     return sorted({tr.challenge_index(b"pcs/query/idx", bits) for _ in range(t)})
 
 
+def fold_table(f: list[K], k: int, rho: list[K]) -> list[K]:
+    """g[y] = sum_a eq(rho, a) f[a + 2^k y]  (bind the low k variables)."""
+    R = 1 << k
+    er = eq_table(rho)
+    return [sum((e * x for e, x in zip(er, f[y * R:(y + 1) * R])), K.ZERO) for y in range(len(f) // R)]
+
+
+def selector(j: int, s: int) -> tuple[list[K], list[K]]:
+    """Product-form terms (c, d) of eq(bits(j), z) over the s extra variables."""
+    return [K.ONE + K((j >> u) & 1) for u in range(s)], [K.ONE] * s
+
+
 def open_(p: LigeritoParams, h: Hasher, ld0: LevelData, r: list[K], y: K,
           tr: Transcript) -> LigeritoProof:
     """Prover. The transcript must already contain setup (absorb_setup)."""
-    if any(p.reps(i) > 1 for i in range(p.levels)):
-        raise NotImplementedError("gap amplification (gs > 1, spec 13.5) is not implemented in the reference prover/verifier")
     if len(r) != p.n:
         raise ValueError("point has wrong length")
     tr.absorb_ks(b"pcs/point", r)
@@ -215,7 +232,7 @@ def open_(p: LigeritoParams, h: Hasher, ld0: LevelData, r: list[K], y: K,
     ld = ld0
     roots, scs, ops = [], [], []
     for i in range(p.levels):
-        k = p.ks[i]
+        k, reps, s, m = p.ks[i], p.reps(i), p.sbits(i), p.m_i(i)
         R, C = 1 << k, len(f) >> k
         tabs = [f[y_ * R:(y_ + 1) * R] for y_ in range(C)] + [b[y_ * R:(y_ + 1) * R] for y_ in range(C)]
         proof, rho, fin = sumcheck_prove(c, tabs, lambda v, C=C: sum((v[a] * v[C + a] for a in range(C)), K.ZERO),
@@ -223,12 +240,17 @@ def open_(p: LigeritoParams, h: Hasher, ld0: LevelData, r: list[K], y: K,
         scs.append(proof)
         g, bp = fin[:C], fin[C:]
         cp = sum((x * z for x, z in zip(g, bp)), K.ZERO)
+        rhos = [rho] + [tr.challenge_ks(b"pcs/fold", k) for _ in range(reps - 1)]
+        F = list(g)
+        for rj in rhos[1:]:
+            F += fold_table(f, k, rj)
+        F += [K.ZERO] * ((1 << (m + s)) - len(F))
         last = i == p.levels - 1
         if last:
-            tr.absorb_ks(b"pcs/final", g)
+            tr.absorb_ks(b"pcs/final", F)
             nxt = None
         else:
-            nxt = commit_level(h, g, p.ks[i + 1], p.rs[i + 1])
+            nxt = commit_level(h, F, p.ks[i + 1], p.rs[i + 1])
             roots.append(nxt.tree.root)
             tr.absorb_bytes(b"pcs/root", nxt.tree.root)
         idx = sample_indices(tr, p.log_codeword(i), p.ts[i])
@@ -236,27 +258,29 @@ def open_(p: LigeritoParams, h: Hasher, ld0: LevelData, r: list[K], y: K,
         ops.append(LevelOpening(cols, ld.tree.open(idx)))
         tr.absorb_ks(b"pcs/cols", [x for col in cols for x in col])
         if last:
-            final = g
+            final = F
             break
-        beta = tr.challenge_k(b"pcs/beta")
-        er = eq_table(rho)
-        mu = p.n_i(i + 1)
-        b, c, pw = bp, cp, K.ONE
-        for q, col in zip(idx, cols):
-            pw = pw * beta
-            vq = sum((e * x for e, x in zip(er, col)), K.ZERO)
-            c = c + pw * vq
-            row = ntt.basis_row(q, mu, p.log_codeword(i))
-            b = [bb + pw * gg for bb, gg in zip(b, row)]
-        f, ld = g, nxt
+        betas = [tr.challenge_k(b"pcs/beta") for _ in range(reps)]
+        ers = [eq_table(rj) for rj in rhos]
+        c = cp
+        b = list(bp) + [K.ZERO] * ((1 << (m + s)) - len(bp))
+        off = 1 << m
+        for j in range(reps):
+            pw = K.ONE
+            for q, col in zip(idx, cols):
+                pw = pw * betas[j]
+                vq = sum((e * x for e, x in zip(ers[j], col)), K.ZERO)
+                c = c + pw * vq
+                row = ntt.basis_row(q, m, p.log_codeword(i))
+                for u in range(off):
+                    b[j * off + u] = b[j * off + u] + pw * row[u]
+        f, ld = F, nxt
     return LigeritoProof(roots, scs, ops, final)
 
 
 def verify(p: LigeritoParams, h: Hasher, root: bytes, r: list[K], y: K,
            proof: LigeritoProof, tr: Transcript) -> None:
     """Verifier. Raises VerificationError. Transcript must contain setup."""
-    if any(p.reps(i) > 1 for i in range(p.levels)):
-        raise NotImplementedError("gap amplification (gs > 1, spec 13.5) is not implemented in the reference prover/verifier")
     if len(r) != p.n:
         raise VerificationError("point has wrong length")
     if (len(proof.roots) != p.levels - 1 or len(proof.sumchecks) != p.levels
@@ -268,9 +292,12 @@ def verify(p: LigeritoParams, h: Hasher, root: bytes, r: list[K], y: K,
     c = y
     cur_root = root
     for i in range(p.levels):
-        k = p.ks[i]
+        k, reps, s, m = p.ks[i], p.reps(i), p.sbits(i), p.m_i(i)
         rho, cp = sumcheck_verify(c, k, 2, proof.sumchecks[i], tr, b"pcs/sumcheck")
-        terms = [(a * _prod(cs[:k], ds[:k], rho), cs[k:], ds[k:]) for a, cs, ds in terms]
+        # fold the first k variables; the sum-check claim concerns block z = 0 of the next polynomial
+        zc, zd = selector(0, s)
+        terms = [(a * _prod(cs[:k], ds[:k], rho), cs[k:] + zc, ds[k:] + zd) for a, cs, ds in terms]
+        rhos = [rho] + [tr.challenge_ks(b"pcs/fold", k) for _ in range(reps - 1)]
         last = i == p.levels - 1
         if last:
             tr.absorb_ks(b"pcs/final", proof.final)
@@ -283,33 +310,36 @@ def verify(p: LigeritoParams, h: Hasher, root: bytes, r: list[K], y: K,
             raise VerificationError("malformed opening")
         verify_multi(h, cur_root, 1 << lb, idx, [column_bytes(col) for col in op.columns], op.auth)
         tr.absorb_ks(b"pcs/cols", [x for col in op.columns for x in col])
-        er = eq_table(rho)
-        mu = p.n_i(i + 1)
-        vs = [sum((e * x for e, x in zip(er, col)), K.ZERO) for col in op.columns]
+        ers = [eq_table(rj) for rj in rhos]
+        vs = [[sum((e * x for e, x in zip(er, col)), K.ZERO) for col in op.columns] for er in ers]
         if last:
-            g = proof.final
-            for q, vq in zip(idx, vs):
-                row = ntt.basis_row(q, mu, lb)
-                if sum((a * z for a, z in zip(g, row)), K.ZERO) != vq:
-                    raise VerificationError("final polynomial inconsistent with opened column")
+            F = proof.final
+            for j in range(reps):
+                g = F[j << m:(j + 1) << m]
+                for q, vq in zip(idx, vs[j]):
+                    row = ntt.basis_row(q, m, lb)
+                    if sum((a * z for a, z in zip(g, row)), K.ZERO) != vq:
+                        raise VerificationError("final polynomial inconsistent with opened column")
             tabs = [term_table(t) for t in terms]
             tot = K.ZERO
-            for j in range(len(g)):
+            for j in range(len(F)):
                 bj = K.ZERO
                 for tb in tabs:
                     bj = bj + tb[j]
-                tot = tot + g[j] * bj
+                tot = tot + F[j] * bj
             if tot != cp:
                 raise VerificationError("final inner-product claim fails")
             return
-        beta = tr.challenge_k(b"pcs/beta")
-        pw = K.ONE
+        betas = [tr.challenge_k(b"pcs/beta") for _ in range(reps)]
         c = cp
-        for q, vq in zip(idx, vs):
-            pw = pw * beta
-            c = c + pw * vq
-            a = ntt.gen_weights(q, mu, lb)
-            terms.append((pw, [K.ONE] * mu, [K.ONE + x for x in a]))
+        for j in range(reps):
+            pw = K.ONE
+            jc, jd = selector(j, s)
+            for q, vq in zip(idx, vs[j]):
+                pw = pw * betas[j]
+                c = c + pw * vq
+                a = ntt.gen_weights(q, m, lb)
+                terms.append((pw, [K.ONE] * m + jc, [K.ONE + x for x in a] + jd))
         cur_root = proof.roots[i]
 
 
