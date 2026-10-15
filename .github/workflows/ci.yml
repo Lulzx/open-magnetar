@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: fmt + clippy + test + vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # Vector conformance lives in each crate's tests (they read
+      # reference/vectors/*.json and compare byte for byte), so the test
+      # run below is also the vector-conformance gate.
+      - name: Test (includes reference-vector conformance)
+        run: cargo test --workspace
+      - name: Build release CLI
+        run: cargo build --workspace --release
+
+  python-reference:
+    name: Python reference model
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Reference test suite
+        run: python3 -m unittest discover -s reference/tests -t reference

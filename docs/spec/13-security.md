@@ -168,7 +168,7 @@ the rate does not help (it makes `N` larger); raising it by 1 bit gains 1 bit an
 
 (The paper reports at most 599 KiB for the *whole* proof; the figure above is the Ligerito opening only, so the whole proof at `2^22` is about 656 KiB, in the paper's range.)
 
-**Status (audit 13.9(1)).** The composition is specified (04 4.4a), implemented in `reference/openmagnetar/ligerito.py` and tested (completeness for `gs = 2, 3`; a rejection test for every repetition block; the real `provable-120` profile through the whole protocol). The soundness argument of 4.4a is a sketch: it reduces the amplification to the single-fold BCHKS statement plus independence of the `rho^(j)`; a written proof of the "all folds close" step (the tensor fold with a shared prefix, `rho^(0)` coming from the sum-check) remains an audit item.
+**Status (audit 13.9(1)).** The composition is specified (04 4.4a), implemented in `reference/openmagnetar/ligerito.py` and tested (completeness for `gs = 2, 3`; a rejection test for every repetition block; the real `provable-120` profile through the whole protocol). The soundness argument is now a written proof in 04 4.4a (level-reduction theorem): the tensor factor `k` (Lemma B), the "all folds close" exponent `g` including `rho^(0)` coming from the sum-check with a shared prefix (Lemma C), the batching and query terms, and the final level are all proved there. The one external input is the single-step proximity gap (Lemma A, `N/|K|` per challenge, BCIKS/BCHKS [5]); checking its exact form against the source text remains in 13.9(1).
 
 ## 13.6 The Fiat-Shamir transcript
 
@@ -220,9 +220,12 @@ Items derived without access to the source papers or whose composition is incomp
 source before this section moves to `stable`.
 
 1. **04 4.4/4.7, Ligerito.** Written from the structure of Novakovic-Angeris (ePrint 2025/1187), not its text:
-   the claim form `(star_i)`, the query batching, the `t` derivation, the **tensor-fold gap loss `k`**, and
-   **the gap amplification of 13.5 (composition specified in 04 4.4a, sketch-level argument only)**. Also the proximity-gap citation: I could confirm only the
-   abstract of TR25-169; the `N/F` per-challenge statement is the earlier BCIKS/Ligero bound.
+   the claim form `(star_i)`, the query batching, and the `t` derivation still need comparison against the paper
+   (PDF request in `papers/README.md`; ePrint blocks automated PDF downloads). The **tensor-fold gap loss `k`**
+   and **the gap amplification of 13.5** are no longer in this item: 04 4.4a now proves them (Lemmas B and C and
+   the level-reduction theorem), conditional only on the single-step proximity gap (Lemma A there). What remains
+   of the gap is bibliographic: the exact `N/|K|` per-challenge form of Lemma A against BCHKS [5] (I could
+   confirm only the abstract of TR25-169; the `N/|K|` statement is the earlier BCIKS/Ligero bound).
 2. **04 4.5, ring switching.** Derived from Diamond-Posen ePrint 2024/504 for `beta_j = X^j`; the tensor algebra step and the
    `7/F` term have been checked by the reference tests only.
 3. **07 7.10 and the prover algorithms.** Derived without [55] (Setty-Thaler-Zhu ePrint 2025/105).
@@ -258,3 +261,5 @@ cross-check is possible there.
 ## Integration notes
 
 * 2026-10-16: the repetition composition is specified in 04 4.4a and implemented; 13.5 (composition, sizes), the gap rows 30-38 of 13.2 (`213.4, 221.4, 229.4` for levels 1-3, level 0 unchanged) and 13.9(1) were updated. Corrections of 13.2 notes 1-3 are applied in 06 (6/F per shared round), 07 (`2a + 2`) and 03/05/11 (cap of 256 claims, 68 claims in the reference run).
+
+* 2026-10-16: 04 4.4a now contains the written soundness proof of the repetition composition (Lemmas B/C and the level-reduction theorem), so the "all folds close" part of 13.9(1) is discharged; 13.9(1) now covers only the paper comparison of 04's claim form/query batching/`t` derivation and the exact form of the external Lemma A in [5]. Error terms and ledger numbers are unchanged. ePrint PDF downloads are blocked to automated fetches (Cloudflare), so the three source PDFs are requested in `papers/README.md`.

@@ -143,6 +143,17 @@ label. Labels are hierarchical, with `/` as separator and lowercase
 | `spartan/outer/round/msg`, `.../chal` | sum-check messages and challenges (03 appends `/claim`, `/params`, `/msg`, `/chal` to the label it is given) |
 | `shout/onehot/r` | challenge vector |
 | `pcs/query/idx` | Merkle query indices |
+| `pcs/params` | Ligerito parameters `enc_params` (04 4.1, absorbed at commit) |
+| `pcs/point`, `pcs/value` | opening point `r` and claimed value `y` (04 4.1) |
+| `pcs/sumcheck` | base label of the per-level sum-check (04 4.4) |
+| `pcs/fold` | extra fold-challenge vectors `rho^(j)`, `j = 1..g-1` (04 4.4a) |
+| `pcs/final` | final polynomial `f_L` (or `F` when `gs > 1`), sent in the clear (04 4.4/4.4a) |
+| `pcs/cols` | opened columns of a level, in query order (04 4.4) |
+| `pcs/beta` | consistency-batching challenge(s): one `beta` for `gs = 1`, one `beta_j` per repetition for `gs > 1` (04 4.4/4.4a) |
+| `rs/point`, `rs/value` | ring-switching point and claimed value (04 4.5) |
+| `rs/s` | ring-switching partial evaluations `s` (04 4.5) |
+| `rs/rho` | ring-switching challenge `rho` (04 4.5) |
+| `rs/sumcheck` | base label of the ring-switching sum-check (04 4.5) |
 
 Rules: (1) A label identifies the *role* of a value, never its position by number,
 unless a loop index is part of the protocol, in which case the index is carried
@@ -206,3 +217,10 @@ determinism, framing, counter, retry loop, index range, and the JSON vectors).
 - 11 MUST fix the order and labels of the statement absorbed after init
   (vk digest first).
 - 07 and 04 MUST name the label for their exclusion and query sampling.
+
+## Integration notes
+
+- 2026-10-16: added the `pcs/*` and `rs/*` labels of 04 (including `pcs/fold`
+  from 04 4.4a) to the table in 2.7; previously only `pcs/root` and
+  `pcs/query/idx` were listed. The labels themselves and all transcripts are
+  unchanged, so existing vectors still pass.
