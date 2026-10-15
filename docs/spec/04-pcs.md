@@ -198,17 +198,17 @@ The final-level inner-product check and the final column checks are exact (no er
 
 **Profile `conjectured-100`** (**not provable**: it relies on the conjectured RS proximity-gap/up-to-capacity list decoding behaviour; comparison only; MUST be opt-in, MUST NOT be used for the production claim of 120 bits, and MUST be recorded in the verifying key so a proof cannot be passed off under the default profile). Queries: `t_i = ceil( 100 / r_i )` (soundness `ρ^t`, as if the proximity radius were `1 − ρ`); `r = 2 → t = 50`. The gap and batching terms are not accounted for in this profile.
 
-**Table** (`r = 2`, `t = 177` provable or `50` conjectured; proof sizes are the expected value over uniform query sets, sampled once, KiB; `gap` is `128 − log2(kN)` for each level).
+**Gap amplification (resolves the former open problem; see 13.5).** With the conservative bound `ε_gap = k·N/|K|` one fold challenge reaches only `128 − log2(kN)` bits, which is 104.7 to 118.0 bits for the levels of the default schedules, so `provable-120` additionally uses **`gs_i` independent proximity repetitions per level**: the level's fold, commitment and query phase are run `gs_i` times with independent challenges, so the gap term becomes `(kN/|K|)^{gs_i}`. The profile chooses the smallest `gs_i` with `gs_i·(128 − log2(k_i N_i)) ≥ 120`; this is `gs_i = 2` at every level of every default schedule (gap bits 209 to 236). `LigeritoParams` gains the optional field `gs` (default empty = all 1, encoded in `enc_params` only when some `gs_i > 1`, as the suffix `"GAPREPS" ‖ u64le(gs_i)…`). **Status:** the accounting, parameter selection and size model are implemented (`ligerito.make_params`, `soundness_bits`, `params.py`); the reference `open_`/`verify` raise `NotImplementedError` for `gs_i > 1`; the exact batching of the repeated folds into one next-level claim is **not yet specified** and is the first item of the audit list in 13.9. The alternative (not used): the sharper unique-decoding bound of ECCC TR25-169 might make `gs = 1` sufficient, but I could only confirm its abstract (a constant number of exceptional challenges `O_{ε*}(1)` for proximity loss `ε*`), not an explicit `ε(n, q)`, so no claim rests on it.
 
-| `n` (packed vars) | levels `ks` | final `n_L` | provable-120 size | conjectured-100 size | `gap` bits per level |
-|---|---|---|---|---|---|
-| 20 | [5,5,4] | 6 | 279 KiB | 90 KiB | 108.7, 113.7, 118.0 |
-| 22 | [4,4,4,4] | 6 | 294 KiB | 97 KiB | 106.0, 110.0, 114.0, 118.0 |
-| 24 | [5,5,4,4] | 6 | 389 KiB | 123 KiB | 104.7, 109.7, 114.0, 118.0 |
+**Table** (`r = 2`, `t = 177` provable or `50` conjectured; sizes in KiB from `params.proof_size_bytes`, an expected-value model including ring switching; repeated levels counted `gs_i` times; the "1 rep" column is what the former conservative accounting would give and is **not** 120-bit).
 
-(`n` packed variables correspond to `2^{n+7}` witness bits: `n = 20, 22, 24` is `2^27, 2^29, 2^31` bits.) Per level the sum-check bits are `≥ 124.7`, the batching bits `120.5`, the query bits `≥ 120.0` (provable).
+| `n` (packed vars) | levels `ks` | final `n_L` | provable-120 (`gs = 2`) | same schedule, 1 rep (not 120-bit) | conjectured-100 | `gap` bits per level (`gs = 2`) |
+|---|---|---|---|---|---|---|
+| 20 | [5,5,4] | 6 | 641 KiB | 322 KiB | 106 KiB | 217.4, 227.4, 236.0 |
+| 22 | [4,4,4,4] | 6 | 705 KiB | 354 KiB | 117 KiB | 212.0, 220.0, 228.0, 236.0 |
+| 24 | [5,5,4,4] | 6 | 893 KiB | 448 KiB | 144 KiB | 209.4, 219.4, 228.0, 236.0 |
 
-**Known gap in the provable accounting (needs a decision in 13).** With the conservative bound `ε_gap = k·N/|K|`, the proximity-gap term of the first levels is **above `2^{-120}`** (`2^{-104.7}` at `n = 24`), because the field is 128-bit and `N ≈ 2^{21}`. Every other term meets `2^{-120}`. We therefore do *not* claim that `provable-120` reaches 120 bits for `n ≥ 14` on the strength of the conservative bound alone. Two ways out, neither decided here: (a) rely on the sharper bound of ECCC TR25-169 (and the paper's own accounting), under which `ε_gap` is smaller; (b) *gap amplification*: fold with two independent challenge vectors at the first levels (about 2× prover and proof cost for those levels), giving `ε_gap² ≤ 2^{-200}`. The reference model and `soundness_bits()` report the conservative value. Requests: see the end of this section.
+(`n` packed variables correspond to `2^{n+7}` witness bits. For the full machine at `T = 2^22` the Mosaic polynomial has about `2^33` bits, i.e. `n = 26`, schedule `[5,5,5,5]`: about 1101 KiB provable, see 13.5.) Per level the sum-check bits are `≥ 124.7`, the batching bits `120.5`, the query bits `≥ 120.0`, the gap bits `≥ 205`. The size model's absolute values are about 15% above the previous sampled estimates for the 1-rep schedule (different auth-path model); treat sizes as estimates until the Rust prover measures them.
 
 **Derivation of `t` from rate.** The proximity step maps a possibly non-codeword matrix to a folded word; if the prover's next-level polynomial is not the fold, `Enc(g)` and the (decoded) fold differ in at least `δ·N` positions (distance `1−ρ` minus the `δ` slack = `δ`). Each independent query lands there with probability `≥ δ`. Hence escape probability `≤ (1−δ)^t`, and `t ≥ λ/ −log2(1−δ)` with `1 − δ = (1+ρ)/2`.
 
@@ -230,8 +230,12 @@ Tests: `tests/test_merkle.py`, `test_ntt.py`, `test_ligerito.py`, `test_ring_swi
 
 ### Requests to other sections
 
-* **13-security:** (1) decide how `provable-120` treats the proximity-gap term (4.7, "Known gap"): adopt a sharper bound, or require gap amplification; the code currently reports the conservative `ε_gap = kN/|K|`. (2) Add `ε_RS ≤ (7 + 2n)/|K|` for ring switching, and the Ligerito terms of 4.7, to the per-step accounting. (3) Round-by-round soundness for the `β`-batching and the query steps is as above.
+* **13-security:** (1) **Resolved in 13.5** (gap amplification, `gs_i = 2`). (2) Add `ε_RS ≤ (7 + 2n)/|K|` for ring switching, and the Ligerito terms of 4.7, to the per-step accounting. (3) Round-by-round soundness for the `β`-batching and the query steps is as above.
 * **12-proof-format:** serialize `LigeritoParams` (n, ks, rs, ts) and the profile name in the verifying key; the proof layout of 4.1 (roots, per-level sum-check messages, openings with `auth` lists of known length, final polynomial). `auth` is not length-prefixed; its length follows from the index set (derive it during parsing).
 * **05-mosaic / 11-protocol:** the PCS is single-point; `open` consumes the transcript, so 11 must fix where the commitment and `(r, y)` are absorbed relative to the preceding stages (4.1 absorbs `pcs/params`, `pcs/root`, then `pcs/point`, `pcs/value`; ring switching absorbs `rs/point`, `rs/value` again). For witness commitments the number of committed packed variables must be `n = ℓ − 7 ≥ 1` and `ℓ ≥ 8`.
 * **02-transcript:** new labels used here: `pcs/params`, `pcs/root`, `pcs/point`, `pcs/value`, `pcs/sumcheck`, `pcs/final`, `pcs/query/idx`, `pcs/cols`, `pcs/beta`, `rs/point`, `rs/value`, `rs/s`, `rs/rho`, `rs/sumcheck` (the existing table lists `pcs/root` and `pcs/query/idx`).
 * **01-fields:** the packing `P[v] = K.pack(w[128v .. 128v+127])` and `U_m` as the integers `[0, 2^m)` should be cited from 01.
+
+## Integration notes
+
+* 2026-10-16 (agent for 13/15): replaced the "Known gap" paragraph, the table and the gap column of 4.7 by the gap-amplification text above; added the optional `gs` field to `LigeritoParams` (4.6) and `reference/openmagnetar/ligerito.py` (`gs`, `reps`, `gap_reps`, `make_params`, `soundness_bits`, `encode`; `open_`/`verify` raise `NotImplementedError` when `gs_i > 1`). Existing vectors are unchanged (`gs` is absent from `encode()` when all 1). The `soundness_bits()` gap column now includes the repetition factor. Request to 12: serialize `gs` in the verifying key when present.

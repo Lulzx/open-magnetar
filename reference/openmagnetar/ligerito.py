@@ -24,14 +24,20 @@ class LigeritoParams:
     ks: tuple[int, ...]       # fold arity per committed level (rows = 2^k_i)
     rs: tuple[int, ...]       # log2(1/rate) per committed level
     ts: tuple[int, ...]       # number of queries per committed level
+    gs: tuple[int, ...] = ()  # gap-amplification repetitions per level (13.5); () means all 1
 
     def __post_init__(self):
         if not (len(self.ks) == len(self.rs) == len(self.ts) >= 1):
             raise ValueError("ks, rs, ts must have equal non-zero length")
         if any(k < 1 for k in self.ks) or any(r < 1 for r in self.rs) or any(t < 1 for t in self.ts):
             raise ValueError("k, r, t must be >= 1")
+        if self.gs and (len(self.gs) != len(self.ks) or any(g < 1 for g in self.gs)):
+            raise ValueError("gs must match ks and be >= 1")
         if sum(self.ks) >= self.n:
             raise ValueError("folds must leave at least one variable (final polynomial)")
+
+    def reps(self, i: int) -> int:
+        return self.gs[i] if self.gs else 1
 
     @property
     def levels(self) -> int:
@@ -52,6 +58,8 @@ class LigeritoParams:
         out = u(self.n) + u(self.levels)
         for k, r, t in zip(self.ks, self.rs, self.ts):
             out += u(k) + u(r) + u(t)
+        if any(self.reps(i) > 1 for i in range(self.levels)):  # versioned extension (13.5)
+            out += b"GAPREPS" + b"".join(u(self.reps(i)) for i in range(self.levels))
         return out
 
 
@@ -75,10 +83,24 @@ def schedule(n: int, final: int = 6, max_k: int = 5) -> list[int]:
     return [base + 1 if i < extra else base for i in range(L)]
 
 
+def gap_bits_single(k: int, log_n_cw: int) -> float:
+    """Bits of the conservative proximity-gap term k*N/|K| for one fold challenge."""
+    return 128 - math.log2(k * (1 << log_n_cw))
+
+
+def gap_reps(k: int, log_n_cw: int, bits: int = 120) -> int:
+    """Smallest m with (kN/|K|)^m <= 2^-bits (13.5, gap amplification)."""
+    return max(1, math.ceil(bits / gap_bits_single(k, log_n_cw)))
+
+
 def make_params(n: int, profile: str = "provable-120", r: int = 2) -> LigeritoParams:
     ks = schedule(n)
     if profile == "provable-120":
         t = queries_provable(r, 120)
+        base = LigeritoParams(n, tuple(ks), (r,) * len(ks), (t,) * len(ks))
+        gs = tuple(gap_reps(k, base.log_codeword(i)) for i, k in enumerate(ks))
+        return LigeritoParams(n, tuple(ks), (r,) * len(ks), (t,) * len(ks),
+                              gs if any(g > 1 for g in gs) else ())
     elif profile == "conjectured-100":
         t = queries_conjectured(r, 100)
     else:
@@ -95,7 +117,7 @@ def soundness_bits(p: LigeritoParams, profile: str = "provable-120") -> list[dic
         N = 1 << p.log_codeword(i)
         k, t = p.ks[i], p.ts[i]
         d = dict(level=i, sumcheck=127 - math.log2(k), batch=128 - math.log2(t),
-                 gap=128 - math.log2(k * N))
+                 gap=p.reps(i) * (128 - math.log2(k * N)))
         d["query"] = t * -math.log2(1 - delta) if profile == "provable-120" else t * p.rs[i]
         out.append(d)
     return out
@@ -183,6 +205,8 @@ def sample_indices(tr: Transcript, bits: int, t: int) -> list[int]:
 def open_(p: LigeritoParams, h: Hasher, ld0: LevelData, r: list[K], y: K,
           tr: Transcript) -> LigeritoProof:
     """Prover. The transcript must already contain setup (absorb_setup)."""
+    if any(p.reps(i) > 1 for i in range(p.levels)):
+        raise NotImplementedError("gap amplification (gs > 1, spec 13.5) is not implemented in the reference prover/verifier")
     if len(r) != p.n:
         raise ValueError("point has wrong length")
     tr.absorb_ks(b"pcs/point", r)
@@ -231,6 +255,8 @@ def open_(p: LigeritoParams, h: Hasher, ld0: LevelData, r: list[K], y: K,
 def verify(p: LigeritoParams, h: Hasher, root: bytes, r: list[K], y: K,
            proof: LigeritoProof, tr: Transcript) -> None:
     """Verifier. Raises VerificationError. Transcript must contain setup."""
+    if any(p.reps(i) > 1 for i in range(p.levels)):
+        raise NotImplementedError("gap amplification (gs > 1, spec 13.5) is not implemented in the reference prover/verifier")
     if len(r) != p.n:
         raise VerificationError("point has wrong length")
     if (len(proof.roots) != p.levels - 1 or len(proof.sumchecks) != p.levels

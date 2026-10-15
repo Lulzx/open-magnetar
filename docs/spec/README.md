@@ -32,9 +32,9 @@ Paper references such as "§5.3" refer to Setty, *Magnetar*, ePrint 2026/2423.
 | 10 | [10-cpu-circuit.md](10-cpu-circuit.md) | Witness layout, segments, the two R1CS relations | §5.1 | draft |
 | 11 | [11-protocol.md](11-protocol.md) | Full prover/verifier composition | §5.5 | outline |
 | 12 | [12-proof-format.md](12-proof-format.md) | Proof and key serialization | — | outline |
-| 13 | [13-security.md](13-security.md) | Soundness accounting, parameter selection | §3.2, §6.1, Thm 1 | outline |
+| 13 | [13-security.md](13-security.md) | Soundness accounting, parameter selection | §3.2, §6.1, Thm 1 | draft |
 | 14 | [14-guest-abi.md](14-guest-abi.md) | Guest toolchain, memory map, I/O, termination | — | draft |
-| 15 | [15-testing.md](15-testing.md) | Reference model, test vectors, conformance | — | outline |
+| 15 | [15-testing.md](15-testing.md) | Reference model, test vectors, conformance | — | draft |
 
 ## Suggested writing order
 

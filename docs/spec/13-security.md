@@ -1,24 +1,262 @@
 # 13. Security analysis and parameters
 
-**Status:** outline · **Paper:** §3.2, §6.1, Theorem 1, ref [5]
+**Status:** draft · **Paper:** §1.3, §3.2, §6.1, Theorem 1, ref [5]
 
 ## Scope
-Per-step soundness error accounting (each sum-check, batching, one-hot,
-lockstep outer, inner, router, Twist/Shout, Mosaic batching, ring switching,
-Ligerito) under the 'every round ≤ 2^-120' interpretation the paper uses;
-Ligerito parameter derivation at unique-decoding radius; hash output length
-requirements (collision resistance for Merkle, ROM for Fiat–Shamir, including
-round-by-round soundness for FS security).
+Security model, the complete soundness ledger (computed by `reference/openmagnetar/params.py`), the fix of the PCS
+proximity-gap problem, hash assumptions, what lies outside the proof, and the list of parts that were written without
+access to their source papers. Notation as in 07: `F = |K| = 2^128`, `T = 2^n`, `s = n - c` (`c = 2`, so `s = n - 2`),
+`rho = 10` row variables, `nu = 14` column variables, `lam = 8` (10.2, 10.9).
 
-## Open questions
+## 13.1 Security model
 
-Each question lists a *proposed* answer. These are not decisions until marked **[OM-choice]** in the spec body.
+**Claim.** Construction 3 (paper §5.5, section 11) is a non-interactive argument of knowledge in the random-oracle model
+(ROM): for the verifying key `vk` (program digest, `A, I, O`, PCS parameters, hash profile), public input and output,
+a prover that makes `Q` oracle queries and convinces the verifier with probability `p` yields, by rewinding-free
+extraction through the PCS extractor and the sequence of reductions of knowledge, a witness `W` for the relations of paper
+Lemma 5 (hence an execution of the program on the input with the stated output) except with probability
+`<= Q * eps_rbr + eps_hash`, with `eps_rbr` the largest round-by-round error of the ledger and `eps_hash` the
+collision term of 13.7. The claim covers only provable bounds (profile `provable-120`).
 
-1. **Q:** The paper's '120 bits: every round has soundness error ≤ 2^-120'. Is round-by-round soundness the right notion for FS here, and what is the end-to-end bound?
-   - *Proposed:* Adopt round-by-round soundness (needed for FS security without the Q-factor loss); document both per-round and total bounds.
-2. **Q:** Hash output: SHA-256 gives 128-bit collision resistance classically and ~85 bits against quantum collision finding (BHT). Is that acceptable for 'post-quantum'?
-   - *Proposed:* Document it. Offer SHA-384/SHA3-384 as a stronger PQ profile.
+**Why round-by-round (RBR) soundness.** Fiat-Shamir for an interactive protocol with many rounds loses, in general, a
+factor exponential in the number of rounds, unless soundness is RBR (Canetti, Chen, Holmgren, Lombardi, Rothblum,
+Rothblum, Wichs, STOC 2019; Chiesa-Ommer-Yogev, TCC 2021 for IOPs, which also treats the knowledge version). RBR
+soundness gives a state function on partial transcripts that is `false` only for statements outside the language, such
+that from a `false` state any single verifier challenge leads to a `true` state with probability at most `eps_i`. The
+FS-transformed protocol is then sound with error `<= Q * max_i eps_i` (up to the number-of-rounds-independent constant of
+the cited theorem: **flagged, I quote this from memory**, not re-derived). Sum-check, Schwartz-Zippel batching, and
+the Ligerito query/fold steps are all RBR: in each round the state "the current claim is false" survives a random
+challenge with probability at most `deg/F` (sum-check round), `deg/F` (random linear combination), or the proximity/query
+probabilities of 04 4.7. So the paper's statement "every round has soundness error at most `2^-120`" is precisely a bound on
+`max_i eps_i`. **Our reading [OM-choice]:** "120 bits" means every RBR error `eps_i <= 2^-120`, so an adversary that
+spends work `W` (hash evaluations) succeeds with probability at most `W * 2^-120`, i.e. the work-to-success ratio
+is `>= 2^120` (13.7 gives the numbers). It does **not** mean that the union of all errors is `2^-120`: 13.3 reports both.
 
-## Specification
+**Composition.** The reductions form a sequential composition of public-coin reductions of knowledge (paper Theorem 1,
+composition theorem of [26]); direct claims and the lifting of 05 are exact. Knowledge error of the reductions adds, so the
+statistical part is `eps_stat = sum` of the "reduction total" column below, and the PCS part is the Ligerito rows.
+The Spartan round challenges and the one-hot retry loop (07 7.2) preserve RBR: a resampled challenge is conditioned on a
+set of probability `>= 1 - 2a_c/F`, which multiplies each bound by `1 + 2^-120` at most.
 
-_To be written._
+## 13.2 Soundness ledger
+
+Computed for `T = 2^22`, default parameters (`c = 2`, `rho = 10`, `nu = 14`, `lam = 8`; registers `a = 6, d = 2, p = 2`;
+RAM `A = 24, d = 6`, output region `m = 10`; bytecode `a = 16, d = 4`, 3 claim groups; at most 128 Mosaic claims;
+`n_pack = 26` packed variables; Ligerito schedule `[5,5,5,5]`, `t = 177`, `gs = 2`; `s = 20`). "Per-round bits" is
+`-log2` of the worst single-round error (the RBR quantity); "reduction total" is `-log2` of the sum over the rounds of the
+reduction (what appears in the lemmas of 05-08). The table is generated by `python3 -m openmagnetar.params 22`
+(from `reference/`), and `tests/test_params.py` asserts every per-round value `>= 120` for `T in {2^16, 2^20, 2^22, 2^24}`.
+
+| # | Step | Sec | Formula (numerator over K unless noted) | per-round bits | reduction total bits |
+|---|---|---|---|---|---|
+| 1 | Spartan outer: tau (both relations) | 06 6.3 | 2(rho+s) | 123.1 | 122.1 |
+| 2 | Spartan outer: sum-check, lockstep bin+fld | 06 6.3 | 2*3*(rho+s); shared instance rounds 6 per round | 125.4 | 120.5 |
+| 3 | Spartan: alpha batching of 6 terminal values | 06 6.3 | 1 | 128.0 | 128.0 |
+| 4 | Spartan inner sum-check (single, both relations) | 06 6.3 | 2 nu | 127.0 | 123.2 |
+| 5 | Segment split (identity 6.2) | 06 6.5 | 0 (exact) | exact | exact |
+| 6 | Cross-step (X1)-(X3) | 06 6.6 | 3(lam+s)+2 | 123.1 | 121.6 |
+| 7 | Shout bytecode: read sum-check + alpha/gamma/beta batching | 07 7.4 | 2a + 2 | 127.0 | 122.9 |
+| 8 | Shout bytecode: address virtualization | 07 7.3 | (d+1)n + 1 | 125.7 | 121.2 |
+| 9 | Shout bytecode: one-hot (Delta*) | 07 7.2 | 4n sum-check + (n + 5a_c + 1) polynomial | 122.6 | 121.0 |
+| 10 | Twist reg: read/write sum-check + (alpha,beta) batching | 07 7.5 | 3(n+a) + 2 | 126.4 | 121.6 |
+| 11 | Twist reg: Val evaluation (LT) | 07 7.5 | 3n | 126.4 | 122.0 |
+| 12 | Twist reg: address virtualization | 07 7.3 | (d+1)n + 1 | 126.4 | 121.9 |
+| 13 | Twist reg: one-hot (Delta*) | 07 7.2 | 4n sum-check + (n + 5a_c + 1) polynomial | 122.8 | 121.0 |
+| 14 | Twist RAM: read/write sum-check + (alpha,beta) batching | 07 7.5 | 3(n+a) + 2 | 126.4 | 120.9 |
+| 15 | Twist RAM: Val evaluation (LT) | 07 7.5 | 3n | 126.4 | 122.0 |
+| 16 | Twist RAM: final-memory sum-check | 07 7.6 | 2n + m + ell_word | 124.0 | 122.1 |
+| 17 | Twist RAM: address virtualization | 07 7.3 | (d+1)n + 1 | 125.2 | 120.7 |
+| 18 | Twist RAM: one-hot (Delta*) | 07 7.2 | 4n sum-check + (n + 5a_c + 1) polynomial | 122.6 | 121.0 |
+| 19 | Twist RAM: Inc at random point (inc_extra) | 07 7.7 | 0 (exact) | exact | exact |
+| 20 | Router shift | 08 8.2 | 4(n+15) | 126.0 | 120.8 |
+| 21 | Router store | 08 8.3 | 6(n+9) | 125.4 | 120.5 |
+| 22 | Mosaic batching + lifting sum-check | 05 5.7 | 2 ell + (#claims - 1) | 121.0 | 120.4 |
+| 23 | Ring switching | 04 4.5 | 7 + 2 n_pack | 125.2 | 122.1 |
+| 24 | Ligerito L0: sum-check (5 rounds) | 04 4.4 | 2k | 127.0 | 124.7 |
+| 25 | Ligerito L0: beta batching of queries | 04 4.4 | t | 120.5 | 120.5 |
+| 26 | Ligerito L0: proximity gap (reps=2) | 04 4.7 | (k N / K)^reps | 205.4 | 205.4 |
+| 27 | Ligerito L0: queries (t=177) | 04 4.7 | ((1+rho)/2)^t | 120.0 | 120.0 |
+| 28 | Ligerito L1: sum-check (5 rounds) | 04 4.4 | 2k | 127.0 | 124.7 |
+| 29 | Ligerito L1: beta batching of queries | 04 4.4 | t | 120.5 | 120.5 |
+| 30 | Ligerito L1: proximity gap (reps=2) | 04 4.7 | (k N / K)^reps | 215.4 | 215.4 |
+| 31 | Ligerito L1: queries (t=177) | 04 4.7 | ((1+rho)/2)^t | 120.0 | 120.0 |
+| 32 | Ligerito L2: sum-check (5 rounds) | 04 4.4 | 2k | 127.0 | 124.7 |
+| 33 | Ligerito L2: beta batching of queries | 04 4.4 | t | 120.5 | 120.5 |
+| 34 | Ligerito L2: proximity gap (reps=2) | 04 4.7 | (k N / K)^reps | 225.4 | 225.4 |
+| 35 | Ligerito L2: queries (t=177) | 04 4.7 | ((1+rho)/2)^t | 120.0 | 120.0 |
+| 36 | Ligerito L3: sum-check (5 rounds) | 04 4.4 | 2k | 127.0 | 124.7 |
+| 37 | Ligerito L3: beta batching of queries | 04 4.4 | t | 120.5 | 120.5 |
+| 38 | Ligerito L3: proximity gap (reps=2) | 04 4.7 | (k N / K)^reps | 235.4 | 235.4 |
+| 39 | Ligerito L3: queries (t=177) | 04 4.7 | ((1+rho)/2)^t | 120.0 | 120.0 |
+| 40 | Hash: Merkle/commitment binding, Q=2^64 oracle queries | 13 13.7 | Q^2 / 2^(digest_bits) | 128.0 | 128.0 |
+
+**Weakest rows.** Per round: queries of each Ligerito level, exactly `120.0` (by construction of `t`), then `beta`
+batching `120.5` (`t/F = 177/2^128`), Mosaic `121.0` (`127/F`: depends on the claim cap below), then the one-hot checks
+`122.6`. All others are `>= 123`. Per reduction: the Spartan lockstep outer sum-check, the router-store and the Mosaic
+sum-check at `120.4` to `120.5`. **Union:** the sum of every reduction total at `T = 2^22` is `2^-116.1`
+(`2^-116.4, 2^-116.1, 2^-115.9` for `T = 2^16, 2^20, 2^24`); the Spartan lemma alone (06 Lemma 6.2: `8(rho+s) + 1 + 2nu = 269`
+over `F`) is `2^-119.9`, which is the reason the claim is per round and not per reduction.
+
+**Per-section notes and corrections.**
+
+1. *06 outer, lockstep.* 06 6.3 states `eps_outer = T((rho+s) + 3(rho+s))/F` as a total. As an RBR statement the instance
+   rounds, whose challenge is shared by both relations, have per-round error `T * 3 / F = 6/F` (either relation can be
+   the one with a bad round); row rounds have `3/F`. The total in 06 is correct; the per-round figure should say 6 for the
+   shared rounds. Included in row 2.
+2. *07 7.4 Shout, 7.5 Twist.* The formulas are consistent with the proofs sketched there. One precision: the
+   batching error `2a+1` for Shout covers `alpha, gamma` as one degree-2 object and `beta` as `1/F` separately; I use `2a + 2`.
+3. *05 5.7 / 03 3.6, powers of one `gamma`.* The batching error is `(n_claims - 1)/F`, which is **per round** one
+   challenge with degree `n_claims - 1`. It stays below `2^-120` only for `n_claims <= 256`. The default layout has well under
+   128 components (direct segments of 10.3 plus the Twist/Shout/router components), so the choice is sound, but 05/11 MUST
+   state the cap (`n_claims <= 256`), and use independent `gamma_j` or two powers-chains above it. `test_mosaic_claim_cap`
+   checks that 300 claims break 120 bits. Not an error of 05, a missing precondition.
+4. *04 4.7.* The one real defect, fixed in 13.5.
+5. *Paper §1.3 comparison.* Grand-product soundness `~ T/F` would be `2^-106` at `T = 2^22` (and `2^-104` for `2^24`); the
+   ledger has no such row, confirming the paper's argument. The largest sum-check-related numerator here is `6(n+9)` or
+   `8(rho+s) + ...`, a few hundred.
+6. No other formula in 03-10 was found to be wrong. The final-memory term (`2n + m + ell`) and the Inc-at-random-point
+   (exact) are as in 07.
+
+## 13.3 Assumptions behind the numbers
+
+* `n_pack` uses `ell = log2(T) + 11` (about 1572 committed bits per cycle: 1236 CPU-circuit bits of 10.3 plus about 336
+  one-hot and increment bits of 7.9). 11 owns the exact `ell`; the error terms depend on it only logarithmically, but the
+  proof size of 13.5 depends on it.
+* The Ligerito proximity-gap term is the **conservative** one (13.5): `k N / F` per fold challenge.
+* Query grinding is off (13.7).
+
+## 13.4 Sum-check and Schwartz-Zippel steps
+
+All sum-check rounds have error `d/F` (03 3.7). A degree-`D` multivariate batching has error `D/F`. These facts are used
+for every row of the ledger that is a "sum-check" or "batching". The only rows that rely on more than that are the
+one-hot check (07 7.2: independence of the `4^a_c` products, taken from 07; **audit item 13.9(5)**), the ring-switching
+identity (04 4.5), and the Ligerito rows.
+
+## 13.5 The PCS gap and its fix
+
+**Problem.** Per level `i` (04 4.7) the error terms are: sum-check `2k/F`, batching `t/F`, queries
+`((1+rho)/2)^t`, and the proximity gap of the tensor fold `eps_gap = k N / F` (BCHKS, ECCC TR25-169 and its predecessors,
+RS up to the unique-decoding radius: bad-challenge probability `<= N/|F|` per fold challenge; tensor fold loss `k` by induction
+over the `k` folded variables). With `F = 2^128` and `N = 2^(n_(i+1) + 2)` this is `2^-104.7` (level 0, `n = 24`) to
+`2^-118.0` (last level): **every level misses `2^-120`**, because a 128-bit field cannot absorb the factor `N`. Lowering
+the rate does not help (it makes `N` larger); raising it by 1 bit gains 1 bit and costs queries.
+
+**Options considered.**
+
+1. *Sharper bound.* BCHKS TR25-169 states (abstract, which is all I could fetch; the full text is not available here) that
+   within the unique-decoding radius a proximity loss `eps* > 0` can be bought with only `O_{eps*}(1)` exceptional
+   challenges instead of `O(n)`. This could give a per-round error independent of `N`, but (a) the explicit dependence on
+   `eps*` and `q` is not available to me, (b) the guarantee is at a slightly smaller radius, which would force more queries,
+   so I cannot show that it gives `<= 2^-120` rigorously. **Not adopted.** It is the natural way to drop the factor 2 below
+   once someone checks the theorem; the size effect would be a return to the "1 rep" column.
+2. *Lower rate at level 0:* no (above).
+3. **Repetition (adopted).** Run the fold of each level with `gs_i` independent challenge vectors, so the gap error is
+   `(k N / F)^(gs_i)`. Smallest `gs_i` with `gs_i * (128 - log2(k_i N_i)) >= 120`: `gs_i = 2` for every level and every
+   default schedule (`gap` between `205` and `236` bits; with `gs = 1` the levels give `104.7 .. 118.0`). `gs_i = 2` is a lower
+   bound rather than tuned: the next smaller value, 1, fails at every level. **[OM-choice]** `provable-120` = `gs_i` as
+   computed by `ligerito.gap_reps`, recorded in the verifying key; `conjectured-100` has none.
+
+**New parameters and sizes** (`params.proof_size_bytes`, expected value; level cost counted `gs_i` times; includes ring
+switching):
+
+| `T` | `n_pack` | schedule | provable-120 (gs=2) | 1 rep (not 120-bit) | conjectured-100 |
+|---|---|---|---|---|---|
+| `2^16` | 20 | [5,5,4] | 641 KiB | 322 KiB | 106 KiB |
+| `2^20` | 24 | [5,5,4,4] | 893 KiB | 448 KiB | 144 KiB |
+| `2^22` | 26 | [5,5,5,5] | 1101 KiB | 553 KiB | 176 KiB |
+| `2^24` | 28 | [5,5,4,4,4] | 1187 KiB | 595 KiB | 189 KiB |
+
+(The paper reports at most 599 KiB for the *whole* proof, so
+the 1-rep figure for `2^22` is in the right range and the doubling is the visible price of the conservative bound.)
+
+**Open item (audit 13.9(1)).** The repetition's exact composition (how `gs_i` folded words are tied into one next-level claim
+without a full second recursion) is not yet specified; the reference prover rejects `gs_i > 1`. A correct, simple but
+costlier composition (run `gs_i` independent Ligerito openings of the same committed matrix at the level's first fold and
+batch the resulting inner-product claims with a fresh challenge, as the `beta` batching of 04 4.4 does for queries) bounds
+the size model above. Until this is implemented and reviewed, `provable-120` is a **parameter claim and an accounting**, not yet
+running code.
+
+## 13.6 The Fiat-Shamir transcript
+
+The transcript (02) is a hash chain keyed by the vk digest, absorbs every prover message before squeezing a challenge,
+and domain-separates labels. Under the ROM and RBR (13.1) the only additional losses are: `Q^2 / 2^256` for hash collisions
+inside the chain (negligible), and the statistical distance of `challenge_index` and `challenge_k` from uniform (zero: the
+outputs are exact bit prefixes of a 256-bit digest and the domains are powers of two; the retry loops of 02/07 add the
+`<= 2a_c/F` noted in 13.1). Statement binding: 11 MUST absorb the vk digest and the public input/output before the first
+challenge (request carried from 02); otherwise a proof for one statement could be replayed for another.
+
+## 13.7 Hash security
+
+* **Merkle and commitment binding.** `H` has 256-bit output; collision resistance gives `Q^2/2^256 = 2^-128` at `Q = 2^64`
+  queries (row 40). The Merkle tree is domain-separated (`0x00` leaf, `0x01` node, `0x02` empty; 04 4.2), so internal nodes
+  cannot be opened as leaves. The depth is fixed by the vk, so no second-preimage-with-different-depth attack.
+* **Quantum caveat.** Grover-type collision search (BHT) needs about `2^(256/3) ~ 2^85` quantum work (and memory) for a
+  256-bit hash. The protocol is *plausibly post-quantum* in the sense of using only hashes, but its collision
+  resistance against a quantum adversary is about 85 bits, below the 120-bit target; the FS random-oracle analysis also needs the QROM
+  (Don et al. / Chiesa-Manohar-Spooner for IOP-based SNARGs), a loss we do not quantify. **Profile `sha384`** (SHA-384
+  or SHA3-384 with 48-byte digests, to be added to 01/02 as a hasher profile; not in v1 code) would give about `2^128`
+  BHT cost. Statement: v1 default = `sha256`, classical 128-bit collision resistance, ~85-bit against BHT.
+* **Query grinding.** Off in v1. With grinding of `w` bits the query term would improve by `w` bits at prover cost `2^w`;
+  the ledger would then lower `t` by `w / -log2((1+rho)/2)`. Not used because the claim is `provable-120` with no prover work
+  assumptions and because grinding makes proof generation non-deterministic in time.
+* **ROM.** FS soundness is in the ROM for `H` modelled as a random oracle over domain-separated inputs.
+
+## 13.8 Outside the proof
+
+* **Not zero-knowledge.** v1 is a SNARK of knowledge only. The witness `W`, every committed polynomial, the openings
+  of Ligerito (columns of the encoded matrix reveal linear combinations of the witness), the Twist/Shout claims, and the
+  claimed evaluations all leak witness information; nothing is masked. Programs with secret inputs MUST NOT rely on this
+  proof for privacy. Adding ZK (masking the Spartan and PCS openings) is out of scope for v1.
+* **Side channels.** The reference model and likely the Rust prover are not constant time; the prover handles secrets
+  only if the guest does, and since the proof is not ZK this is moot for the proof system itself.
+* **DoS.** The verifier's work is `O(proof size) + O(nnz(R1CS) + nnz(M_0) + |ROM| c)` (06, 07). A verifier MUST bound the
+  proof length and the vk parameters before allocating (`T`, `A`, `n_pack`, query counts), and MUST reject `t_i, k_i, gs_i`
+  outside the vk's values.
+* **Deserialization.** Owned by 12: canonical K encodings (every 16 bytes is valid, C1), length checks before allocation,
+  auth lists of exactly the derived length (04 4.2), rejection of trailing bytes, no parser recursion.
+* **Trusted components:** the vk (program digest, parameters; whoever builds it is trusted), the verifier binary, the hash
+  implementation, the guest toolchain only through `program_digest`, the loader (14), and **the statement of the claim**:
+  the soundness above is about the specified relation. A bug in the circuit (10) is a soundness bug of the system
+  regardless of this analysis: the testing strategy of 15 (differential tests, negative tests) is the mitigation.
+* Out-of-memory, timeouts, and the unprovable cases (C5, C6) result in *no proof*, never in a wrong proof.
+
+## 13.9 Unverified against source: audit list
+
+Items derived without access to the source papers or whose composition is incomplete. Each MUST be checked against the
+source before this section moves to `stable`.
+
+1. **04 4.4/4.7, Ligerito.** Written from the structure of Novakovic-Angeris (ePrint 2025/1187), not its text:
+   the claim form `(star_i)`, the query batching, the `t` derivation, the **tensor-fold gap loss `k`**, and
+   **the gap amplification of 13.5 (composition not specified)**. Also the proximity-gap citation: I could confirm only the
+   abstract of TR25-169; the `N/F` per-challenge statement is the earlier BCIKS/Ligero bound.
+2. **04 4.5, ring switching.** Derived from Diamond-Posen ePrint 2024/504 for `beta_j = X^j`; the tensor algebra step and the
+   `7/F` term have been checked by the reference tests only.
+3. **07 7.10 and the prover algorithms.** Derived without [55] (Setty-Thaler-Zhu ePrint 2025/105).
+4. **07 7.5 Twist.** The one-sum-check merge of read/write/row-sum with `alpha_0`, and the cycle-first variable order.
+5. **07 7.2, `Delta*` one-hot.** The independence argument for the `4^a_c` products and the `5n + 5a_c + 1` bound were derived
+   in 07, not taken from the paper (the paper is "correct as stated" but gives no proof).
+6. **07 7.6 final-memory** and **06 6.6 cross-step** are ours (no paper counterpart).
+7. **Section 11 composition**: written concurrently; the ledger row list follows 07 and the paper's Construction 3,
+   and MUST be re-derived against 11 once stable (the claim count of Mosaic in particular).
+
+**Cross-check against the Jolt documentation** (https://jolt.a16zcrypto.com/how/architecture/ram.html; the neighbouring
+pages were not read, for time). *Confirmed:* the `ra` virtualization identity `ra(r, r') = sum_j eq(r', j) prod_i ra_i(r_i, j)`
+(07 7.3); `Val_final(r) - Val_init(r) = sum_j Inc(j) ra(r, j)` (07 7.6, with `wa` and `ra` identified in Jolt); `Inc` as a cycle-only
+polynomial; the output check as an `eq`-weighted, range-masked sum of `Val_final - Val_io` with `Val_io` known to
+the verifier (07 7.6); `LT` used for the range mask. *Not confirmed:* the page does not give the `Val` as an `LT`-sum
+over earlier writes (07 7.5 step 4), nor the read/write-checking formulas, so those remain audit items 3-4; Jolt uses a
+Hamming-weight booleanity check `hw^2 - hw` for prime-field `ra`, which is *not* our `Delta*` (binary field, 07 7.2), so no
+cross-check is possible there.
+
+## Resolved questions
+
+1. **RBR vs. FS.** **[OM-choice]** RBR soundness; "120 bits" = per-round `eps <= 2^-120`; the union bound is reported too (13.1, 13.2).
+2. **Hash.** **[OM-choice]** `sha256` default, collision-search caveat documented, `sha384` profile proposed (13.7).
+
+## Requests to other sections
+
+* **04:** implement and specify the repetition composition (13.5); keep `gs` in `LigeritoParams`.
+* **05/11:** state `n_claims <= 256` (13.2 note 3); 11 absorbs the vk digest and statement first.
+* **06:** per-round lockstep error `6/F` for shared instance rounds (13.2 note 1).
+* **01/02:** a 48-byte hasher profile for `sha384` if wanted.
+* **12:** serialize `gs`; bound sizes before allocation (13.8).
