@@ -15,6 +15,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "om"
+version = "0.1.0"
+dependencies = [
+ "om-sdk",
+]
+
+[[package]]
 name = "om-circuit"
 version = "0.1.0"
 dependencies = [
@@ -118,6 +125,17 @@ dependencies = [
  "om-sumcheck",
  "om-transcript",
  "serde_json",
+]
+
+[[package]]
+name = "om-sdk"
+version = "0.1.0"
+dependencies = [
+ "om-elf",
+ "om-format",
+ "om-prover",
+ "om-transcript",
+ "om-verifier",
 ]
 
 [[package]]
