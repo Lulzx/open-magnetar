@@ -1,0 +1,16 @@
+[package]
+name = "om-pcs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Polynomial commitment (Merkle, additive NTT, Ligerito, ring switching) for Open Magnetar (spec 04)"
+
+[dependencies]
+om-field = { path = "../om-field" }
+om-sumcheck = { path = "../om-sumcheck" }
+om-transcript = { path = "../om-transcript" }
+
+[dev-dependencies]
+serde_json = "1"
