@@ -109,10 +109,21 @@ An honest prover computes the claim as the actual sum of its tables (it is `0`
 for valid rows); a prover with a bad row therefore fails the final check.
 `Δ⋆` does not detect weight 0; the row-sum claims of 7.4/7.5 do.
 
-**Soundness.** If some row of some component has weight ≥ 2, then
-`Σ_x λ_x Σ_j eq(ρ,j)Δ⋆_x(j;r)` is a non-zero polynomial in `(λ, ρ, r)`; with
-the retry slack the failure probability is `≤ (3a_c + n + 2a_c + 1)/F`, plus the
-sum-check error `4n/F`: **total `≤ (5n + 5a_c + 1)/F`.**
+**Soundness.** Suppose some row `(x, j)` has weight ≥ 2. Then `Δ⋆_x(j; r)` is a
+non-zero polynomial in `r` (independence above; total degree `≤ 3a_c`). The
+polynomials `eq(ρ, j)` in `ρ` are linearly independent (Lagrange basis on
+`{0,1}^n`), so `Σ_j eq(ρ,j)Δ⋆_x(j;r)` is a non-zero polynomial in `(ρ, r)`, and
+multiplying by the independent variable `λ_x` and summing over `x` keeps
+`P(λ, ρ, r) := Σ_x λ_x Σ_j eq(ρ,j)Δ⋆_x(j;r)` non-zero, of total degree
+`≤ 1 + n + 3a_c`. By Schwartz–Zippel, `Pr[P = 0] ≤ (3a_c + n + 1)/F` for uniform
+`(λ, ρ, r)`. Conditioning `r` on the resampling rule (an event of probability
+`≥ 1 − 2a_c/F`) inflates this to at most
+`(3a_c + n + 1)/(F − 2a_c) ≤ (3a_c + n + 1)/F + 2a_c/F` (using
+`3a_c + n + 1 ≤ F − 2a_c`). Adding the sum-check error `4n/F` (degree 4, `n`
+rounds, 03): **total `≤ (5n + 5a_c + 1)/F`.** This proves the bound; the
+`Δ⋆` formula itself, including `c_h`, `r'_h` and resampling on `c_h = 0`, is
+Magnetar §4.4 verbatim (checked against the paper; the paper asserts
+non-zero-ness without proof, which the independence argument above supplies).
 
 ### 7.3 Address virtualization
 

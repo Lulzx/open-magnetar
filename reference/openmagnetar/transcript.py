@@ -29,6 +29,8 @@ def _check_label(label: bytes) -> None:
         raise TypeError("label must be bytes")
     if not label or any(c < 0x21 or c > 0x7E for c in label):
         raise ValueError("label must be non-empty printable ASCII without space")
+    if len(label) > 255:
+        raise ValueError("label must be at most 255 bytes (02 2.7)")
 
 
 class Transcript:

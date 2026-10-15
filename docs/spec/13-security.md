@@ -230,8 +230,12 @@ source before this section moves to `stable`.
    `7/F` term have been checked by the reference tests only.
 3. **07 7.10 and the prover algorithms.** Derived without [55] (Setty-Thaler-Zhu ePrint 2025/105).
 4. **07 7.5 Twist.** The one-sum-check merge of read/write/row-sum with `alpha_0`, and the cycle-first variable order.
-5. **07 7.2, `Delta*` one-hot.** The independence argument for the `4^a_c` products and the `5n + 5a_c + 1` bound were derived
-   in 07, not taken from the paper (the paper is "correct as stated" but gives no proof).
+5. ~~**07 7.2, `Delta*` one-hot.**~~ **Resolved 2026-10-16.** The `Δ⋆` formula, `c_h = 1 + r_h + r_h^2`,
+   `r'_h = r_h^3/c_h` and resampling on `c_h = 0` were checked verbatim against Magnetar §4.4 (`paper.pdf`
+   in the repo root). The paper asserts non-zero-ness without proof; 07 7.2 now proves it (the four
+   per-coordinate products `(1+r)(1+r²), (1+r)r², r(1+r²), r³` have triangular coefficient matrix in
+   `1, r, r², r³`, hence the `4^a_c` products are independent) and derives the `5n + 5a_c + 1` bound by
+   Schwartz–Zippel with the resampling conditioning made explicit. Nothing remains open in this item.
 6. **07 7.6 final-memory** and **06 6.6 cross-step** are ours (no paper counterpart).
 7. **Section 11 composition**: written concurrently; the ledger row list follows 07 and the paper's Construction 3,
    and MUST be re-derived against 11 once stable (the claim count of Mosaic in particular).

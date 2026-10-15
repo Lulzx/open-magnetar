@@ -64,6 +64,18 @@ class TranscriptTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             t.challenge_index(b"i", 65)
 
+    def test_label_rules(self):
+        # 02 2.7: non-empty, printable ASCII 0x21..0x7E, at most 255 bytes.
+        t = Transcript(b"om/t")
+        t.absorb_bytes(b"x" * 255, b"d")  # exactly 255 is allowed
+        for bad in (b"", b"has space", b"tab\there", b"x" * 256):
+            with self.assertRaises(ValueError):
+                t.absorb_bytes(bad, b"d")
+            with self.assertRaises(ValueError):
+                t.challenge_k(bad)
+        with self.assertRaises(ValueError):
+            Transcript(b"x" * 256)
+
     def test_sha384(self):
         t = Transcript(b"om/t", Hasher("sha384"))
         self.assertEqual(len(t.state), 48)

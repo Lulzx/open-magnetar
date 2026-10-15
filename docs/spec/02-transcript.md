@@ -224,3 +224,8 @@ determinism, framing, counter, retry loop, index range, and the JSON vectors).
   from 04 4.4a) to the table in 2.7; previously only `pcs/root` and
   `pcs/query/idx` were listed. The labels themselves and all transcripts are
   unchanged, so existing vectors still pass.
+- 2026-10-16 (Rust `om-transcript` port): the Python `_check_label` did not
+  enforce the 255-byte cap of 2.7 (a 300-byte label was accepted). Fixed in
+  `reference/openmagnetar/transcript.py` with a regression test
+  (`test_label_rules`); no label in use exceeds 255 bytes, so transcripts and
+  vectors are unchanged. The spec was already correct.
