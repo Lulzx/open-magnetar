@@ -9,3 +9,6 @@
 /docs/.paper.txt
 /papers/*
 !/papers/README.md
+
+# Built guest binaries (rebuild via guest/Makefile)
+/guest/examples/*.elf
