@@ -28,8 +28,8 @@ Paper references such as "§5.3" refer to Setty, *Magnetar*, ePrint 2026/2423.
 | 06 | [06-spartan.md](06-spartan.md) | SIMD R1CS, BinarySpartan, Virtual Spartan, cross-step constraints | §4.1–4.3, §5.1, §5.3 | draft |
 | 07 | [07-twist-shout.md](07-twist-shout.md) | BinaryTwist, BinaryShout, one-hot check | §4.4 | draft |
 | 08 | [08-router.md](08-router.md) | BinaryRouter for shifts and sub-word stores | §5.4 | draft |
-| 09 | [09-isa.md](09-isa.md) | RV64I semantics, virtual instructions, bytecode table | §2.1, §5 | outline |
-| 10 | [10-cpu-circuit.md](10-cpu-circuit.md) | Witness layout, segments, the two R1CS relations | §5.1 | outline |
+| 09 | [09-isa.md](09-isa.md) | RV64I semantics, virtual instructions, bytecode table | §2.1, §5 | draft |
+| 10 | [10-cpu-circuit.md](10-cpu-circuit.md) | Witness layout, segments, the two R1CS relations | §5.1 | draft |
 | 11 | [11-protocol.md](11-protocol.md) | Full prover/verifier composition | §5.5 | outline |
 | 12 | [12-proof-format.md](12-proof-format.md) | Proof and key serialization | — | outline |
 | 13 | [13-security.md](13-security.md) | Soundness accounting, parameter selection | §3.2, §6.1, Thm 1 | outline |

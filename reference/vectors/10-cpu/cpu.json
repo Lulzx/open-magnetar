@@ -1,0 +1,571 @@
+{
+ "decode": [
+  {
+   "word": "fff30293",
+   "name": "ADDI",
+   "rd": 5,
+   "rs1": 6,
+   "rs2": 0,
+   "imm": -1
+  },
+  {
+   "word": "403100b3",
+   "name": "SUB",
+   "rd": 1,
+   "rs1": 2,
+   "rs2": 3,
+   "imm": 0
+  },
+  {
+   "word": "43f25193",
+   "name": "SRAI",
+   "rd": 3,
+   "rs1": 4,
+   "rs2": 0,
+   "imm": 63
+  },
+  {
+   "word": "000013b7",
+   "name": "LUI",
+   "rd": 7,
+   "rs1": 0,
+   "rs2": 0,
+   "imm": 4096
+  },
+  {
+   "word": "ffdff0ef",
+   "name": "JAL",
+   "rd": 1,
+   "rs1": 0,
+   "rs2": 0,
+   "imm": -4
+  },
+  {
+   "word": "00208463",
+   "name": "BEQ",
+   "rd": 0,
+   "rs1": 1,
+   "rs2": 2,
+   "imm": 8
+  },
+  {
+   "word": "00412083",
+   "name": "LW",
+   "rd": 1,
+   "rs1": 2,
+   "rs2": 0,
+   "imm": 4
+  },
+  {
+   "word": "00113423",
+   "name": "SD",
+   "rd": 0,
+   "rs1": 2,
+   "rs2": 1,
+   "imm": 8
+  },
+  {
+   "word": "405251bb",
+   "name": "SRAW",
+   "rd": 3,
+   "rs1": 4,
+   "rs2": 5,
+   "imm": 0
+  },
+  {
+   "word": "00000073",
+   "name": "ECALL",
+   "rd": 0,
+   "rs1": 0,
+   "rs2": 0,
+   "imm": 0
+  }
+ ],
+ "program": {
+  "code": {
+   "1000": "89abd137",
+   "1004": "def1011b",
+   "1008": "00500193",
+   "100c": "00311233",
+   "1010": "00020513",
+   "1014": "00000893",
+   "1018": "00000073"
+  },
+  "entry_pc": "1000"
+ },
+ "rom_head": [
+  {
+   "rs1": "0xa",
+   "halted": 1
+  },
+  {
+   "upc": 1,
+   "seq": 1,
+   "trap": 1
+  },
+  {
+   "upc": 2,
+   "rpc": "0x1000",
+   "rd": 2,
+   "kc": "0xffffffff89abd000",
+   "seq": 3,
+   "head": 1
+  },
+  {
+   "upc": 3,
+   "rpc": "0x1004",
+   "rs1": 2,
+   "rd": 2,
+   "imm": "0xfffffffffffffdef",
+   "seq": 4,
+   "head": 1,
+   "b_imm": 1,
+   "w": 1,
+   "c_add": 1
+  },
+  {
+   "upc": 4,
+   "rpc": "0x1008",
+   "rd": 3,
+   "imm": 5,
+   "seq": 5,
+   "head": 1,
+   "b_imm": 1,
+   "c_add": 1
+  },
+  {
+   "upc": 5,
+   "rpc": "0x100c",
+   "rs1": 2,
+   "rs2": 3,
+   "rd": "0x20",
+   "seq": 6,
+   "head": 1,
+   "b_imm": 1,
+   "c_add": 1,
+   "bsel": 1,
+   "Q_lo": 2,
+   "Q_hi": 1
+  },
+  {
+   "upc": 6,
+   "rpc": "0x100c",
+   "rs1": "0x20",
+   "rs2": 3,
+   "rd": "0x20",
+   "seq": 7,
+   "b_imm": 1,
+   "c_add": 1,
+   "bsel": 2,
+   "Q_lo": 4,
+   "Q_hi": 1
+  },
+  {
+   "upc": 7,
+   "rpc": "0x100c",
+   "rs1": "0x20",
+   "rs2": 3,
+   "rd": "0x20",
+   "seq": 8,
+   "b_imm": 1,
+   "c_add": 1,
+   "bsel": 4,
+   "Q_lo": "0x10",
+   "Q_hi": 1
+  }
+ ],
+ "upc_of_pc": {
+  "1000": 2,
+  "1004": 3,
+  "1008": 4,
+  "100c": 5,
+  "1010": 11,
+  "1014": 12,
+  "1018": 13
+ },
+ "cycles": 16,
+ "exit_code": 18446744010182213088,
+ "trace_prefix": [
+  {
+   "upc": 2,
+   "rd": 2,
+   "v1": "0x0",
+   "v2": "0x0",
+   "rd_val": "0xffffffff89abd000",
+   "next_upc": 3
+  },
+  {
+   "upc": 3,
+   "rd": 2,
+   "v1": "0xffffffff89abd000",
+   "v2": "0x0",
+   "rd_val": "0xffffffff89abcdef",
+   "next_upc": 4
+  },
+  {
+   "upc": 4,
+   "rd": 3,
+   "v1": "0x0",
+   "v2": "0x0",
+   "rd_val": "0x5",
+   "next_upc": 5
+  },
+  {
+   "upc": 5,
+   "rd": 32,
+   "v1": "0xffffffff89abcdef",
+   "v2": "0x5",
+   "rd_val": "0xffffffff13579bde",
+   "next_upc": 6
+  },
+  {
+   "upc": 6,
+   "rd": 32,
+   "v1": "0xffffffff13579bde",
+   "v2": "0x5",
+   "rd_val": "0xffffffff13579bde",
+   "next_upc": 7
+  },
+  {
+   "upc": 7,
+   "rd": 32,
+   "v1": "0xffffffff13579bde",
+   "v2": "0x5",
+   "rd_val": "0xfffffff13579bde0",
+   "next_upc": 8
+  },
+  {
+   "upc": 8,
+   "rd": 32,
+   "v1": "0xfffffff13579bde0",
+   "v2": "0x5",
+   "rd_val": "0xfffffff13579bde0",
+   "next_upc": 9
+  },
+  {
+   "upc": 9,
+   "rd": 32,
+   "v1": "0xfffffff13579bde0",
+   "v2": "0x5",
+   "rd_val": "0xfffffff13579bde0",
+   "next_upc": 10
+  },
+  {
+   "upc": 10,
+   "rd": 4,
+   "v1": "0xfffffff13579bde0",
+   "v2": "0x5",
+   "rd_val": "0xfffffff13579bde0",
+   "next_upc": 11
+  },
+  {
+   "upc": 11,
+   "rd": 10,
+   "v1": "0xfffffff13579bde0",
+   "v2": "0x0",
+   "rd_val": "0xfffffff13579bde0",
+   "next_upc": 12
+  },
+  {
+   "upc": 12,
+   "rd": 17,
+   "v1": "0x0",
+   "v2": "0x0",
+   "rd_val": "0x0",
+   "next_upc": 13
+  },
+  {
+   "upc": 13,
+   "rd": 0,
+   "v1": "0xfffffff13579bde0",
+   "v2": "0x0",
+   "rd_val": "0x0",
+   "next_upc": 0
+  }
+ ],
+ "witness_row_ones": [
+  1325,
+  1768,
+  995,
+  711
+ ],
+ "public": {
+  "entry_upc": 2,
+  "exit_code": 18446744010182213088
+ },
+ "stats": {
+  "cycles_per_instance": 4,
+  "NW": 8192,
+  "used_bits": 8064,
+  "direct_bits_per_cycle": 1108,
+  "direct_bits_per_instance_state": 512,
+  "virtual_bits_per_cycle": 780,
+  "s1_rows": 862,
+  "s2_rows": 123,
+  "s1_rows_per_cycle": 215,
+  "s2_rows_per_cycle": 30,
+  "s1_nnz": 5750,
+  "s2_nnz": 15961
+ },
+ "layout": [
+  {
+   "name": "stc",
+   "log_size": 9,
+   "offset": 0,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "AND",
+   "log_size": 8,
+   "offset": 512,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "Bop",
+   "log_size": 8,
+   "offset": 768,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "Gs",
+   "log_size": 8,
+   "offset": 1024,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "L",
+   "log_size": 8,
+   "offset": 1280,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "Q_lo",
+   "log_size": 8,
+   "offset": 1536,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "S_in",
+   "log_size": 8,
+   "offset": 1792,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "S_out",
+   "log_size": 8,
+   "offset": 2048,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "T0",
+   "log_size": 8,
+   "offset": 2304,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "T1",
+   "log_size": 8,
+   "offset": 2560,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "T2",
+   "log_size": 8,
+   "offset": 2816,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "Y",
+   "log_size": 8,
+   "offset": 3072,
+   "kind": "virtual",
+   "owner": "router-shift"
+  },
+  {
+   "name": "cin",
+   "log_size": 8,
+   "offset": 3328,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "imm",
+   "log_size": 8,
+   "offset": 3584,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "kc",
+   "log_size": 8,
+   "offset": 3840,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "m",
+   "log_size": 8,
+   "offset": 4096,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "nw",
+   "log_size": 8,
+   "offset": 4352,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "rdv",
+   "log_size": 8,
+   "offset": 4608,
+   "kind": "virtual",
+   "owner": "twist-reg"
+  },
+  {
+   "name": "rf",
+   "log_size": 8,
+   "offset": 4864,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "rpc",
+   "log_size": 8,
+   "offset": 5120,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "rw",
+   "log_size": 8,
+   "offset": 5376,
+   "kind": "virtual",
+   "owner": "twist-ram"
+  },
+  {
+   "name": "shsrc",
+   "log_size": 8,
+   "offset": 5632,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "v1",
+   "log_size": 8,
+   "offset": 5888,
+   "kind": "virtual",
+   "owner": "twist-reg"
+  },
+  {
+   "name": "v2",
+   "log_size": 8,
+   "offset": 6144,
+   "kind": "virtual",
+   "owner": "twist-reg"
+  },
+  {
+   "name": "x1",
+   "log_size": 8,
+   "offset": 6400,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "x2",
+   "log_size": 8,
+   "offset": 6656,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "x3",
+   "log_size": 8,
+   "offset": 6912,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "Dw",
+   "log_size": 7,
+   "offset": 7168,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "dynu",
+   "log_size": 7,
+   "offset": 7296,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "ridx",
+   "log_size": 7,
+   "offset": 7424,
+   "kind": "virtual",
+   "owner": "twist-ram"
+  },
+  {
+   "name": "seq",
+   "log_size": 7,
+   "offset": 7552,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "tgt",
+   "log_size": 7,
+   "offset": 7680,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "upc",
+   "log_size": 7,
+   "offset": 7808,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "fl",
+   "log_size": 6,
+   "offset": 7936,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "Q_hi",
+   "log_size": 5,
+   "offset": 8000,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  },
+  {
+   "name": "off",
+   "log_size": 4,
+   "offset": 8032,
+   "kind": "direct",
+   "owner": "mosaic"
+  },
+  {
+   "name": "st_w",
+   "log_size": 4,
+   "offset": 8048,
+   "kind": "virtual",
+   "owner": "shout-bytecode"
+  }
+ ]
+}
