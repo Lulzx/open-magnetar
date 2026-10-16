@@ -24,6 +24,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+/// Default execution budget in cycles (see `om_prover`).
+pub const DEFAULT_MAX_CYCLES: usize = om_prover::DEFAULT_MAX_CYCLES;
+
 pub use om_elf::Params as AbiParams;
 pub use om_elf::PublicInstance as StatementInstance;
 pub use om_format::{
@@ -307,7 +310,33 @@ pub fn execute_input(vk: &VerifyingKey, input: &[u8]) -> Result<(Vec<u8>, u64), 
 }
 
 fn execute_input_inner(vk: &VerifyingKey, input: &[u8]) -> Result<(Vec<u8>, u64), SdkError> {
-    let ex = om_prover::execute(vk, input, om_prover::DEFAULT_MAX_CYCLES)?;
+    execute_input_with_max_cycles_inner(vk, input, om_prover::DEFAULT_MAX_CYCLES)
+}
+
+/// [`execute`] with an explicit execution budget in cycles, instead
+/// of the default. The budget is a local resource limit only.
+///
+/// # Errors
+/// As [`execute`].
+pub fn execute_with_max_cycles(
+    vk: &VerifyingKey,
+    elf_bytes: &[u8],
+    input: &[u8],
+    max_cycles: usize,
+) -> Result<(Vec<u8>, u64), SdkError> {
+    guard(|| {
+        check_vk(vk)?;
+        check_elf_matches(vk, elf_bytes)?;
+        execute_input_with_max_cycles_inner(vk, input, max_cycles)
+    })
+}
+
+fn execute_input_with_max_cycles_inner(
+    vk: &VerifyingKey,
+    input: &[u8],
+    max_cycles: usize,
+) -> Result<(Vec<u8>, u64), SdkError> {
+    let ex = om_prover::execute(vk, input, max_cycles)?;
     Ok((ex.instance.output, ex.exit_code))
 }
 
@@ -346,7 +375,34 @@ fn prove_input_inner(
     vk: &VerifyingKey,
     input: &[u8],
 ) -> Result<(PublicInstance, Vec<u8>), SdkError> {
-    let (instance, proof) = om_prover::prove_instance(vk, input, None)?;
+    prove_input_with_max_cycles_inner(vk, input, om_prover::DEFAULT_MAX_CYCLES)
+}
+
+/// [`prove`] with an explicit execution budget in cycles, instead of
+/// the default. The budget is a local resource limit only: it changes
+/// no proof byte for executions that fit.
+///
+/// # Errors
+/// As [`prove`].
+pub fn prove_with_max_cycles(
+    vk: &VerifyingKey,
+    elf_bytes: &[u8],
+    input: &[u8],
+    max_cycles: usize,
+) -> Result<(PublicInstance, Vec<u8>), SdkError> {
+    guard(|| {
+        check_vk(vk)?;
+        check_elf_matches(vk, elf_bytes)?;
+        prove_input_with_max_cycles_inner(vk, input, max_cycles)
+    })
+}
+
+fn prove_input_with_max_cycles_inner(
+    vk: &VerifyingKey,
+    input: &[u8],
+    max_cycles: usize,
+) -> Result<(PublicInstance, Vec<u8>), SdkError> {
+    let (instance, proof) = om_prover::prove_instance_with_max_cycles(vk, input, max_cycles)?;
     Ok((instance, om_format::encode_proof(vk, &proof)))
 }
 

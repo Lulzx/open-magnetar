@@ -39,16 +39,35 @@ Eight more guests were proved and verified end to end through the `om` CLI
 | erc20-transfer-from (3 accounts) | 1,024 | 27,894 B |
 | erc20-mixed-block (3 accounts, 2 transfers) | 512 | 25,878 B |
 
-That makes 11 of the 15 Table 1 workloads proved end to end. The four not
-yet proved are `keccak-f1600`, `sha256-merkle-path`, `evm-erc20-transfer`,
-and `radix-sort-u64`. With the current dense prover these are not small
-jobs: a `sha256-merkle-path` attempt at `A = 16` was killed by the OS for
-memory use, and a `keccak-f1600` attempt was stopped for the same reason.
-The dense tables grow with `T · 2^a`, so large traces need the sparse
-prover of spec 07.10 before they are practical to prove on a laptop.
-`radix-sort-u64` also needs a larger `A` at load time, because its static
-buffers (about 384 KiB) do not fit under the I/O window at `A = 16`. All
-four still pass their host-oracle execution cases.
+That made 11 of the 15 Table 1 workloads proved end to end.
+
+### After the sparse Twist prover (2026-10-16)
+
+The sparse `rw` prover of spec 07.10 was then implemented in the Rust
+prover (`om-memcheck`), with proof bytes unchanged. Three of the four
+remaining workloads then proved at `A = 16`, test profile:
+
+| Guest | T (cycles) | Prove | Proof size |
+|---|---|---|---|
+| sha256-merkle-path (depth 2) | 32,768 | under 5 min (not timed) | 40,382 B |
+| keccak-f1600 (one permutation) | 32,768 | 18.8 s | 39,806 B |
+| evm-erc20-transfer (embedded runtime) | 65,536 | 53.6 s | 43,646 B |
+
+Before this change, a `sha256-merkle-path` attempt at `A = 16` was
+killed by the OS for memory use, and a `keccak-f1600` attempt was
+stopped by hand for the same reason.
+
+The last workload, `radix-sort-u64`, is still not proved. It needs
+`A = 17` at load time, because its static buffers (about 384 KiB) do
+not fit under the I/O window at `A = 16`, and an execution budget
+above the default `2^20` cycles (the CLI now takes `--max-cycles`;
+its sorted output is correct under `om run`). A proof attempt at
+`A = 17` with a `2^24` budget ran 330 s and was killed by the OS at
+10.2 GiB resident memory. At its trace length (padded to
+`T = 2^22`) the bottleneck is no longer Twist: the Spartan witness
+and the Mosaic commitment tables are still dense in `T`, so this
+workload waits on sparse handling there, not on the prover of 07.10.
+Fourteen of the fifteen Table 1 workloads are now proved end to end.
 
 ## Test suites
 
@@ -85,19 +104,20 @@ proof is actually generated and measured.
 | Proof size | ≤ 599 KiB | 84 KiB measured at T = 256; ≈ 656 KiB modelled at T = 2^22 |
 | Verifier time | ~13 ms | 14–52 ms measured at the sizes above |
 
-The verifier is in the paper's ballpark. The prover is not — by orders of
-magnitude — for a structural reason: both the Python reference model and this
-faithful Rust port materialise the dense `T · 2^a` tables of the Twist
-read/write sum-check (spec 07.5), so proving cost grows with the RAM address
-space (`2^a`), not just with the trace. The paper's prover (and spec 07.10,
-which is informative only) uses a sparse, linear-in-T algorithm. Closing that
-gap means implementing the sparse prover algorithms of 07.10 (and analogous
-sparsity in Shout/Spartan witness handling); the transcript, proof format and
-verifier would not change. A rayon pass over the dense hot loops (sum-check
-rounds, table construction, Ligerito row encodes, Merkle layers) already gave
-4–8× (sha256 prove: 510 s → 62 s) with bit-identical proofs, which is the
-current state of optimisation: parallel, but asymptotically the reference
-algorithm.
+The verifier is in the paper's ballpark. The prover is closer than it
+was, but still well behind the paper. The Twist read/write sum-check no
+longer materialises dense `T · 2^a` tables: the Rust prover implements
+the sparse algorithm of spec 07.10 for that step (proof bytes
+unchanged), which is what made the `T = 32768` and `T = 65536`
+workloads above practical at all. What remains dense is the Spartan
+witness handling and the Mosaic commitment tables, both linear in `T`
+with large constants, plus the Python reference model, which is dense
+throughout by design. The paper's prover is sparse in those parts too.
+A rayon pass over the hot loops (sum-check rounds, table construction,
+Ligerito row encodes, Merkle layers) gave 4–8× (sha256 prove:
+510 s → 62 s) with bit-identical proofs. Throughput is of the order
+of a thousand cycles per second at the sizes measured here, against
+the paper's figure in the millions.
 
 Other paper comparisons: security is the 120-bit provable profile by default
 (no conjectured proximity gaps, no grinding), SHA-256 by default, strict

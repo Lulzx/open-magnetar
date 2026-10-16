@@ -36,5 +36,6 @@ pub use keygen::{
 };
 pub use prove::{
     DEFAULT_MAX_CYCLES, Execution, ProverError, TraceHook, execute, execute_with_derived, prove,
-    prove_execution, prove_instance, prove_instance_with_trace_hook,
+    prove_execution, prove_instance, prove_instance_with_max_cycles,
+    prove_instance_with_trace_hook,
 };

@@ -227,8 +227,21 @@ source before this section moves to `stable`.
    `t = -1 / log2((1 + rho)/2)` scaled to the security parameter (their Section 5 asymptotic
    accounting), which is the same form as 04 4.7. Ours is the conservative side of that comparison:
    04 uses `t_i = ceil(120 / -log2((1 + rho_i)/2))` at every level with no discount for the number
-   of levels. What remains open in this item is the claim form `(star_i)` and the query batching,
-   still to be compared line by line against the paper text. The **tensor-fold gap loss `k`**
+   of levels. **Claim form and query batching compared 2026-10-16 (later):** the paper maintains a
+   single batched vector `w~_i` (their Sections 4.3 and 6.2: the running claim batched together
+   with one vector per opened query row, then a partial sum-check over `w~_i^T vec(X_i)`). Our
+   `b_i` in `(star_i)` is that same vector kept in factored form, as a list of product form terms:
+   the carried term is the partially evaluated running claim and each query adds one term whose
+   table is a generator row of the code at the queried position. Keeping the list instead of the
+   expanded vector is the verifier efficiency device the paper itself reaches for tensorizable
+   codes in its Section 6.6. Two detail differences are recorded as **[OM-choice]** deviations,
+   both on the conservative side: (a) we batch the query terms with powers `beta^m` of a single
+   challenge, where the paper's complete batched sum-check uses a fresh random vector; our error
+   term is therefore `t/|K|` per level (13.2) instead of the paper's `1/|F|` batching term;
+   (b) our Merkle leaves are codeword columns where the paper speaks of committing to rows of
+   the encoded matrix, which is the same commitment read in the transposed orientation (our
+   rows are encoded, so a query opens one column across all rows). Nothing in this item remains
+   open except the Lemma A form below. The **tensor-fold gap loss `k`**
    and **the gap amplification of 13.5** are no longer in this item: 04 4.4a now proves them (Lemmas B and C and
    the level-reduction theorem), conditional only on the single-step proximity gap (Lemma A there). What remains
    of the gap is bibliographic: the exact `N/|K|` per-challenge form of Lemma A against BCHKS [5] (I could

@@ -8,16 +8,16 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, combine_sum, eq_eval, eq_table, mle_eval_bits,
-    sumcheck_prove, sumcheck_verify,
+    SumcheckProof, VerificationError, bind_low, eq_eval, eq_table, interpolate_eval, mle_eval_bits,
+    sumcheck_init, sumcheck_prove, sumcheck_round_evals, sumcheck_verify,
 };
 use om_transcript::Transcript;
 use rayon::prelude::*;
 
 use crate::onehot::PAR_THRESHOLD;
 use crate::onehot::{
-    EvalClaim, OneHotProof, VirtGroup, VirtProof, VirtTerm, bits_of, comp_tables, full_table,
-    onehot_prove, onehot_verify, virt_prove, virt_verify,
+    EvalClaim, OneHotProof, VirtGroup, VirtProof, VirtTerm, bits_of, comp_tables, onehot_prove,
+    onehot_verify, virt_prove, virt_verify,
 };
 use crate::sublabel;
 
@@ -354,23 +354,12 @@ fn rw_combine(p: usize, beta: &[K], v: &[K]) -> K {
     eq * acc
 }
 
-/// `g(j) = Σ_k eq(r_k, k) full[k + NK j]`.
-fn k_rows(full: &[bool], nk: usize, t: usize, r_k: &[K]) -> Vec<K> {
+/// `g(j) = eq(r_k, write_addr(j))`: the write one-hot table contracted
+/// over the address variables (equal to summing `eq(r_k, k)` against the
+/// full table, which is a delta at the write address).
+fn wa_rows(writes_addr: &[usize], r_k: &[K]) -> Vec<K> {
     let e = eq_table(r_k);
-    let row = |j: usize| {
-        let mut acc = K::ZERO;
-        for k in 0..nk {
-            if full[k + nk * j] {
-                acc += e[k];
-            }
-        }
-        acc
-    };
-    if full.len() >= PAR_THRESHOLD {
-        (0..t).into_par_iter().map(row).collect()
-    } else {
-        (0..t).map(row).collect()
-    }
+    writes_addr.iter().map(|&k| e[k]).collect()
 }
 
 fn s_out_bits(final_mem: &FinalMem, a: usize) -> Vec<K> {
@@ -473,6 +462,399 @@ fn inc_claims(
     out
 }
 
+// -----------------------------------------------------------------
+// Sparse rw prover (spec 07 §7.10, informative). Same transcript and
+// proof bytes as the dense definition in §7.5; only the prover's
+// internal representation differs.
+//
+// The dense prover materialises tables of size `T * 2^a`. Here the
+// first `n` sum-check rounds (cycle variables) work on one sparse
+// group per remaining cycle suffix. A group stores, per access `x`,
+// the sparse support of the bound one-hot table `ra_x` (at most one
+// address per original cycle in the group), plus the scalars
+// `A = sum_k ra_x(k) V(k)`, `B = sum_k ra_x(k) Phi_x(k)` and
+// `S = sum_k ra_x(k)`, where `V` is the bound value table. Binding two
+// sibling groups needs the cross term
+// `sum_k ra_L(k) V_R(k) + ra_R(k) V_L(k)`, where `V` of a group at an
+// arbitrary address is recomputed from that address's write list:
+// the state of a cell is constant between its writes, and the
+// eq-weight of a constant segment is a range sum over the bound
+// cycle bits. After the cycle rounds, one group remains and the last
+// `a` rounds run densely on tables of size `2^a` only.
+
+/// Per-access sparse state of one cycle group.
+#[derive(Clone)]
+struct RwX {
+    /// `(address, bound ra value)` pairs, sorted by address.
+    entries: Vec<(usize, K)>,
+    /// `sum_k ra(k) * V(k)` for the bound tables of this group.
+    aval: K,
+    /// `sum_k ra(k) * Phi(k)`.
+    bval: K,
+    /// `sum_k ra(k)`.
+    sval: K,
+}
+
+/// One remaining cycle suffix in the sparse phase.
+#[derive(Clone)]
+struct RwGroup {
+    /// Bound `eq(r_c, .)` value of this group.
+    eq: K,
+    /// Bound `Inc~(r_o, .)` value of this group.
+    inc: K,
+    /// Per access `0..=p` (`p` is the write).
+    per_x: Vec<RwX>,
+}
+
+/// Everything the sparse phase needs to evaluate `V(k, j)` on demand.
+struct SparseMem<'a> {
+    m0: &'a [u64],
+    /// Per address: `(cycle, inc)` writes in cycle order.
+    writes: Vec<Vec<(usize, u64)>>,
+    /// Per address: prefix XORs of the write increments.
+    prefix: Vec<Vec<u64>>,
+    /// `eq_table(r_o)`: bit weights for `Val~`.
+    eo: &'a [K],
+}
+
+impl SparseMem<'_> {
+    fn val_at(&self, state: u64) -> K {
+        let mut acc = K::ZERO;
+        for (o, &e) in self.eo.iter().enumerate() {
+            if (state >> o) & 1 == 1 {
+                acc += e;
+            }
+        }
+        acc
+    }
+
+    /// Memory word of cell `k` just before cycle `j`.
+    fn state_at(&self, k: usize, j: usize) -> u64 {
+        let ws = &self.writes[k];
+        let cnt = ws.partition_point(|w| w.0 < j);
+        self.m0[k] ^ self.prefix[k][cnt]
+    }
+
+    /// `V~(k)` of the group covering cycles `[base, base + 2^r)`, with
+    /// the cycle bits bound to `rhos` (low bit first).
+    fn v_group(&self, k: usize, base: usize, r: usize, rhos: &[K]) -> K {
+        let end = base + (1usize << r);
+        let ws = &self.writes[k];
+        let mut state = self.state_at(k, base);
+        let mut acc = K::ZERO;
+        let mut cur = base;
+        for &(w, inc) in ws.iter().filter(|w| w.0 >= base && w.0 < end) {
+            // State is constant on cycles `cur..=w` (the write at `w`
+            // lands after cycle `w` reads the old value).
+            acc += eq_range_sum(rhos, cur - base, w - base) * self.val_at(state);
+            state ^= inc;
+            cur = w + 1;
+        }
+        if cur < end {
+            acc += eq_range_sum(rhos, cur - base, end - 1 - base) * self.val_at(state);
+        }
+        acc
+    }
+}
+
+/// `sum_{offset in [lo, hi]} prod_b (bit_b(offset) ? rho_b : 1 + rho_b)`.
+fn eq_range_sum(rhos: &[K], lo: usize, hi: usize) -> K {
+    if lo > hi {
+        return K::ZERO;
+    }
+    if rhos.is_empty() {
+        return K::ONE;
+    }
+    let h = rhos.len() - 1;
+    let mid = 1usize << h;
+    let (f0, f1) = (K::ONE + rhos[h], rhos[h]);
+    if hi < mid {
+        f0 * eq_range_sum(&rhos[..h], lo, hi)
+    } else if lo >= mid {
+        f1 * eq_range_sum(&rhos[..h], lo - mid, hi - mid)
+    } else {
+        f0 * eq_range_sum(&rhos[..h], lo, mid - 1) + f1 * eq_range_sum(&rhos[..h], 0, hi - mid)
+    }
+}
+
+/// Address accessed in every cycle, reconstructed from the one-hot
+/// component tables of access `x` (chunk `i` holds bits `i*ac..`).
+fn addrs_of(comps: &[Vec<bool>], a: usize, d: usize, t: usize) -> Vec<usize> {
+    let (ac, nu) = (a / d, 1usize << (a / d));
+    let mut addr = vec![0usize; t];
+    for (i, comp) in comps.iter().enumerate() {
+        for (idx, &bit) in comp.iter().enumerate() {
+            if bit {
+                addr[idx / nu] |= (idx % nu) << (i * ac);
+            }
+        }
+    }
+    addr
+}
+
+/// Merge two sorted `(address, value)` lists with coefficients.
+fn merge_entries(l: &[(usize, K)], r: &[(usize, K)], c0: K, c1: K) -> Vec<(usize, K)> {
+    let mut out = Vec::with_capacity(l.len() + r.len());
+    let (mut i, mut j) = (0, 0);
+    while i < l.len() && j < r.len() {
+        match l[i].0.cmp(&r[j].0) {
+            core::cmp::Ordering::Less => {
+                out.push((l[i].0, c0 * l[i].1));
+                i += 1;
+            }
+            core::cmp::Ordering::Greater => {
+                out.push((r[j].0, c1 * r[j].1));
+                j += 1;
+            }
+            core::cmp::Ordering::Equal => {
+                out.push((l[i].0, c0 * l[i].1 + c1 * r[j].1));
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out.extend(l[i..].iter().map(|&(k, v)| (k, c0 * v)));
+    out.extend(r[j..].iter().map(|&(k, v)| (k, c1 * v)));
+    out
+}
+
+/// The sparse rw sum-check of `twist_prove`. Returns the same triple
+/// as `sumcheck_prove` on the dense tables of §7.5: proof, all
+/// challenges (`r_j` then `r_k`), and the table MLEs at the point.
+#[allow(clippy::too_many_arguments)]
+fn rw_sumcheck_sparse(
+    params: &TwistParams,
+    m0: &[u64],
+    wit: &TwistWitness,
+    claims: &TwistClaims,
+    alpha0: &[K],
+    alphas: &[Vec<K>],
+    beta: &[K],
+    transcript: &mut Transcript,
+    label: &[u8],
+) -> (SumcheckProof, Vec<K>, Vec<K>) {
+    let (a, d, p, n, ell) = (params.a, params.d, params.p, params.n, params.ell);
+    let (nk, t, l) = (1usize << a, 1usize << n, 1usize << ell);
+    assert_eq!(m0.len(), nk, "twist_prove: m0 must have 2^a words");
+
+    // Address of every access in every cycle.
+    let mut addrs: Vec<Vec<usize>> = wit
+        .ra
+        .iter()
+        .map(|comps| addrs_of(comps, a, d, t))
+        .collect();
+    let writes_addr = addrs_of(&wit.wa, a, d, t);
+    addrs.push(writes_addr.clone());
+
+    // Inc as integers and as `Inc~(r_o, j)` field values.
+    let eo = eq_table(&claims.r_o);
+    let mut inc_int = vec![0u64; t];
+    let mut inc_val = vec![K::ZERO; t];
+    for j in 0..t {
+        let (mut iv, mut acc) = (0u64, K::ZERO);
+        for (o, &e) in eo.iter().enumerate() {
+            if wit.inc[o + l * j] {
+                iv |= 1 << o;
+                acc += e;
+            }
+        }
+        inc_int[j] = iv;
+        inc_val[j] = acc;
+    }
+
+    // Sparse memory: write list and prefix XORs per address.
+    let mut writes: Vec<Vec<(usize, u64)>> = vec![Vec::new(); nk];
+    for (j, &k) in writes_addr.iter().enumerate() {
+        writes[k].push((j, inc_int[j]));
+    }
+    let prefix: Vec<Vec<u64>> = writes
+        .iter()
+        .map(|ws| {
+            let mut pref = Vec::with_capacity(ws.len() + 1);
+            pref.push(0u64);
+            for &(_, inc) in ws {
+                let last = *pref.last().unwrap();
+                pref.push(last ^ inc);
+            }
+            pref
+        })
+        .collect();
+    let mem = SparseMem {
+        m0,
+        writes,
+        prefix,
+        eo: &eo,
+    };
+
+    let phi_at = |x: usize, k: usize| -> K {
+        let mut v = alpha0[x];
+        for (bit, &al) in alphas[x].iter().enumerate() {
+            if (k >> bit) & 1 == 1 {
+                v += al;
+            }
+        }
+        v
+    };
+
+    // Initial groups: one per cycle, replaying memory for `A`.
+    let eqc = eq_table(&claims.r_c);
+    let mut state = m0.to_vec();
+    let mut groups: Vec<RwGroup> = Vec::with_capacity(t);
+    for j in 0..t {
+        let per_x = (0..=p)
+            .map(|x| RwX {
+                entries: vec![(addrs[x][j], K::ONE)],
+                aval: mem.val_at(state[addrs[x][j]]),
+                bval: phi_at(x, addrs[x][j]),
+                sval: K::ONE,
+            })
+            .collect();
+        groups.push(RwGroup {
+            eq: eqc[j],
+            inc: inc_val[j],
+            per_x,
+        });
+        state[writes_addr[j]] ^= inc_int[j];
+    }
+
+    let total_of = |groups: &[RwGroup]| -> K {
+        let mut acc = K::ZERO;
+        for g in groups {
+            let mut inner = beta[p] * g.inc * g.per_x[p].sval;
+            for (x, &bx) in beta.iter().enumerate().take(p + 1) {
+                inner += bx * (g.per_x[x].aval + g.per_x[x].bval);
+            }
+            acc += g.eq * inner;
+        }
+        acc
+    };
+    let claim = total_of(&groups);
+    sumcheck_init(transcript, label, claim, n + a, 3);
+    let msg_label = sublabel(label, b"/msg");
+    let chal_label = sublabel(label, b"/chal");
+    let (mut msgs, mut rs): (Vec<Vec<K>>, Vec<K>) = (Vec::new(), Vec::new());
+    let mut cur = claim;
+    let mut rhos: Vec<K> = Vec::with_capacity(n);
+
+    // Cycle rounds over the sparse groups.
+    for round in 0..n {
+        let r = round;
+        let half = groups.len() / 2;
+        // Cross terms per pair and access, computed once per round.
+        let mut crosses: Vec<Vec<K>> = Vec::with_capacity(half);
+        for pair in 0..half {
+            let (gl, gr) = (&groups[2 * pair], &groups[2 * pair + 1]);
+            let (base_l, base_r) = (2 * pair * (1usize << r), (2 * pair + 1) * (1usize << r));
+            let mut cx = Vec::with_capacity(p + 1);
+            for x in 0..=p {
+                let mut cross = K::ZERO;
+                for &(k, ra) in &gl.per_x[x].entries {
+                    cross += ra * mem.v_group(k, base_r, r, &rhos);
+                }
+                for &(k, ra) in &gr.per_x[x].entries {
+                    cross += ra * mem.v_group(k, base_l, r, &rhos);
+                }
+                cx.push(cross);
+            }
+            crosses.push(cx);
+        }
+        let mut ev = vec![K::ZERO; 4];
+        for (tt, slot) in ev.iter_mut().enumerate() {
+            let tv = K::t(tt as u128);
+            let (c0, c1) = (K::ONE + tv, tv);
+            for pair in 0..half {
+                let (gl, gr) = (&groups[2 * pair], &groups[2 * pair + 1]);
+                let eq_t = c0 * gl.eq + c1 * gr.eq;
+                let mut inner = K::ZERO;
+                for x in 0..=p {
+                    let a_t = c0 * c0 * gl.per_x[x].aval
+                        + c1 * c1 * gr.per_x[x].aval
+                        + c0 * c1 * crosses[pair][x];
+                    let b_t = c0 * gl.per_x[x].bval + c1 * gr.per_x[x].bval;
+                    inner += beta[x] * (a_t + b_t);
+                }
+                let s_p = c0 * gl.per_x[p].sval + c1 * gr.per_x[p].sval;
+                let i_t = c0 * gl.inc + c1 * gr.inc;
+                inner += beta[p] * i_t * s_p;
+                *slot += eq_t * inner;
+            }
+        }
+        assert_eq!(
+            ev[0] + ev[1],
+            cur,
+            "claim inconsistent with tables (g(0)+g(1) != claim)"
+        );
+        let mut msg = vec![ev[0]];
+        msg.extend_from_slice(&ev[2..]);
+        transcript.absorb_ks(&msg_label, &msg);
+        let chal = transcript.challenge_k(&chal_label);
+        msgs.push(msg);
+        rs.push(chal);
+        cur = interpolate_eval(&ev, chal);
+        rhos.push(chal);
+        // Bind: merge sibling groups.
+        let (c0, c1) = (K::ONE + chal, chal);
+        let mut next: Vec<RwGroup> = Vec::with_capacity(half);
+        for pair in 0..half {
+            let (gl, gr) = (&groups[2 * pair], &groups[2 * pair + 1]);
+            let per_x = (0..=p)
+                .map(|x| RwX {
+                    entries: merge_entries(&gl.per_x[x].entries, &gr.per_x[x].entries, c0, c1),
+                    aval: c0 * c0 * gl.per_x[x].aval
+                        + c1 * c1 * gr.per_x[x].aval
+                        + c0 * c1 * crosses[pair][x],
+                    bval: c0 * gl.per_x[x].bval + c1 * gr.per_x[x].bval,
+                    sval: c0 * gl.per_x[x].sval + c1 * gr.per_x[x].sval,
+                })
+                .collect();
+            next.push(RwGroup {
+                eq: c0 * gl.eq + c1 * gr.eq,
+                inc: c0 * gl.inc + c1 * gr.inc,
+                per_x,
+            });
+        }
+        groups = next;
+    }
+
+    // Address rounds: dense tables of size `2^a` only.
+    let group = &groups[0];
+    let eqw = eq_table(&rhos);
+    let mut hist: Vec<Vec<K>> = vec![vec![K::ZERO; nk]; p + 1];
+    for j in 0..t {
+        for x in 0..=p {
+            hist[x][addrs[x][j]] += eqw[j];
+        }
+    }
+    let vtab: Vec<K> = (0..nk).map(|k| mem.v_group(k, 0, n, &rhos)).collect();
+    let mut tables: Vec<Vec<K>> = vec![vec![group.eq; nk], vtab, vec![group.inc; nk]];
+    tables.extend(hist);
+    for x in 0..=p {
+        tables.push(phi_k(alpha0[x], &alphas[x], a));
+    }
+    let combine = {
+        let beta = beta.to_vec();
+        move |v: &[K]| rw_combine(p, &beta, v)
+    };
+    for _ in 0..a {
+        let ev = sumcheck_round_evals(&tables, &combine, 3);
+        assert_eq!(
+            ev[0] + ev[1],
+            cur,
+            "claim inconsistent with tables (g(0)+g(1) != claim)"
+        );
+        let mut msg = vec![ev[0]];
+        msg.extend_from_slice(&ev[2..]);
+        transcript.absorb_ks(&msg_label, &msg);
+        let chal = transcript.challenge_k(&chal_label);
+        msgs.push(msg);
+        rs.push(chal);
+        cur = interpolate_eval(&ev, chal);
+        tables = tables.iter().map(|tb| bind_low(tb, chal)).collect();
+    }
+    let mles: Vec<K> = tables.iter().map(|tb| tb[0]).collect();
+    (SumcheckProof { round_msgs: msgs }, rs, mles)
+}
+
 /// Prove one BinaryTwist instance (spec 07 §7.5), with the optional
 /// final-memory claim (§7.6) and Inc-at-a-random-point output (§7.7).
 #[allow(clippy::too_many_arguments)]
@@ -491,110 +873,31 @@ pub fn twist_prove(
     absorb(transcript, label, claims);
     let (alpha0, alphas, beta) = coeffs(transcript, label, p, a);
 
-    let mut fulls: Vec<Vec<bool>> = (0..p).map(|s| full_table(&wit.ra[s], a, d, t)).collect();
-    fulls.push(full_table(&wit.wa, a, d, t));
+    // `I(j) = Inc~(r_o, j)`, and the write address of every cycle; both
+    // are also needed by the Val and final-memory steps below.
     let eo = eq_table(&claims.r_o);
-    // V(k, j) = Val~(k, r_o, j) by replaying the increments; I(j) = Inc~(r_o, j)
-    let mut state = m0.to_vec();
-    let mut big_v = vec![vec![K::ZERO; t]; nk];
-    let inc_at = |j: usize| {
-        let (mut iv, mut acc) = (0u64, K::ZERO);
-        for (o, &e) in eo.iter().enumerate() {
-            if wit.inc[o + l * j] {
-                iv |= 1 << o;
-                acc += e;
-            }
-        }
-        (iv, acc)
-    };
-    let pairs: Vec<(u64, K)> = if t * l >= PAR_THRESHOLD {
-        (0..t).into_par_iter().map(inc_at).collect()
-    } else {
-        (0..t).map(inc_at).collect()
-    };
-    let (incs, big_i): (Vec<u64>, Vec<K>) = pairs.into_iter().unzip();
-    // `state` is indexed by `k < nk` below (the sequential code panicked on
-    // a short `m0`; the parallel zip would silently truncate instead).
-    assert_eq!(state.len(), nk, "twist_prove: m0 must have 2^a words");
-    // The state update across `j` is sequential; within one `j` the `V(·, j)`
-    // row and the state XOR are independent across `k`.
-    let val_at = |sv: u64| {
-        let mut acc = K::ZERO;
-        for (o, &e) in eo.iter().enumerate() {
-            if (sv >> o) & 1 == 1 {
-                acc += e;
-            }
-        }
-        acc
-    };
-    for j in 0..t {
-        if nk * l >= PAR_THRESHOLD {
-            big_v
-                .par_iter_mut()
-                .zip(state.par_iter())
-                .for_each(|(row, &sv)| row[j] = val_at(sv));
-            let wa_j = &fulls[p][nk * j..nk * (j + 1)];
-            state
-                .par_iter_mut()
-                .zip(wa_j.par_iter())
-                .for_each(|(sv, &hit)| {
-                    if hit {
-                        *sv ^= incs[j];
-                    }
-                });
-        } else {
-            for k in 0..nk {
-                big_v[k][j] = val_at(state[k]);
-            }
-            for k in 0..nk {
-                if fulls[p][k + nk * j] {
-                    state[k] ^= incs[j];
+    let big_i: Vec<K> = (0..t)
+        .map(|j| {
+            let mut acc = K::ZERO;
+            for (o, &e) in eo.iter().enumerate() {
+                if wit.inc[o + l * j] {
+                    acc += e;
                 }
             }
-        }
-    }
-
-    // Sum-check domain index j + T*k (cycle variables first, §7.5 step 3).
-    let dom = |f: &(dyn Fn(usize, usize) -> K + Sync)| -> Vec<K> {
-        if t * nk >= PAR_THRESHOLD {
-            (0..t * nk)
-                .into_par_iter()
-                .map(|idx| f(idx % t, idx / t))
-                .collect()
-        } else {
-            let mut out = Vec::with_capacity(t * nk);
-            for k in 0..nk {
-                for j in 0..t {
-                    out.push(f(j, k));
-                }
-            }
-            out
-        }
-    };
-    let eqc = eq_table(&claims.r_c);
-    let mut tables = vec![
-        dom(&|j, _k| eqc[j]),
-        dom(&|j, k| big_v[k][j]),
-        dom(&|j, _k| big_i[j]),
-    ];
-    for full in fulls.iter().take(p + 1) {
-        tables.push(dom(&|j, k| K::from_bit(full[k + nk * j])));
-    }
-    let phis: Vec<Vec<K>> = (0..=p).map(|x| phi_k(alpha0[x], &alphas[x], a)).collect();
-    for phi in phis.iter().take(p + 1) {
-        tables.push(dom(&|_j, k| phi[k]));
-    }
-    let combine = {
-        let beta = beta.clone();
-        move |v: &[K]| rw_combine(p, &beta, v)
-    };
-    // The honest prover sums its actual tables (not the claimed value).
-    let claim = combine_sum(&tables, &combine);
-    let (rw, r, mles) = sumcheck_prove(
-        claim,
-        tables,
-        &combine,
-        3,
+            acc
+        })
+        .collect();
+    let writes_addr = addrs_of(&wit.wa, a, d, t);
+    assert_eq!(m0.len(), nk, "twist_prove: m0 must have 2^a words");
+    // The rw sum-check runs sparsely (§7.10): no `T * 2^a` tables.
+    let (rw, r, mles) = rw_sumcheck_sparse(
+        params,
+        m0,
+        wit,
+        claims,
+        &alpha0,
+        &alphas,
+        &beta,
         transcript,
         &sublabel(label, b"/rw"),
     );
@@ -605,7 +908,7 @@ pub fn twist_prove(
     transcript.absorb_ks(&sublabel(label, b"/rw/evals"), &rw_ev);
 
     // Val evaluation
-    let wa_r = k_rows(&fulls[p], nk, t, &r_k);
+    let wa_r = wa_rows(&writes_addr, &r_k);
     let lt = lt_table(&r_j);
     let claim = xor_sum(t, &|j| lt[j] * wa_r[j] * big_i[j]);
     let mul3 = |v: &[K]| v[0] * v[1] * v[2];
@@ -629,7 +932,7 @@ pub fn twist_prove(
         let mut rkf = r_low;
         rkf.extend(s_out_bits(final_mem, a));
         let eof = eq_table(&rof);
-        let wa_f = k_rows(&fulls[p], nk, t, &rkf);
+        let wa_f = wa_rows(&writes_addr, &rkf);
         let if_at = |j: usize| {
             let mut acc = K::ZERO;
             for (o, &e) in eof.iter().enumerate() {

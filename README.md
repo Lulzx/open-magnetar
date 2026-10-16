@@ -45,7 +45,7 @@ Measured on an Apple M4 Pro with a release build and `A = 16`. Method and compar
 | `sha256("abc")`, T = 8,192 | test | 61.7 s | 52 ms | 34,526 B |
 | `erc20-transfer`, T = 512 | test | 1.40 s | 16 ms | 25,974 B |
 
-Verifier time is close to the numbers in the paper. Prover time is not. The current prover follows the dense reference algorithm, with rayon used to parallelise the hot loops. That gave a 4 to 8 times speedup and did not change any proof byte, but the cost still grows with the size of the RAM address space and not only with the length of the trace. The sparse prover in [spec §7.10](docs/spec/07-twist-shout.md) would fix this. It changes no transcript byte, no proof format, and no verifier code, because §7.10 is informative only. A proof at T = 2²² is modelled at about 656 KiB, close to the paper, but has not been measured at that size.
+Verifier time is close to the numbers in the paper. Prover time is not, though the gap is smaller than it was. The Twist read and write sum check now uses the sparse algorithm of [spec §7.10](docs/spec/07-twist-shout.md) in the Rust prover, so it no longer builds tables of size `T · 2^a`. Proof bytes are unchanged. Workloads at T = 32,768 and T = 65,536 that previously ran out of memory now prove in tens of seconds. The Spartan witness handling and the Mosaic commitment tables are still dense in T, which is what limits large traces now. A proof at T = 2²² is modelled at about 656 KiB, close to the paper, but has not been measured at that size. Measured numbers are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ## Quick start
 
@@ -114,8 +114,8 @@ Open audit items are tracked in [§13.9](docs/spec/13-security.md). Items 4 to 7
 
 ## Roadmap
 
-1. Sparse prover, [spec §7.10](docs/spec/07-twist-shout.md). Proving time should grow with the trace length T, not with the dense `T · 2^a` tables. This is the path toward the proving throughput reported in the paper, about 7M cycles per second. No transcript, format, or verifier changes are needed.
-2. Prove the last four Table 1 workloads end to end. Eleven of the fifteen are proved now. `keccak-f1600`, `sha256-merkle-path`, `evm-erc20-transfer`, and `radix-sort-u64` remain. They need the sparse prover first, because the dense prover uses too much memory at their trace lengths. Details are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+1. Sparse handling for the Spartan witness and the Mosaic commitment tables. The Twist part of [spec §7.10](docs/spec/07-twist-shout.md) is implemented, and proof bytes did not change. What still grows with large constants in T is the witness and commitment side. That is the remaining path toward the proving throughput reported in the paper, about 7M cycles per second, and toward proving at T = 2²² on ordinary hardware.
+2. Prove the last Table 1 workload, `radix-sort-u64`. Fourteen of the fifteen are proved now. A proof attempt at T = 2²² was killed by the OS at 10.2 GiB resident memory, in the Spartan and Mosaic parts rather than in Twist. It waits on item 1. Details are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 3. Rust guests. Done for the basic path. The runtime crate `guest/rust/om-guest` provides the entry point, a bump allocator, and I/O helpers, and the Fibonacci example in `guest/rust/examples/fib` is proved and verified end to end. Build it with `make -C guest/rust`. See [§14](docs/spec/14-guest-abi.md). More Rust examples would still be useful.
 4. Close §13.9 items 1 to 3. The Ligerito paper has been obtained and its `t` derivation compared. The ring switching and Twist and Shout papers are still blocked on manual download. See [`papers/README.md`](papers/README.md).
 5. Measure a proof at T = 2²² and replace the modelled size of about 656 KiB with a measured one.

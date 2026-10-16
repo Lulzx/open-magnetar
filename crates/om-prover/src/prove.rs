@@ -167,7 +167,21 @@ pub fn prove(
     public_input: &[u8],
     private_input: Option<&[u8]>,
 ) -> Result<Proof, ProverError> {
-    Ok(prove_instance_inner(vk, public_input, private_input, None)?.1)
+    Ok(prove_instance_inner(vk, public_input, private_input, None, DEFAULT_MAX_CYCLES)?.1)
+}
+
+/// [`prove_instance`] with an explicit execution budget in cycles,
+/// instead of [`DEFAULT_MAX_CYCLES`]. The budget is a local resource
+/// limit only: it changes no proof byte for executions that fit.
+///
+/// # Errors
+/// As [`prove_instance`].
+pub fn prove_instance_with_max_cycles(
+    vk: &VerifyingKey,
+    public_input: &[u8],
+    max_cycles: usize,
+) -> Result<(PublicInstance, Proof), ProverError> {
+    prove_instance_inner(vk, public_input, None, None, max_cycles)
 }
 
 /// Prove, returning `(public instance, proof)` (Python
@@ -181,7 +195,7 @@ pub fn prove_instance(
     public_input: &[u8],
     private_input: Option<&[u8]>,
 ) -> Result<(PublicInstance, Proof), ProverError> {
-    prove_instance_inner(vk, public_input, private_input, None)
+    prove_instance_inner(vk, public_input, private_input, None, DEFAULT_MAX_CYCLES)
 }
 
 /// [`prove_instance`] with a test-only trace mutator (Python
@@ -196,7 +210,7 @@ pub fn prove_instance_with_trace_hook(
     public_input: &[u8],
     hook: &mut TraceHook<'_>,
 ) -> Result<(PublicInstance, Proof), ProverError> {
-    prove_instance_inner(vk, public_input, None, Some(hook))
+    prove_instance_inner(vk, public_input, None, Some(hook), DEFAULT_MAX_CYCLES)
 }
 
 fn prove_instance_inner(
@@ -204,12 +218,13 @@ fn prove_instance_inner(
     public_input: &[u8],
     private_input: Option<&[u8]>,
     mut hook: Option<&mut TraceHook<'_>>,
+    max_cycles: usize,
 ) -> Result<(PublicInstance, Proof), ProverError> {
     if private_input.is_some() {
         return Err(ProverError::PrivateInputNotSupported);
     }
     let derived = Derived::new(vk);
-    let ex = execute_with_derived(&derived, public_input, DEFAULT_MAX_CYCLES)?;
+    let ex = execute_with_derived(&derived, public_input, max_cycles)?;
     prove_execution(&derived, ex, &mut hook)
 }
 

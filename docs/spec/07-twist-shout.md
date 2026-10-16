@@ -397,6 +397,20 @@ the standard structure and must be checked against it.)
 * The `LT` table needed for the `val` sum-check is built in `O(T)` by the recurrence on the
   most-significant differing bit.
 
+**Implementation status (Rust, 2026-10-16).** The `rw` sum-check of 7.5 is implemented sparsely
+in `crates/om-memcheck/src/twist.rs` (`rw_sumcheck_sparse`), following the third bullet: the cycle
+rounds keep one sparse group per remaining cycle suffix (the bound one-hot support, at most one
+address per original cycle in the group, plus the scalars `sum_k ra(k) V(k)`, `sum_k ra(k) Phi(k)`
+and `sum_k ra(k)` per access), the cross term needed when two sibling groups are bound is
+recomputed from per-address write lists (a cell's state is constant between its writes, and the
+eq-weight of a constant segment is a range sum over the bound cycle bits), and the address rounds
+run densely on tables of size `2^a` only. No `T * 2^a` table is materialised. The transcript and
+proof bytes are unchanged: the crate's vector tests reproduce the dense reference vectors byte
+for byte, and workloads that previously ran out of memory at `T = 32768` (keccak-f1600,
+sha256-merkle-path) now prove in seconds. The Python reference model remains dense. Shout and
+the Spartan witness handling are still dense in the Rust prover; they were not the memory
+bottleneck at the measured sizes.
+
 ### 7.11 Resolved questions
 
 1. **d.** Registers `d = 2` (`d = 1` allowed); RAM and bytecode `a_c ≤ 4`, 7.9. **[OM-choice]**

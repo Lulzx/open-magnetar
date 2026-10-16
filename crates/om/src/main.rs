@@ -56,6 +56,7 @@ Options:
   --out <proof.bin>         proof output file (required)
   --input <file.bin>        public input bytes (default: empty)
   --instance <inst.bin>     public-instance output file (default: print fields only)
+  --max-cycles <n>          execution budget in cycles (default: 1048576)
   --help                    show this help
 ";
 
@@ -276,7 +277,10 @@ fn cmd_keygen(args: &[String]) -> CliResult<()> {
 }
 
 fn cmd_prove(args: &[String]) -> CliResult<()> {
-    let flags = Flags::parse(args, &["vk", "elf", "out", "input", "instance"])?;
+    let flags = Flags::parse(
+        args,
+        &["vk", "elf", "out", "input", "instance", "max-cycles"],
+    )?;
     if flags.help {
         print!("{PROVE_USAGE}");
         return Ok(());
@@ -290,7 +294,8 @@ fn cmd_prove(args: &[String]) -> CliResult<()> {
         Some(p) => read_file(p)?,
         None => Vec::new(),
     };
-    let (instance, proof_blob) = om_sdk::prove(&vk, &elf, &input)?;
+    let max_cycles: usize = flags.parse_or("max-cycles", om_sdk::DEFAULT_MAX_CYCLES)?;
+    let (instance, proof_blob) = om_sdk::prove_with_max_cycles(&vk, &elf, &input, max_cycles)?;
     write_file(&out_path, &proof_blob)?;
     if let Some(inst_path) = flags.get("instance") {
         write_file(inst_path, &encode_instance(&instance))?;
@@ -333,6 +338,7 @@ fn cmd_run(args: &[String]) -> CliResult<()> {
             "input-log-words",
             "output-log-words",
             "max-code-words",
+            "max-cycles",
         ],
     )?;
     if flags.help {
@@ -349,7 +355,8 @@ fn cmd_run(args: &[String]) -> CliResult<()> {
     // The PCS fields are irrelevant without proving.
     let params = SdkParams::default().with_abi(abi_params(&flags)?);
     let vk = om_sdk::keygen_from_elf(&elf, &params)?;
-    let (output, exit_code) = om_sdk::execute(&vk, &elf, &input)?;
+    let max_cycles: usize = flags.parse_or("max-cycles", om_sdk::DEFAULT_MAX_CYCLES)?;
+    let (output, exit_code) = om_sdk::execute_with_max_cycles(&vk, &elf, &input, max_cycles)?;
     println!("exit_code: {exit_code}");
     println!("output_len: {}", output.len());
     println!("output: {}", hex(&output));
