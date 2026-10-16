@@ -369,14 +369,95 @@ source before this section moves to `stable`.
    **68 claims** (as cited in 11 and 13.2 note 3), well under the 256 cap; `test_protocol.py` now asserts
    the exact count so layout drift is caught.
 
-**Cross-check against the Jolt documentation** (https://jolt.a16zcrypto.com/how/architecture/ram.html; the neighbouring
-pages were not read, for time). *Confirmed:* the `ra` virtualization identity `ra(r, r') = sum_j eq(r', j) prod_i ra_i(r_i, j)`
-(07 7.3); `Val_final(r) - Val_init(r) = sum_j Inc(j) ra(r, j)` (07 7.6, with `wa` and `ra` identified in Jolt); `Inc` as a cycle-only
-polynomial; the output check as an `eq`-weighted, range-masked sum of `Val_final - Val_io` with `Val_io` known to
-the verifier (07 7.6); `LT` used for the range mask. *Not confirmed:* the page does not give the `Val` as an `LT`-sum
-over earlier writes (07 7.5 step 4), nor the read/write-checking formulas, so those remain audit items 3-4; Jolt uses a
-Hamming-weight booleanity check `hw^2 - hw` for prime-field `ra`, which is *not* our `Delta*` (binary field, 07 7.2), so no
-cross-check is possible there.
+**Cross-check against Jolt (documentation and source at commit `21016f4…`)**. Sources: the RAM page
+https://jolt.a16zcrypto.com/how/architecture/ram.html (neighbouring pages not read), and the a16z/jolt source at commit
+`21016f4da9a856e94e0a4c2ebb752630852734c0` (2026-10-15), read only, nothing built or run. Paths below are under `crates/`;
+`claims/` is `jolt-claims/src/protocols/jolt/` and `stages/` is `jolt-verifier/src/stages/`. Jolt works over the BN254 scalar field with one field element per word
+and `Inc = post − pre`; ours is `GF(2^128)` with value bits `o` and `Inc` = XOR, so identities are compared up to sign
+(`−` is `+` in characteristic 2) and up to the `o` coordinate (`r_o`), which Jolt does not have.
+
+*Confirmed from source* (identities read as the verifier checks them; this settles the two items the documentation
+pass left open):
+
+* (b) **Read/write checking.** RAM: `claims/relations/ram/read_write_checking.rs` (`ReadWriteChecking::unbatched_relation`)
+  checks `rv(r_c) + γ·wv(r_c) = Σ_{k,j} eq(r_c, j)·[ra·Val + γ·ra·(Val + Inc)]`, degree 3, `log K + log T` rounds, one `RamRa`
+  for the read and the write (our RAM `wa ≡ ra`, 07 7.9); final openings `RamVal`, `RamRa`, `RamInc` at the sum-check
+  point, `EqCycle = eq(τ, r_j)` (`stages/stage2/ram_read_write_checking.rs`). Registers:
+  `jolt-claims/src/twist/memory_checking.rs` (`read_write_checking_input`/`_output`) checks
+  `rd + γ·rs1 + γ²·rs2 = Σ eq(r_c, j)·[wa·(Val + Inc) + γ·ra_1·Val + γ²·ra_2·Val]`, degree 3
+  (`stages/stage4/registers_read_write_checking.rs`). So Jolt, like 07 7.5 step 3, uses **one** combined sum-check per memory
+  for all reads and the write (powers of `γ` where we draw independent `β_x`), and its summand is ours without the `Φ_x`
+  terms; the output openings are our `rw_evals` (`ε_x`, `V~`, `I~`).
+* (a) **`Val` as an `LT`-sum.** `twist/memory_checking.rs` (`val_evaluation_input`/`_output`): `Val(r_k, r_j) =
+  Σ_{j'} LT(j', r_j)·Inc(j')·wa(r_k, j')`, degree 3, `log T` rounds, with no init term for registers (zero initial file;
+  `claims/relations/registers/val_evaluation.rs`, `stages/stage5/registers_val_evaluation.rs` via `derivations::lt_at_cycle`).
+  RAM: `claims/relations/ram/val_check.rs` (`RamValCheck`) checks `Val(r_k, r_j) + γ·Val_final(r_k) − (1 + γ)·Val_init(r_k) =
+  Σ_{j'} (LT(j', r_j) + γ)·Inc(j')·ra(r_k, j')` (`stages/stage4/ram_val_check.rs`). Both are 07 7.5 step 4 (`V~ + M_0~ = Σ LT·wa~·Inc~`)
+  and, for the `γ` part, 07 7.6. `LtPolynomial::evaluate` (`jolt-poly/src/lt.rs`) is `Σ_i (1 − x_i) r_i Π_{higher m} eq(x_m, r_m)`,
+  our `LT~` of 07 7.5 in characteristic 2 (Jolt indexes MSB first, 07 labels LSB first; same polynomial), and is applied as
+  `LT(sum-check point, fixed cycle)`, as ours.
+* **`Inc` is cycle-only** in this version: one element per cycle (`post − pre`, zero on reads and no-ops,
+  `jolt-kernels/src/optimized/ram_val_check.rs` `IncColumn`); its rw and val openings are reduced by a `log T`-round
+  sum-check with cycle-`eq` weights (`claims/relations/claim_reductions/increments.rs`, `twist/claim_reductions.rs`
+  `increment_reduction_*`, `stages/stage6b/inc_claim_reduction.rs`).
+* **`ra` virtualization** (07 7.3): `claims/relations/ram/ra_virtualization.rs`, `ra(r_k, r_c) = Σ_j eq(r_c, j) Π_i ra_i(r_k^{(i)}, j)`,
+  degree `d + 1`. Jolt first reduces its three `RamRa` openings (RAF, rw, val) to one cycle point
+  (`claims/relations/ram/ra_claim_reduction.rs`); 07 7.3 takes several terms per group with `ν` weights, the same reduction fused.
+* **Shout** (07 7.4): bytecode, `claims/geometry/bytecode.rs` (`read_raf_address_input_fold`, `read_raf_cycle_output`): claims
+  from five stages at their own cycle points, folded by `γ`, against `Π_i ra_i · Σ_s γ^s eq(r_s, j)·Val_s(k)`, with `Val_s(r_k)`
+  evaluated by the verifier from the program (`read_raf_public_values`), proven as an address phase then a cycle phase
+  (`claims/relations/bytecode/read_raf_{address,cycle}_phase.rs`). This is our multi-group Shout (address sum-check, then
+  virtualization over cycles), so the [OM-choice] of 7.4 has a direct counterpart.
+* **Output check** (07 7.6): `claims/relations/ram/output_check.rs`, `0 = Σ_k eq(r, k)·mask(k)·(Val_final(k) − Val_io(k))`,
+  as on the documentation page.
+* **Prover algorithms** (07 7.10). `jolt-kernels/src/optimized/rw_matrix.rs` and `ram_read_write.rs`: one sparse entry per
+  access with `prev_val`/`next_val` checkpoints (a cell's value from its neighbouring accesses, our "last write"), cycle
+  variables bound first, low to high, by merging adjacent row pairs, so after `i` binds there is one entry per distinct
+  (group of `2^i` cycles, address) pair, the count behind 7.10's `O((p+1)·T·a + NK)`; then address rounds against the bound
+  `val_init` column of size `K`. Registers, `registers_read_write/mod.rs`: "at most three sparse entries per cycle" (`p + 1 = 3`),
+  dense `K`-sized arrays in the address rounds. Shout histogram, `bytecode_read_raf.rs` module docs: `F_s(k) =
+  Σ_{j: pc(j)=k} eq(r_s, j)` (our `ra~(k, r_c)`); one-hot components as `eq(r_chunk)[chunk_i(pc_j)]` (`bytecode_read_raf.rs`,
+  `lazy_ra.rs`); `LT` table by a doubling recurrence with one multiplication per entry (`lt_evals`), and a `√T`-space split
+  `LT(j, r) = LT(j_hi, r_hi) + eq(j_hi, r_hi)·LT(j_lo, r_lo)` (`SplitLt`). Jolt adds Gruen split-`eq` and Dao–Thaler factoring
+  in the cycle rounds, which 7.10 does not describe (informative only). The source states no cost bound; the bound is
+  ours, the data structure matches. No 7.10 correction was needed.
+
+*Differs by design* (each side's checks bind the same facts):
+
+1. **Row sums and addresses.** Jolt's rw summand has no `Φ_x`: the address is bound by a separate RAF sum-check
+   (`claims/relations/ram/raf_evaluation.rs`, `RamAddress(r_c) = Σ_k unmap(k)·ra(k, r_c)`, degree 2; bytecode PC likewise via
+   `Int(r_k)`), and row weight by Hamming-weight claims. Ours folds the row sum (`α_{x,0}`) and per-bit address claims into the
+   rw sum-check (07 7.5 step 3, [OM-choice], proved there); per-bit claims are needed because the integer fold
+   `Σ_t 2^t k_t` does not exist in characteristic 2.
+2. **One-hot.** Jolt: Booleanity, `eq·Σ_i γ^{2i}(ra_i² − ra_i) = 0` (`claims/geometry/booleanity.rs` `booleanity_output`), and
+   Hamming weight `Σ_k ra_i(k, r) = 1` per component (`claims/relations/claim_reductions/hamming_weight.rs`). Ours: `Δ⋆` (07 7.2)
+   plus the full-address row sum. Both establish weight-one rows (`x² + x` also has only the roots `0, 1` in `GF(2^128)`, so
+   Jolt's test would be sound for us too); `Δ⋆` is the Magnetar §4.4 construction, checked against the paper (13.9(5)),
+   not against Jolt.
+3. **Empty RAM rows.** Jolt lets a RAM row be empty: Hamming weight `= h(j)` with `h² − h = 0`
+   (`claims/relations/ram/hamming_booleanity.rs`), for cycles without a RAM access. Ours requires weight exactly one; non-RAM
+   cycles access word 0 with `wv = rv` (07 Requests, 10). Ours is the stricter statement.
+4. **Register addresses.** Jolt's `Rs1Ra`, `Rs2Ra`, `RdWa` are virtual, discharged inside the bytecode Shout (stage-4 claims
+   with row values `eq(r_k, rs1(pc))`, `claims/geometry/bytecode.rs` `stage4_claim`, `read_raf_register_eq_evals`). Ours commits the
+   register address components, with their own one-hot check, and links the bit claims to the bytecode in 11.
+5. **`Val` and final memory.** Jolt checks `Val` at the rw point and `Val_final` at the output-check point in one
+   `(LT + γ)` sum-check, possible because its stage-2 batch gives both the same address point. Ours runs the `val`
+   sum-check (7.5 step 4) and the final-memory sum-check at its own point `r_kf` (7.6) separately, and evaluates the
+   output MLE on the aligned region directly instead of an address sum-check with a mask.
+6. **`Inc`.** Jolt: one word per cycle, a reduction sum-check to one point per memory. Ours: `Inc(o, j)`, 2–4 point claims
+   passed to Mosaic (05) without a reduction sum-check.
+7. **Variable order.** Jolt's rw order is prover-configured (`JoltReadWriteConfig`, `ReadWriteDimensions` phase split, part of
+   the proof; the kernels support cycle-first or full address-first). Ours is fixed cycle-first (07 7.5 step 3).
+
+*Discrepancies:* none. Checked in both directions: every Jolt check has a counterpart in ours that binds the same fact
+(Hamming weight ↔ `α_{x,0}` row sum; Booleanity ↔ `Δ⋆`; RAF ↔ address-bit claims; the bytecode entry term `eq(entry, r_k)·eq(0, r_c)`
+↔ 10's cross-step `S_in(0) = init`), and the only check of ours without a Jolt counterpart is the stricter row weight
+(item 3), which removes prover freedom rather than relying on it. Neither Twist constrains `Inc` on a cycle that writes nothing (it enters only as `wa·Inc`); Jolt relies on its R1CS,
+we on the store router (08) and `wv = rv` (10).
+
+*Not compared:* the instruction-lookup Shout (`claims/relations/instruction/*`; 07 uses Shout only for the bytecode); the
+BlindFold (ZK), lattice (Akita) and `field_inline` variants (the last uses the same `twist/` builders); Jolt's soundness
+constants, which the source does not state, against 13.2.
 
 ## Resolved questions
 
@@ -400,3 +481,5 @@ cross-check is possible there.
 * 2026-10-16 (audit pass against Magnetar `paper.pdf`, in repo): 13.9(5) resolved (07 7.2 formula is §4.4 verbatim; bound now derived in 7.2); 13.9(4) resolved (the merged Twist sum-check is an [OM-choice] deviation, now proved in 07 7.5 step 3); 13.9(6) resolved as [OM-choice] with in-spec proofs (7.6 MLE expansion written out); 13.9(3) narrowed to informative 7.10 vs [55]; 13.9(2) narrowed to the bibliographic comparison only (04 4.5 is internally proved and cross-checked); 13.9(7) resolved by re-derivation (params regenerates 13.2 exactly; Mosaic claims measured at 68 on the Fibonacci instance and now asserted in `test_protocol.py`). Remaining open: 13.9(1) paper comparison + Lemma A form, 13.9(2) bibliographic, 13.9(3) 7.10 costs — all blocked on the three PDFs in `papers/README.md`.
 
 * 2026-10-16 (audit pass against the source PDFs, fetched from the Wayback Machine; see `papers/README.md`): 13.9(1) resolved (Lemma A checked against BCIKS ePrint 2020/654 Theorem 4.1 and its interleaved lift, Diamond–Posen 2024/504 (2024-07) Theorem 2.3; citation of [5] for the `N/|K|` form corrected, since BCHKS's own unique-decoding results need a radius strictly inside ours; 13.5 option 1 rewritten from the full text of TR25-169, still not adopted). 13.9(2) resolved (04 4.5 is Construction 3.1 / Theorem 3.5 / Remark 3.4 of the 2025-09 revision of 2024/504 specialised to `β_j = X^j`, error `(κ + 2ℓ')/|L|` = our `(7 + 2n)/|K|`; two [OM-choice] deviations recorded; the 2024-07 revision's unbatched §4 variant noted). 13.9(3) resolved against the 2025-02 ePrint revision of Twist and Shout (Setty–Thaler only; the CRYPTO version with Zhu was not available): the algorithms of 7.10 match §6.1–6.2, §8.1–8.2 and Appendix B.1, and 7.10's `rw` cost target was corrected from `O(T·(p+1) + NK)` to `O((p+1)·T·a + NK)` (informative only). No protocol, transcript, error-term or ledger change; no code or vectors change. Every 13.9 item is now resolved.
+
+* 2026-10-16 (cross-check against the Jolt source, a16z/jolt commit `21016f4da9a856e94e0a4c2ebb752630852734c0`, read only): the two items the documentation pass left unconfirmed are now confirmed from source, (a) `Val` as an `LT`-sum over earlier writes (07 7.5 step 4; `jolt-claims/src/twist/memory_checking.rs`, `jolt-claims/src/protocols/jolt/relations/ram/val_check.rs`) and (b) the read/write-checking identity (07 7.5 step 3; `.../relations/ram/read_write_checking.rs`, `jolt-claims/src/twist/memory_checking.rs`), both one combined degree-3 sum-check per memory as in ours; `Inc` is cycle-only in that version; 07 7.10's sparse cycle-first rw algorithm, Shout histogram, one-hot index storage and `O(T)` `LT` table match Jolt's kernels (`jolt-kernels/src/optimized/rw_matrix.rs`, `bytecode_read_raf.rs`, `jolt-poly/src/lt.rs`), so 7.10 needs no correction. Design differences recorded (rw without `Φ_x` plus separate RAF and Hamming-weight checks; Booleanity vs `Δ⋆`; empty RAM rows allowed in Jolt; virtual register addresses; `Val`/`Val_final` merged; `Inc` reduction sum-check; prover-configured variable order). No discrepancy that indicates a gap in 07. Docs only: no protocol, transcript, error-term, ledger, code or vector change.
