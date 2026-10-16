@@ -572,12 +572,7 @@ impl WriteLog {
     /// Builds the initial (cycle-level) write log along with `(aval0, inc_val)`:
     /// `aval0[j * np + x]` is the `Val~` of cell `addrs[x][j]` just before
     /// cycle `j`, and `inc_val[j] = we.eval(inc[j])`.
-    fn new(
-        m0: &[u64],
-        addrs: &[&[u32]],
-        inc: &[u64],
-        we: &WordEval,
-    ) -> (Self, Vec<K>, Vec<K>) {
+    fn new(m0: &[u64], addrs: &[&[u32]], inc: &[u64], we: &WordEval) -> (Self, Vec<K>, Vec<K>) {
         let nk = m0.len();
         let np = addrs.len();
         let writes = addrs[np - 1];
@@ -596,7 +591,10 @@ impl WriteLog {
                 m0.par_iter().map(eval).collect(),
             )
         } else {
-            (inc.iter().map(eval).collect(), m0.iter().map(eval).collect())
+            (
+                inc.iter().map(eval).collect(),
+                m0.iter().map(eval).collect(),
+            )
         };
         let mut pos = off[..nk].to_vec();
         let mut grp = vec![0u32; writes.len()];

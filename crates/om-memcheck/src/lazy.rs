@@ -356,18 +356,15 @@ pub(crate) fn addr_bit_evals(
             .collect()
     };
     if t >= PAR_THRESHOLD {
-        (0..se.hi.len())
-            .into_par_iter()
-            .map(block)
-            .reduce(
-                || vec![K::ZERO; a],
-                |mut x, y| {
-                    for (p, q) in x.iter_mut().zip(&y) {
-                        *p += *q;
-                    }
-                    x
-                },
-            )
+        (0..se.hi.len()).into_par_iter().map(block).reduce(
+            || vec![K::ZERO; a],
+            |mut x, y| {
+                for (p, q) in x.iter_mut().zip(&y) {
+                    *p += *q;
+                }
+                x
+            },
+        )
     } else {
         (0..se.hi.len()).fold(vec![K::ZERO; a], |mut acc, hi_idx| {
             for (p, q) in acc.iter_mut().zip(block(hi_idx)) {

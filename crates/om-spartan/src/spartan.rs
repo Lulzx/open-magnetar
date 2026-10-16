@@ -1188,8 +1188,10 @@ pub fn prove<R: BitRow>(
                     .map(|((ab_c, bb_c), (w_c, eq_c))| {
                         let mut c_acc = vec![0u128; n_rows];
                         let mut p2_acc = vec![0u128; half_rows];
-                        for ((au, bu), (wu, &equ)) in
-                            ab_c.iter_mut().zip(bb_c.iter_mut()).zip(w_c.iter().zip(eq_c))
+                        for ((au, bu), (wu, &equ)) in ab_c
+                            .iter_mut()
+                            .zip(bb_c.iter_mut())
+                            .zip(w_c.iter().zip(eq_c))
                         {
                             let words = wu.packed_words().expect("packed_words");
                             let equ_val = equ.value();
@@ -1234,11 +1236,7 @@ pub fn prove<R: BitRow>(
                 for (r_idx, slot) in c_sums[ti].iter_mut().enumerate() {
                     *slot = K::from_u128(c_raw[r_idx]);
                 }
-                gf2_round0_p2[ti] = Some(
-                    (0..half_rows)
-                        .map(|i| K::from_u128(p2_raw[i]))
-                        .collect(),
-                );
+                gf2_round0_p2[ti] = Some((0..half_rows).map(|i| K::from_u128(p2_raw[i])).collect());
                 gf2_caches[ti] = Some(Gf2RelCache {
                     n_w,
                     a_bits,
