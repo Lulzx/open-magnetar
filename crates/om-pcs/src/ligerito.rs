@@ -430,8 +430,16 @@ pub fn commit_level(h: Hasher, f: Vec<K>, k: usize, r: usize) -> LevelData {
 /// # Panics
 /// Panics if `table.len() != 2^n` (Python raises `ValueError`).
 pub fn commit(p: &LigeritoParams, h: Hasher, table: &[K]) -> (Digest, LevelData) {
+    commit_owned(p, h, table.to_vec())
+}
+
+/// [`commit`] taking the table by value (no copy of it is made).
+///
+/// # Panics
+/// As [`commit`].
+pub fn commit_owned(p: &LigeritoParams, h: Hasher, table: Vec<K>) -> (Digest, LevelData) {
     assert_eq!(table.len(), 1 << p.n, "table must have 2^n entries");
-    let ld = commit_level(h, table.to_vec(), p.ks[0], p.rs[0]);
+    let ld = commit_level(h, table, p.ks[0], p.rs[0]);
     let root = ld.tree.root();
     (root, ld)
 }

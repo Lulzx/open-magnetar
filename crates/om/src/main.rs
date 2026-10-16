@@ -87,6 +87,7 @@ Options:
   --input-log-words <n>     I: input region has 2^I words (default 12)
   --output-log-words <n>    O: output region has 2^O words (default 8)
   --max-code-words <n>      maximum instruction words (default 1048576)
+  --max-cycles <n>          execution budget in cycles (default: 1048576)
   --help                    show this help
 
 The ABI options must match the layout the guest was built for, as in

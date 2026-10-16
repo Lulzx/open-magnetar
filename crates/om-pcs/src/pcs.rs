@@ -210,9 +210,16 @@ impl BitPCS {
         bits: &PackedBits,
         tr: &mut Transcript,
     ) -> (Commitment, BitStatePacked) {
-        let (cm, mut st) = self.pcs.commit(&rsw::pack_packed(bits), tr);
+        let (root, mut st) = lg::commit_owned(&self.pcs.p, self.pcs.h, rsw::pack_packed(bits));
         st.strip();
-        (cm, st)
+        lg::absorb_setup(&self.pcs.p, &root, tr);
+        (
+            Commitment {
+                root,
+                n: self.pcs.p.n,
+            },
+            st,
+        )
     }
 
     /// The packed counterpart of [`BitPCS::open`]: same transcript
