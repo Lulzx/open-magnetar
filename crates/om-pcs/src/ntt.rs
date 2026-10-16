@@ -54,12 +54,35 @@ fn gen_weights_with(wh: &[Vec<K>], q: usize, mu: usize, m: usize) -> Vec<K> {
 /// `[X_j(ω_q) for j < 2^mu]`, the generator-matrix column at position `q`.
 pub fn basis_row(q: usize, mu: usize, m: usize) -> Vec<K> {
     let a = gen_weights(q, mu, m);
-    let mut t = vec![K::ONE];
-    for ab in a {
-        let ext: Vec<K> = t.iter().map(|&e| e * ab).collect();
-        t.extend(ext);
+    basis_from_weights(&a)
+}
+
+fn basis_from_weights(a: &[K]) -> Vec<K> {
+    let mut t = Vec::with_capacity(1usize << a.len());
+    t.push(K::ONE);
+    for &ab in a {
+        let len = t.len();
+        for i in 0..len {
+            t.push(t[i] * ab);
+        }
     }
     t
+}
+
+/// Split `basis_row(q, mu, m)` into `(lo, hi)` tensor factors of lengths
+/// `2^(mu/2)` and `2^(mu - mu/2)` for each `q` in `qs`, sharing one `_WH` table.
+pub fn split_basis_rows(qs: &[usize], mu: usize, m: usize) -> Vec<(Vec<K>, Vec<K>)> {
+    let wh = wh_table(m);
+    let mu_lo = mu / 2;
+    qs.iter()
+        .map(|&q| {
+            let a = gen_weights_with(&wh, q, mu, m);
+            (
+                basis_from_weights(&a[..mu_lo]),
+                basis_from_weights(&a[mu_lo..]),
+            )
+        })
+        .collect()
 }
 
 fn check_msg(msg: &[K]) -> usize {
@@ -95,9 +118,13 @@ pub fn encode(msg: &[K], log_rate: usize) -> Vec<K> {
     let mu = check_msg(msg);
     let m = mu + log_rate;
     let wh = wh_table(m);
-    let mut a = vec![K::ZERO; 1 << m];
-    a[..msg.len()].copy_from_slice(msg);
-    for i in (0..m).rev() {
+    let cols = msg.len();
+    let num_cosets = 1usize << log_rate;
+    let mut a = Vec::with_capacity(cols << log_rate);
+    for _ in 0..num_cosets {
+        a.extend_from_slice(msg);
+    }
+    for i in (0..mu).rev() {
         let half = 1 << i;
         let blocks = 1usize << (m - 1 - i);
         let tks: Vec<K> = (0..blocks)
@@ -123,25 +150,135 @@ pub fn encode(msg: &[K], log_rate: usize) -> Vec<K> {
                 .zip(tks.par_iter())
                 .for_each(|(block, &tk)| {
                     let (lo, hi) = block.split_at_mut(half);
-                    for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
-                        butterfly(l, h, tk);
+                    if tk == K::ZERO {
+                        for (l, h) in lo.iter().zip(hi.iter_mut()) {
+                            *h += *l;
+                        }
+                    } else {
+                        for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
+                            butterfly(l, h, tk);
+                        }
                     }
                 });
         } else if a.len() >= PAR_THRESHOLD && half >= 4096 {
             for (block, &tk) in a.chunks_mut(2 * half).zip(&tks) {
                 let (lo, hi) = block.split_at_mut(half);
-                lo.par_iter_mut()
-                    .zip(hi.par_iter_mut())
-                    .for_each(|(l, h)| butterfly(l, h, tk));
+                if tk == K::ZERO {
+                    lo.par_iter()
+                        .zip(hi.par_iter_mut())
+                        .for_each(|(l, h)| *h += *l);
+                } else {
+                    lo.par_iter_mut()
+                        .zip(hi.par_iter_mut())
+                        .for_each(|(l, h)| butterfly(l, h, tk));
+                }
             }
         } else {
             for (block, &tk) in a.chunks_mut(2 * half).zip(&tks) {
                 let (lo, hi) = block.split_at_mut(half);
-                for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
-                    butterfly(l, h, tk);
+                if tk == K::ZERO {
+                    for (l, h) in lo.iter().zip(hi.iter_mut()) {
+                        *h += *l;
+                    }
+                } else {
+                    for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
+                        butterfly(l, h, tk);
+                    }
                 }
             }
         }
     }
     a
+}
+
+/// In-place additive NTT encoding of one coset (`coset < 2^log_rate`) of a
+/// column-major `rows × cols` matrix `buf` (`buf[row + rows * j]`).
+///
+/// On entry, `buf` holds the unencoded matrix `f` of length `rows * cols`.
+/// On exit, `buf[row + rows * q_local]` holds `cw[row][coset * cols + q_local]`,
+/// so each encoded column `q = coset * cols + q_local` is contiguous at
+/// `&buf[q_local * rows .. (q_local + 1) * rows]`.
+pub fn encode_coset_col_major(
+    buf: &mut [K],
+    rows: usize,
+    cols: usize,
+    log_rate: usize,
+    coset: usize,
+) {
+    assert!(
+        rows.is_power_of_two() && cols.is_power_of_two() && buf.len() == rows * cols,
+        "encode_coset_col_major: dimensions must be powers of two matching buf.len()"
+    );
+    let mu = cols.trailing_zeros() as usize;
+    let m = mu + log_rate;
+    let wh = wh_table(m);
+    for i in (0..mu).rev() {
+        let half = (1usize << i) * rows;
+        let blocks = 1usize << (mu - 1 - i);
+        let mut t_coset = 0u128;
+        for d_hi in 0..log_rate {
+            if (coset >> d_hi) & 1 == 1 {
+                t_coset ^= wh[i][mu + d_hi].value();
+            }
+        }
+        let tks: Vec<K> = (0..blocks)
+            .map(|c_local| {
+                let mut t = t_coset;
+                for d_lo in 0..(mu - 1 - i) {
+                    if (c_local >> d_lo) & 1 == 1 {
+                        t ^= wh[i][i + 1 + d_lo].value();
+                    }
+                }
+                K::from_u128(t)
+            })
+            .collect();
+        if buf.len() >= PAR_THRESHOLD && blocks >= 4 {
+            buf.par_chunks_mut(2 * half)
+                .zip(tks.par_iter())
+                .for_each(|(block, &tk)| {
+                    let (lo, hi) = block.split_at_mut(half);
+                    if tk == K::ZERO {
+                        for (l, h) in lo.iter().zip(hi.iter_mut()) {
+                            *h += *l;
+                        }
+                    } else {
+                        for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
+                            let new_lo = *l + tk * *h;
+                            *l = new_lo;
+                            *h += new_lo;
+                        }
+                    }
+                });
+        } else if buf.len() >= PAR_THRESHOLD && half >= 4096 {
+            for (block, &tk) in buf.chunks_mut(2 * half).zip(&tks) {
+                let (lo, hi) = block.split_at_mut(half);
+                if tk == K::ZERO {
+                    lo.par_iter()
+                        .zip(hi.par_iter_mut())
+                        .for_each(|(l, h)| *h += *l);
+                } else {
+                    lo.par_iter_mut().zip(hi.par_iter_mut()).for_each(|(l, h)| {
+                        let new_lo = *l + tk * *h;
+                        *l = new_lo;
+                        *h += new_lo;
+                    });
+                }
+            }
+        } else {
+            for (block, &tk) in buf.chunks_mut(2 * half).zip(&tks) {
+                let (lo, hi) = block.split_at_mut(half);
+                if tk == K::ZERO {
+                    for (l, h) in lo.iter().zip(hi.iter_mut()) {
+                        *h += *l;
+                    }
+                } else {
+                    for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
+                        let new_lo = *l + tk * *h;
+                        *l = new_lo;
+                        *h += new_lo;
+                    }
+                }
+            }
+        }
+    }
 }

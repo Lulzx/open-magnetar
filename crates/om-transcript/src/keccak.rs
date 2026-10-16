@@ -81,20 +81,46 @@ fn keccak_f1600(state: &mut [u64; 25]) {
 
 const RATE: usize = 136; // 1088 bits
 
+#[inline]
 pub fn sha3_256(data: &[u8]) -> [u8; 32] {
+    sha3_256_slices(&[data])
+}
+
+pub fn sha3_256_slices(slices: &[&[u8]]) -> [u8; 32] {
     let mut state = [0u64; 25];
-    let (chunks, rem) = data.as_chunks::<RATE>();
-    for block in chunks {
-        absorb_block(&mut state, block);
-        keccak_f1600(&mut state);
+    let mut buf = [0u8; RATE];
+    let mut buf_len = 0usize;
+
+    for &slice in slices {
+        let mut s = slice;
+        if buf_len > 0 {
+            let take = (RATE - buf_len).min(s.len());
+            buf[buf_len..buf_len + take].copy_from_slice(&s[..take]);
+            buf_len += take;
+            s = &s[take..];
+            if buf_len == RATE {
+                absorb_block(&mut state, &buf);
+                keccak_f1600(&mut state);
+                buf_len = 0;
+            }
+        }
+        let (chunks, rem) = s.as_chunks::<RATE>();
+        for block in chunks {
+            absorb_block(&mut state, block);
+            keccak_f1600(&mut state);
+        }
+        if !rem.is_empty() {
+            buf[..rem.len()].copy_from_slice(rem);
+            buf_len = rem.len();
+        }
     }
+
     // Final block with SHA3 padding: suffix 01 => 0x06 at the next byte,
     // 0x80 at the last rate byte (both may coincide: 0x86).
-    let mut block = [0u8; RATE];
-    block[..rem.len()].copy_from_slice(rem);
-    block[rem.len()] ^= 0x06;
-    block[RATE - 1] ^= 0x80;
-    absorb_block(&mut state, &block);
+    buf[buf_len..RATE].fill(0);
+    buf[buf_len] ^= 0x06;
+    buf[RATE - 1] ^= 0x80;
+    absorb_block(&mut state, &buf);
     keccak_f1600(&mut state);
 
     let mut out = [0u8; 32];

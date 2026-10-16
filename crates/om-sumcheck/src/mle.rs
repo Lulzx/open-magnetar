@@ -37,28 +37,22 @@ pub fn eq_eval(x: &[K], y: &[K]) -> K {
 /// Built by `T ← [1]`, then for each `r_j`:
 /// `T ← [T[i]·(1 + r_j)] ‖ [T[i]·r_j]`.
 pub fn eq_table(r: &[K]) -> Vec<K> {
+    let n = r.len();
+    if (1usize << n) >= PAR_THRESHOLD && n >= 4 {
+        let h = n / 2;
+        let lo = eq_table(&r[..h]);
+        let hi = eq_table(&r[h..]);
+        let mask = (1usize << h) - 1;
+        return (0..(1usize << n))
+            .into_par_iter()
+            .map(|i| lo[i & mask] * hi[i >> h])
+            .collect();
+    }
     let mut t = vec![K::ONE];
     for &rj in r {
-        // Each doubling step is elementwise over the previous table, so
-        // large steps can be built in parallel with order preserved.
-        let next = if 2 * t.len() >= PAR_THRESHOLD {
-            let half = t.len();
-            (0..2 * half)
-                .into_par_iter()
-                .map(|i| {
-                    if i < half {
-                        t[i] * (K::ONE + rj)
-                    } else {
-                        t[i - half] * rj
-                    }
-                })
-                .collect()
-        } else {
-            let mut next = Vec::with_capacity(2 * t.len());
-            next.extend(t.iter().map(|&e| e * (K::ONE + rj)));
-            next.extend(t.iter().map(|&e| e * rj));
-            next
-        };
+        let mut next = Vec::with_capacity(2 * t.len());
+        next.extend(t.iter().map(|&e| e * (K::ONE + rj)));
+        next.extend(t.iter().map(|&e| e * rj));
         t = next;
     }
     t
@@ -79,8 +73,17 @@ pub fn bind_low_in_place(table: &mut Vec<K>, r: K) {
         "bind_low: table length must be even"
     );
     let half = table.len() / 2;
-    for i in 0..half {
-        table[i] = table[2 * i] + r * (table[2 * i] + table[2 * i + 1]);
+    if table.len() >= PAR_THRESHOLD {
+        table.par_chunks_mut(2).for_each(|pair| {
+            pair[0] += r * (pair[0] + pair[1]);
+        });
+        for i in 1..half {
+            table[i] = table[2 * i];
+        }
+    } else {
+        for i in 0..half {
+            table[i] = table[2 * i] + r * (table[2 * i] + table[2 * i + 1]);
+        }
     }
     table.truncate(half);
 }
@@ -105,6 +108,24 @@ impl PackedBits {
         }
     }
 
+    /// Construct directly from backing `u64` words and bit length `len`.
+    /// Any bits at or beyond `len` in the final word are masked to zero.
+    pub fn from_words(mut words: Vec<u64>, len: usize) -> Self {
+        let needed = len.div_ceil(64);
+        assert_eq!(
+            words.len(),
+            needed,
+            "PackedBits::from_words: word count mismatch"
+        );
+        let rem = len % 64;
+        if rem != 0
+            && let Some(last) = words.last_mut()
+        {
+            *last &= (1u64 << rem) - 1;
+        }
+        PackedBits { words, len }
+    }
+
     /// Pack a bool table.
     pub fn from_bools(bits: &[bool]) -> Self {
         let mut out = PackedBits::zero(bits.len());
@@ -122,11 +143,13 @@ impl PackedBits {
     }
 
     /// Number of bits in the table.
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Whether the table has no bits.
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -135,6 +158,7 @@ impl PackedBits {
     ///
     /// # Panics
     /// Panics if `i >= len`.
+    #[inline(always)]
     pub fn bit(&self, i: usize) -> bool {
         assert!(i < self.len, "PackedBits: index out of range");
         (self.words[i / 64] >> (i % 64)) & 1 == 1
@@ -144,6 +168,7 @@ impl PackedBits {
     ///
     /// # Panics
     /// Panics if `i >= len`.
+    #[inline(always)]
     pub fn set(&mut self, i: usize) {
         assert!(i < self.len, "PackedBits: index out of range");
         self.words[i / 64] |= 1u64 << (i % 64);
@@ -151,8 +176,16 @@ impl PackedBits {
 
     /// The backing words. Bits at or beyond `len` in the last word
     /// are zero.
+    #[inline(always)]
     pub fn words(&self) -> &[u64] {
         &self.words
+    }
+
+    /// Mutable access to the backing words. Callers must keep bits at or
+    /// beyond `len` in the last word zero.
+    #[inline(always)]
+    pub fn words_mut(&mut self) -> &mut [u64] {
+        &mut self.words
     }
 
     /// Indices of the set bits, in increasing order.
@@ -190,7 +223,25 @@ pub fn mle_eval_packed(bits: &PackedBits, r: &[K]) -> K {
         "mle_eval_packed: table length must be 2^len(r)"
     );
     let e = eq_table(r);
-    bits.iter_ones().fold(K::ZERO, |acc, i| acc + e[i])
+    if e.len() >= PAR_THRESHOLD {
+        bits.words()
+            .par_iter()
+            .enumerate()
+            .map(|(wi, &w)| {
+                let mut w = w;
+                let mut acc = K::ZERO;
+                let base = wi * 64;
+                while w != 0 {
+                    let b = w.trailing_zeros() as usize;
+                    w &= w - 1;
+                    acc += e[base + b];
+                }
+                acc
+            })
+            .reduce(|| K::ZERO, |a, b| a + b)
+    } else {
+        bits.iter_ones().fold(K::ZERO, |acc, i| acc + e[i])
+    }
 }
 
 pub fn bind_low(table: &[K], r: K) -> Vec<K> {

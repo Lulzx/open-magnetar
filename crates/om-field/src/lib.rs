@@ -46,6 +46,7 @@ impl K {
 
     /// The element with integer value `v`. Every `u128` is in range, so
     /// this never fails (the Python `K(v)` range check is vacuous here).
+    #[inline(always)]
     pub const fn from_u128(v: u128) -> K {
         K(v)
     }
@@ -53,26 +54,31 @@ impl K {
     /// The field point `t_k`: the element with integer value `k`
     /// (CONVENTIONS C1). So `t(0) = 0`, `t(1) = 1`, `t(2) = X`,
     /// `t(3) = X + 1`.
+    #[inline(always)]
     pub const fn t(k: u128) -> K {
         K(k)
     }
 
     /// The integer value of this element (bit `i` = coefficient of `X^i`).
+    #[inline(always)]
     pub const fn value(self) -> u128 {
         self.0
     }
 
     /// The embedding of a bit of `B = GF(2)`: `false ↦ 0`, `true ↦ 1`.
+    #[inline(always)]
     pub const fn from_bit(b: bool) -> K {
         K(b as u128)
     }
 
     /// Whether this element is zero.
+    #[inline(always)]
     pub const fn is_zero(self) -> bool {
         self.0 == 0
     }
 
     /// Whether this element is one.
+    #[inline(always)]
     pub const fn is_one(self) -> bool {
         self.0 == 1
     }
@@ -81,18 +87,21 @@ impl K {
 
     /// The canonical 16-byte little-endian encoding: byte `i` holds
     /// integer bits `8i..8i+7`, so byte 0 holds `X^0..X^7`.
+    #[inline(always)]
     pub fn to_bytes(self) -> [u8; 16] {
         self.0.to_le_bytes()
     }
 
     /// Decode a canonical 16-byte little-endian encoding. Every 16-byte
     /// string is valid.
+    #[inline(always)]
     pub fn from_bytes(b: &[u8; 16]) -> K {
         K(u128::from_le_bytes(*b))
     }
 
     /// Decode from a byte slice, rejecting any length other than 16
     /// (mirrors Python `K.from_bytes`, which raises on other lengths).
+    #[inline]
     pub fn from_byte_slice(b: &[u8]) -> Option<K> {
         let arr: &[u8; 16] = b.try_into().ok()?;
         Some(K::from_bytes(arr))
@@ -155,6 +164,7 @@ impl K {
     // ---- arithmetic ----
 
     /// The Frobenius map `x ↦ x^2` (Python `K.square`).
+    #[inline(always)]
     pub fn square(self) -> K {
         self * self
     }
@@ -222,8 +232,39 @@ impl K {
 
     /// The product `b · self` for a bit `b ∈ B` (spec 01 §1.5): `self` if
     /// `b` is set, else zero.
+    #[inline(always)]
     pub fn mul_bit(self, b: bool) -> K {
         if b { self } else { K::ZERO }
+    }
+
+    /// Multiply `self` by `X = K(2)`: `(v << 1) ^ (if v >> 127 != 0 { 0x87 } else { 0 })`.
+    #[inline(always)]
+    pub const fn mul_x(self) -> K {
+        let hi = (self.0 as i128 >> 127) as u128;
+        K((self.0 << 1) ^ (hi & REDUCTION))
+    }
+
+    /// Multiply `self` by the field point `K::t(k)`, using shift-and-XOR
+    /// for small `k <= 7` (the sum-check evaluation points `t_0..t_7`).
+    #[inline(always)]
+    pub fn mul_t(self, k: u128) -> K {
+        match k {
+            0 => K::ZERO,
+            1 => self,
+            2 => self.mul_x(),
+            3 => self.mul_x() + self,
+            4 => self.mul_x().mul_x(),
+            5 => self.mul_x().mul_x() + self,
+            6 => {
+                let x = self.mul_x();
+                x.mul_x() + x
+            }
+            7 => {
+                let x = self.mul_x();
+                x.mul_x() + x + self
+            }
+            _ => self * K::t(k),
+        }
     }
 }
 
@@ -237,6 +278,7 @@ fn hex_val(c: u8) -> Option<u8> {
 }
 
 impl From<bool> for K {
+    #[inline(always)]
     fn from(b: bool) -> K {
         K::from_bit(b)
     }
@@ -244,12 +286,14 @@ impl From<bool> for K {
 
 impl Add for K {
     type Output = K;
+    #[inline(always)]
     fn add(self, rhs: K) -> K {
         K(self.0 ^ rhs.0)
     }
 }
 
 impl AddAssign for K {
+    #[inline(always)]
     fn add_assign(&mut self, rhs: K) {
         self.0 ^= rhs.0;
     }
@@ -258,12 +302,14 @@ impl AddAssign for K {
 /// Subtraction is addition in characteristic 2.
 impl Sub for K {
     type Output = K;
+    #[inline(always)]
     fn sub(self, rhs: K) -> K {
         K(self.0 ^ rhs.0)
     }
 }
 
 impl SubAssign for K {
+    #[inline(always)]
     fn sub_assign(&mut self, rhs: K) {
         self.0 ^= rhs.0;
     }
@@ -272,6 +318,7 @@ impl SubAssign for K {
 /// Negation is the identity in characteristic 2.
 impl Neg for K {
     type Output = K;
+    #[inline(always)]
     fn neg(self) -> K {
         self
     }
@@ -279,12 +326,14 @@ impl Neg for K {
 
 impl Mul for K {
     type Output = K;
+    #[inline(always)]
     fn mul(self, rhs: K) -> K {
         mul(self, rhs)
     }
 }
 
 impl MulAssign for K {
+    #[inline(always)]
     fn mul_assign(&mut self, rhs: K) {
         *self = *self * rhs;
     }
@@ -345,8 +394,14 @@ impl FromStr for K {
 
 // ---- multiplication: carry-less multiply + reduction (spec 01 §1.6) ----
 
+#[inline(always)]
 fn mul(a: K, b: K) -> K {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        // SAFETY: `aes` (FEAT_PMULL) is enabled at compile time.
+        return unsafe { mul_aarch64(a.0, b.0) };
+    }
+    #[cfg(all(target_arch = "aarch64", not(target_feature = "aes")))]
     {
         if std::arch::is_aarch64_feature_detected!("aes") {
             // SAFETY: the `aes` target feature (which includes PMULL) was
@@ -354,7 +409,13 @@ fn mul(a: K, b: K) -> K {
             return unsafe { mul_aarch64(a.0, b.0) };
         }
     }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    {
+        // SAFETY: PCLMULQDQ is enabled at compile time; SSE2 is part of the
+        // x86-64 baseline.
+        return unsafe { mul_x86_64(a.0, b.0) };
+    }
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "pclmulqdq")))]
     {
         if std::arch::is_x86_feature_detected!("pclmulqdq") {
             // SAFETY: PCLMULQDQ was just detected at runtime on this CPU;
@@ -362,6 +423,7 @@ fn mul(a: K, b: K) -> K {
             return unsafe { mul_x86_64(a.0, b.0) };
         }
     }
+    #[allow(unreachable_code)]
     mul_portable(a, b)
 }
 
@@ -389,6 +451,7 @@ fn clmul64_portable(a: u64, b: u64) -> u128 {
 
 /// Carry-less 128×128 → 256 product as `(lo, hi)`, from four 64×64
 /// products computed by `clmul64`.
+#[inline(always)]
 fn clmul128_with<Fn64: Fn(u64, u64) -> u128>(a: u128, b: u128, clmul64: Fn64) -> (u128, u128) {
     let (a0, a1) = (a as u64, (a >> 64) as u64);
     let (b0, b1) = (b as u64, (b >> 64) as u64);
@@ -405,6 +468,7 @@ fn clmul128_portable(a: u128, b: u128) -> (u128, u128) {
 /// Reduce the 256-bit product `(lo, hi)` modulo `m(X)` by folding `hi`
 /// twice with `X^128 ≡ 0x87` (spec 01 §1.6): `lo ^= hi·0x87 (mod 2^128)`,
 /// then the at-most-7-bit overflow of that product is folded once more.
+#[inline(always)]
 fn reduce(lo: u128, hi: u128) -> u128 {
     // hi · 0x87 = hi ^ hi<<1 ^ hi<<2 ^ hi<<7, up to 135 bits.
     let low = hi ^ (hi << 1) ^ (hi << 2) ^ (hi << 7);
@@ -420,6 +484,7 @@ fn reduce(lo: u128, hi: u128) -> u128 {
 /// The caller must ensure the CPU supports the `aes` target feature
 /// (FEAT_PMULL), e.g. via `std::arch::is_aarch64_feature_detected!("aes")`.
 #[cfg(target_arch = "aarch64")]
+#[inline]
 #[target_feature(enable = "aes")]
 unsafe fn mul_aarch64(a: u128, b: u128) -> K {
     use core::arch::aarch64::vmull_p64;
@@ -436,6 +501,7 @@ unsafe fn mul_aarch64(a: u128, b: u128) -> K {
 /// `std::arch::is_x86_feature_detected!("pclmulqdq")`. SSE2 (used to move
 /// values in and out of XMM registers) is part of the x86-64 baseline.
 #[cfg(target_arch = "x86_64")]
+#[inline]
 #[target_feature(enable = "pclmulqdq,sse2")]
 unsafe fn mul_x86_64(a: u128, b: u128) -> K {
     use core::arch::x86_64::{__m128i, _mm_clmulepi64_si128, _mm_set_epi64x, _mm_storeu_si128};
@@ -547,6 +613,25 @@ mod tests {
             let (a, b) = (rng.next_k(), rng.next_k());
             let (lo, hi) = clmul128_portable(a.0, b.0);
             assert_eq!(reduce(lo, hi), py_reduce(lo, hi));
+        }
+    }
+
+    #[test]
+    fn mul_x_and_mul_t_match_mul() {
+        let mut rng = Rng(0x4242);
+        for _ in 0..512 {
+            let a = rng.next_k();
+            assert_eq!(a.mul_x(), a * K::X);
+            for k in 0..16 {
+                assert_eq!(a.mul_t(k), a * K::t(k));
+            }
+        }
+        for &v in &[0u128, 1, 2, 0x87, u128::MAX, 1 << 127, (1 << 127) | 3] {
+            let a = K(v);
+            assert_eq!(a.mul_x(), a * K::X);
+            for k in 0..16 {
+                assert_eq!(a.mul_t(k), a * K::t(k));
+            }
         }
     }
 }

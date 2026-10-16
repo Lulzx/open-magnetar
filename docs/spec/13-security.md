@@ -169,7 +169,7 @@ the rate does not help (it makes `N` larger); raising it by 1 bit gains 1 bit an
 | `2^20` | 24 | [5,5,4,4] | 509 KiB | 448 KiB | 144 KiB |
 | `2^22` | 26 | [5,5,5,5] | 624 KiB | 553 KiB | 176 KiB |
 
-(The paper reports at most 599 KiB for the *whole* proof; the figure above is the Ligerito opening only, so the whole proof at `2^22` is about 656 KiB, in the paper's range.)
+(The paper reports at most 599 KiB for the *whole* proof; the table above is the Ligerito opening size model (`params.proof_size_bytes`), giving an analytical upper bound of about 656 KiB for the whole proof at `2^22`. **Measured by the Rust prover** at `T = 2^22`, `A = 17` (`radix-sort-u64`, `provable-120`), the complete serialized proof is **603,942 B (589.8 KiB)**—about 10% below the model due to Merkle multi-path sibling deduplication, and within the paper's ≤ 599 KiB bound.)
 
 **Status (audit 13.9(1)).** The composition is specified (04 4.4a), implemented in `reference/openmagnetar/ligerito.py` and tested (completeness for `gs = 2, 3`; a rejection test for every repetition block; the real `provable-120` profile through the whole protocol). The soundness argument is now a written proof in 04 4.4a (level-reduction theorem): the tensor factor `k` (Lemma B), the "all folds close" exponent `g` including `rho^(0)` coming from the sum-check with a shared prefix (Lemma C), the batching and query terms, and the final level are all proved there. The one external input is the single-step proximity gap (Lemma A, `N/|K|` per challenge); its exact form was checked against the source texts on 2026-10-16 (BCIKS ePrint 2020/654 Theorem 4.1, interleaved as in Diamond–Posen 2024/504 (2024-07) Theorem 2.3; 13.9(1), resolved).
 

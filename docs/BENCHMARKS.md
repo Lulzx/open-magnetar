@@ -15,13 +15,15 @@ ELFs for these runs were linked with `A=16` region bases to match).
 
 | Guest | Profile | T (cycles) | Prove | Verify | Proof size |
 |---|---|---|---|---|---|
-| fibonacci, fib(19) = 4181 | test (t = 8) | 256 | 0.95 s | 15 ms | 23,526 B |
-| fibonacci, fib(19) = 4181 | provable-120 (t = 177, gs = 2) | 256 | 0.81 s | 23 ms | 83,654 B |
-| sha256 of `"abc"` | test (t = 8) | 8,192 | 61.7 s | 52 ms | 34,526 B |
-| erc20-transfer (3 accounts) | test (t = 8) | 512 | 1.40 s | 16 ms | 25,974 B |
+| fibonacci, fib(19) = 4181 | test (t = 8) | 256 | 0.03 s | 10 ms | 23,526 B |
+| fibonacci, fib(19) = 4181 | provable-120 (t = 177, gs = 2) | 256 | 0.03 s | 20 ms | 83,654 B |
+| sha256 of `"abc"` | test (t = 8) | 8,192 | 0.15 s | 10 ms | 34,526 B |
+| erc20-transfer (3 accounts) | test (t = 8) | 512 | 0.03 s | 10 ms | 25,398 B |
+| keccak-f1600 (one permutation) | test (t = 8) | 32,768 | 0.27 s | 10 ms | 39,806 B |
+| keccak-f1600 (one permutation) | provable-120 (t = 177, gs = 2) | 32,768 | 0.27 s | 30 ms | 289,406 B |
 
 Outputs were checked independently (fib value, SHA-256 digest `ba7816bf…`,
-post-transfer balances 70/80).
+post-transfer balances 70/80, Keccak-f[1600] state).
 
 ### Further Table 1 workloads proved 2026-10-16
 
@@ -50,7 +52,7 @@ remaining workloads then proved at `A = 16`, test profile:
 | Guest | T (cycles) | Prove | Proof size |
 |---|---|---|---|
 | sha256-merkle-path (depth 2) | 32,768 | under 5 min (not timed) | 40,382 B |
-| keccak-f1600 (one permutation) | 32,768 | 18.8 s | 39,806 B |
+| keccak-f1600 (one permutation) | 32,768 | 18.8 s (now 0.27 s) | 39,806 B |
 | evm-erc20-transfer (embedded runtime) | 65,536 | 53.6 s | 43,646 B |
 
 Before this change, a `sha256-merkle-path` attempt at `A = 16` was
@@ -63,93 +65,102 @@ static buffers, about 384 KiB, do not fit under the I/O window at
 run is padded to `T = 2^22`. Two proof attempts at that size were
 killed by the OS at 10.2 and 12.6 GiB resident memory.
 
-## Bounded-memory prover, and the first T = 2^22 proof (2026-10-16)
+## Bounded-memory prover and throughput optimizations at T = 2^22 (2026-10-16)
 
-The prover was then profiled per phase (`OM_TRACE=1` prints time, RSS
-and the heap peak of every phase; it costs nothing when unset). At
-`T = 2^15` almost every phase, scaled to `2^22`, would have needed more
-than 24 GiB on its own. The previous Mosaic batch prover was also slow:
-it spent 259 s of a 276 s keccak proof. Every phase was rewritten to
-work from packed bits or compact per-cycle data. Proof bytes are
-unchanged throughout: every reference vector still reproduces, and a
-full keccak proof is byte-identical before and after.
+The prover was profiled per phase (`OM_TRACE=1` prints time, RSS
+and the heap peak of every phase; it costs nothing when unset). Every
+phase was first rewritten to work from packed bits or compact per-cycle
+data (bringing `T = 2^22` to 107 s and 10.1 GiB RSS), and then
+optimized across the workspace (bringing `T = 2^22` down to 20.8 s at
+the `test` profile and 21.6 s at `provable-120`, a 5.1× speedup). Proof
+bytes are unchanged throughout: every reference vector still reproduces,
+and `T = 2^22` proofs are byte-identical before and after.
 
-- **Mosaic batch.** The first 10 rounds are computed straight from the
-  packed bits of `G` (split-eq sums over set bits per claim region).
-  Then the bound `G` and `E` tables (`2^(ell-10)` entries) are built and
-  the remaining rounds run densely in place.
-- **PCS.** The commit hashes columns as it serializes them. Afterwards
-  only the Merkle tree is kept: the opening re-packs `f` from `G` and
-  re-encodes only the queried columns. The Ligerito opening takes its
-  state by value and runs the level sum-check over whole tables in
-  place. Ring switching uses split-eq tables, and the opened value comes
-  from its partial evaluations, not from a `2^ell` eq table.
-- **Spartan.** Segment claims are read from the packed witness rows,
-  without a table over `2^(log_cols + s)` points. The satisfiability
-  check reuses the first outer round.
-- **Twist/Shout.** Witnesses are one address or word per cycle. The
-  read/write sum-check answers cell lookups from a per-address write
-  log (the old range scan was close to quadratic on hot cells). The
-  other sum-checks build their tables row by row after three direct
-  rounds.
-- **Routers.** They work from compact per-cycle witnesses (words plus
-  selector bytes), with the eq factor split, and materialise only
-  `T/256` positions.
-- **Trace.** The execution trace (hundreds of bytes per cycle) is freed
-  once the witnesses are built.
-- **Verifier.** The public-input fold of the Spartan verifier visited
-  `q · 2^(nu-1)` zeros; it now visits only non-zero entries. Same
-  value, so no protocol change.
+- **Field and hashing (`om-field`, `om-transcript`, `om-pcs`).** Compile-time
+  `PMULL` / `PCLMULQDQ` dispatch and inlining in `K::mul`, shift-and-XOR
+  `K::mul_x` / `K::mul_t` for small sum-check evaluation points, hardware
+  AArch64 SHA-256 (`vsha256hq_u32` / `vsha256su0q_u32`), and zero-allocation
+  slice-streaming `digest_slices` in Merkle leaves/nodes and transcript
+  squeezes.
+- **Bitwise witness and `G` construction (`om-circuit`, `om-mosaic`,
+  `om-spartan`).** `witness_packed` packs `u64` words directly into
+  `PackedBits` without string lookups or per-bit loops (cutting witness
+  packing at `T = 2^22` from 16.9 s to 0.12 s), and `build_g_packed` /
+  `segment_table_packed` copy aligned `u64` word slices directly (cutting
+  `build G` from 7.2 s to 0.12 s).
+- **PCS (`om-pcs`).** `commit_stripped` encodes one coset at a time in
+  column-major layout (`encode_coset_col_major`), where each column is a
+  contiguous `[K; 2^k]` slice, hashing leaves from a stack buffer without
+  retaining all `2^r` cosets in memory (cutting `commit` at `T = 2^22`
+  from 11.5 s / 8.5 GiB phase heap peak to 2.65 s / 4.7 GiB). During
+  opening, `open_owned_repack` avoids holding duplicate level-0 tables
+  during sum-check, re-encodes only queried cosets in column-major order,
+  and accumulates `b_next` via split tensor basis tables in parallel
+  (cutting `provable-120` opening to 3.09 s). Ring switching parallelizes
+  `pack_packed` and uses 16 byte lookup tables in `a_table`.
+- **Virtual Spartan (`om-spartan`).** Outer sparse rows are compiled into
+  word-level bitmask and geometric `X^j` evaluators (`CompiledRow`) over
+  active row pairs only, reducing quadratic evaluations to 7 `K` muls per
+  pair and multiplying by `eq_row` once after the instance reduction.
+  Folded sparse rows are reused directly for the inner column sum-check,
+  `segment_values` reads directly from `wfold`, and `cross_prove` folds
+  `S_out`/`S_in` across instances once before the column rounds (cutting
+  Spartan at `T = 2^22` from 51.6 s to 7.15–7.65 s).
+- **Twist/Shout (`om-memcheck`).** Witnesses are one address or word per
+  cycle; `AddrComps::packed` and `inc_packed` operate on `u64` words;
+  `rw_sumcheck_sparse` accumulates per-pair scalars in registers without
+  per-pair heap allocations.
+- **Mosaic batch (`om-mosaic`).** The first 10 rounds stream from packed
+  bits of `G`, and the dense phase uses a 3-mul characteristic-2
+  quadratic identity.
 
-### radix-sort-u64 at T = 2^22
+### radix-sort-u64 at T = 2^22 (`provable-120` and `test` profiles)
 
-Proved and verified with the `om` CLI. Test profile (`t = 8`), `A = 17`,
-`I = O = 14`, `--max-cycles 16777216`, input of 8,192 random keys. The
-public instance carries the 64 KiB sorted output, which matches an
-independent sort of the input.
+Proved and verified with the `om` CLI at both the full-security
+`provable-120` profile (`t = 177`, `gs = 2`) and the `test` profile
+(`t = 8`), `A = 17`, `I = O = 14`, `--max-cycles 16777216`, input of
+8,192 random keys. The public instance carries the 64 KiB sorted output,
+which matches an independent sort of the input.
 
-| Quantity | Value |
-|---|---|
-| T (cycles, padded) | 4,194,304 |
-| Prove (wall) | 107 s (≈ 39 k cycles/s; 794 s CPU on 12 cores) |
-| Peak resident memory | 10.1 GiB (`/usr/bin/time -l`) |
-| Verify | 0.42 s wall, 30 ms CPU, 67 MiB resident |
-| Proof size | 61,446 B |
+| Quantity | `provable-120` (`t = 177, gs = 2`) | `test` (`t = 8`) | Previous `test` baseline |
+|---|---|---|---|
+| T (cycles, padded) | 4,194,304 | 4,194,304 | 4,194,304 |
+| Prove (wall) | 21.6 s (≈ 194 k cycles/s; 187 s CPU) | 20.8 s (≈ 202 k cycles/s; 173 s CPU) | 107 s (≈ 39 k cycles/s; 794 s CPU) |
+| Peak resident memory | 8.2 GiB (`/usr/bin/time -l`), 6.3 GiB heap peak | 7.7 GiB (`/usr/bin/time -l`), 6.1 GiB heap peak | 10.1 GiB (`/usr/bin/time -l`), 8.5 GiB heap peak |
+| Verify | 60 ms wall, 60 ms CPU, 88 MiB resident | 20 ms wall, 30 ms CPU, 66 MiB resident | 0.42 s wall, 30 ms CPU, 67 MiB resident |
+| Proof size | 603,942 B (589.8 KiB) | 60,806 B | 61,446 B |
 
-Per phase (heap peak within the phase, from `OM_TRACE`):
+Per phase at `T = 2^22` (`provable-120` profile, from `OM_TRACE`):
 
-| Phase | Ends at | Heap peak |
-|---|---|---|
-| execute | 0.8 s | 1.5 GiB (the trace) |
-| packed witness | 17.7 s | 2.6 GiB |
-| component witnesses | 18.1 s | 2.9 GiB |
-| build G | 25.3 s | 3.1 GiB |
-| commit | 36.8 s | 8.5 GiB (codeword rows) |
-| Virtual Spartan | 88.4 s | 3.4 GiB |
-| register Twist | 91.8 s | 3.0 GiB |
-| RAM Twist (A = 17) | 96.0 s | 2.7 GiB |
-| routers | 96.7 s | 2.1 GiB |
-| bytecode Shout | 97.0 s | 2.0 GiB |
-| Mosaic batch | 99.8 s | 2.2 GiB |
-| ring switching + Ligerito open | 107.0 s | 7.9 GiB |
-
-All fifteen Table 1 workloads are now proved and verified end to end.
-The two largest transients are the level-0 codeword rows during commit
-and the level-0 tables during the opening. Both could be streamed
-further if a smaller footprint is wanted.
-
-The same build on smaller workloads (`A = 16`, test profile):
-
-| Guest | T | Prove before | Prove now | Proof size |
+| Phase | Ends at | Phase duration | Heap peak | Previous ends at (`test`) |
 |---|---|---|---|---|
-| keccak-f1600 | 32,768 | 18.8 s (276 s just before this change) | 0.97 s | 40,158 B (byte-identical before/after) |
-| sha256 of `"abc"` | 8,192 | 61.7 s | 0.27 s | 34,526 B (as recorded above) |
+| execute | 0.76 s | 0.76 s | 1.5 GiB (the trace) | 0.8 s |
+| packed witness | 0.88 s | 0.12 s | 2.5 GiB | 17.7 s (16.9 s) |
+| component witnesses | 1.18 s | 0.30 s | 2.8 GiB | 18.1 s (0.4 s) |
+| build G | 1.29 s | 0.11 s | 3.1 GiB | 25.3 s (7.2 s) |
+| commit | 3.96 s | 2.67 s | 4.7 GiB | 36.8 s (11.5 s, 8.5 GiB) |
+| Virtual Spartan | 11.61 s | 7.65 s | 3.4 GiB | 88.4 s (51.6 s) |
+| register Twist | 13.14 s | 1.53 s | 2.9 GiB | 91.8 s (3.4 s) |
+| RAM Twist (A = 17) | 15.12 s | 1.98 s | 2.7 GiB | 96.0 s (4.2 s) |
+| routers | 15.69 s | 0.57 s | 2.1 GiB | 96.7 s (0.7 s) |
+| bytecode Shout | 16.00 s | 0.31 s | 2.0 GiB | 97.0 s (0.3 s) |
+| Mosaic batch | 18.51 s | 2.51 s | 2.2 GiB | 99.8 s (2.8 s) |
+| ring switching + Ligerito open | 21.60 s | 3.09 s | 6.3 GiB | 107.0 s (7.2 s, 7.9 GiB) |
+
+The same build on smaller workloads (`A = 16`):
+
+| Guest | Profile | T | Prove before | Prove now | Proof size |
+|---|---|---|---|---|---|
+| keccak-f1600 | test | 32,768 | 0.97 s (18.8 s / 276 s earlier) | 0.27 s | 39,806 B |
+| keccak-f1600 | provable-120 | 32,768 | — | 0.27 s | 289,406 B |
+| sha256 of `"abc"` | test | 8,192 | 0.27 s (61.7 s earlier) | 0.15 s | 34,526 B |
+| fib(19) | provable-120 | 256 | 0.81 s | 0.03 s | 83,654 B |
 
 ## Test suites
 
-| Suite | Count | Wall time (debug) |
+| Suite | Count | Wall time |
 |---|---|---|
-| Rust workspace (`cargo test --workspace`) | 343 tests, 0 failures | ~1 min |
+| Rust workspace (`cargo test --workspace --release`) | 346 tests, 0 failures | ~15 s |
 | Python reference (`unittest discover`) | 223 tests, 0 failures | 114 s |
 | Guest oracle executions (Python harness) | 47 cases, all pass | ~1 min |
 
@@ -157,37 +168,35 @@ Every `reference/vectors/**/*.json` file (27 files) is reproduced
 byte-for-byte by the corresponding Rust crate's tests, including the
 end-to-end Fibonacci proof (15,630 bytes) and its verifying key.
 
-## Proof-size model at scale
+## Proof-size model vs measured at scale
 
-From `params.proof_size_bytes` (spec 04.7 / 13.5), provable-120 profile:
+From `params.proof_size_bytes` (spec 04.7 / 13.5), `provable-120` profile:
 
-| `n_pack` | Ligerito opening |
-|---|---|
-| 20 | 357 KiB |
-| 22 | 415 KiB |
-| 24 | 509 KiB |
-| 26 (T = 2^22 machine) | 624 KiB, ≈ 656 KiB whole proof |
+| `n_pack` | Modelled Ligerito opening | Measured whole proof (`provable-120`) |
+|---|---|---|
+| 20 | 357 KiB | — |
+| 22 | 415 KiB | — |
+| 24 | 509 KiB | — |
+| 26 (`T = 2^22`, `A = 17`) | 624 KiB (≈ 656 KiB whole proof) | **603,942 B (589.8 KiB)** |
 
-The paper reports at most 599 KiB for the whole proof, so the model is in the
-paper's range. The only proof measured at T = 2^22 so far is at the test
-profile (`t = 8`, 61,446 B). Treat the provable-120 figures as estimates
-(±15%) until a provable-120 proof at that size is generated; it needs
-`t = 177` queries per level and `gs = 2`, so prover memory and time grow
-only modestly, but it has not been run.
+The measured `provable-120` proof at `T = 2^22` is 603,942 B (589.8 KiB) —
+about 10% smaller than the 656 KiB upper-bound model because Merkle
+multi-paths deduplicate shared internal sibling hashes across the `t = 177`
+queries, and below the paper's ≤ 599 KiB figure.
 
 ## Comparison with the paper, honestly
 
 | Quantity | Paper (Magnetar) | This implementation |
 |---|---|---|
-| Proving throughput | ~1.45 M fib steps/s (≈ 7 M cycles/s class) | ≈ 39 k cycles/s at T = 2^22, test profile (see above) |
-| Proof size | ≤ 599 KiB | 61 KiB measured at T = 2^22 (test profile); ≈ 656 KiB modelled at provable-120 |
-| Verifier time | ~13 ms | 15–52 ms at small T; 0.42 s wall (30 ms CPU) at T = 2^22 |
+| Proving throughput | ~1.45 M fib steps/s (≈ 7 M cycles/s class) | ≈ 202 k cycles/s (`test`) / ≈ 194 k cycles/s (`provable-120`) at T = 2^22 |
+| Proof size | ≤ 599 KiB | **589.8 KiB (603,942 B)** measured at T = 2^22 (`provable-120`); 59.4 KiB at `test` |
+| Verifier time | ~13 ms | 10–30 ms at small T; 20 ms (`test`) / 60 ms (`provable-120`) at T = 2^22 |
 
-The prover is still more than two orders of magnitude behind the paper,
-but its memory is now bounded by small constants times `T` bits, plus
-transients of a few field elements per committed bit at commit and open
-time. A `T = 2^22` proof fits in about 10 GiB on a laptop. The Python
-reference model stays dense throughout by design.
+The prover is now ~5.1× faster than the initial bounded-memory baseline
+(20.8 s vs 107 s at `T = 2^22`), though still roughly 35× behind the
+paper's reported throughput. A `T = 2^22` full-security `provable-120`
+proof runs in 21.6 s and fits in 8.2 GiB RSS (6.3 GiB heap peak) on a
+laptop. The Python reference model stays dense throughout by design.
 
 Other paper comparisons: security is the 120-bit provable profile by default
 (no conjectured proximity gaps, no grinding), SHA-256 by default, strict

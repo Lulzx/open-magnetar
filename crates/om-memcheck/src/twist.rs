@@ -104,6 +104,9 @@ impl TwistWitness {
 
     /// The `Inc` bit table, packed.
     pub fn inc_packed(&self, ell: usize) -> PackedBits {
+        if ell == 6 {
+            return PackedBits::from_words(self.inc.clone(), self.inc.len() * 64);
+        }
         let l = 1usize << ell;
         let mut out = PackedBits::zero(self.inc.len() * l);
         for (j, &w) in self.inc.iter().enumerate() {
@@ -617,7 +620,11 @@ impl WriteLog {
     /// `V~(k)` of the group covering cycles `[base, base + len)` with
     /// the cycle bits bound: `pre` is the prefix-sum table of the bound
     /// eq weights (`pre[i] = Σ_{u < i} eqw[u]`, `len + 1` entries).
+    #[inline]
     fn v_group(&self, k: usize, base: usize, len: usize, pre: &[K]) -> K {
+        if len == 1 {
+            return self.state_val(k, base);
+        }
         let (lo, hi) = (self.off[k], self.off[k + 1]);
         let cyc = &self.cyc[lo..hi];
         let start = cyc.partition_point(|&c| (c as usize) < base);
@@ -949,16 +956,18 @@ fn rw_sumcheck_sparse(
         let pair = |mut ev: [K; 4], (m, cx): (usize, &mut [K])| -> [K; 4] {
             let (gl, gr) = (2 * m, 2 * m + 1);
             let (base_l, base_r) = (gl * len, gr * len);
-            let (mut bl, mut br) = (vec![K::ZERO; np], vec![K::ZERO; np]);
+            let (mut al_sum, mut ar_sum, mut ac_sum) = (K::ZERO, K::ZERO, K::ZERO);
+            let (mut bl_sum, mut br_sum) = (K::ZERO, K::ZERO);
             let (mut sl, mut sr) = (K::ZERO, K::ZERO);
             for x in 0..np {
                 let (lk, lv) = view.entries(gl, x);
                 let (rk, rv) = view.entries(gr, x);
                 let mut cross = K::ZERO;
+                let (mut bl_x, mut br_x) = (K::ZERO, K::ZERO);
                 for (i, &k) in lk.iter().enumerate() {
                     let v = entry_val(lv, i);
                     cross += v * log.v_group(k as usize, base_r, len, &pre);
-                    bl[x] += v * phis[x][k as usize];
+                    bl_x += v * phis[x][k as usize];
                     if x == p {
                         sl += v;
                     }
@@ -966,28 +975,31 @@ fn rw_sumcheck_sparse(
                 for (i, &k) in rk.iter().enumerate() {
                     let v = entry_val(rv, i);
                     cross += v * log.v_group(k as usize, base_l, len, &pre);
-                    br[x] += v * phis[x][k as usize];
+                    br_x += v * phis[x][k as usize];
                     if x == p {
                         sr += v;
                     }
                 }
                 cx[x] = cross;
+                let bx = beta[x];
+                al_sum += bx * view.aval(gl, x, np);
+                ar_sum += bx * view.aval(gr, x, np);
+                ac_sum += bx * cross;
+                bl_sum += bx * bl_x;
+                br_sum += bx * br_x;
             }
             let (eql, eqr) = (view.eq(gl), view.eq(gr));
             let (il, ir) = (view.inc(gl), view.inc(gr));
-            let al: Vec<K> = (0..np).map(|x| view.aval(gl, x, np)).collect();
-            let ar: Vec<K> = (0..np).map(|x| view.aval(gr, x, np)).collect();
-            for (slot, &tv) in ev.iter_mut().zip(&ts) {
+            let bp = beta[p];
+            ev[0] += eql * (al_sum + bl_sum + bp * il * sl);
+            ev[1] += eqr * (ar_sum + br_sum + bp * ir * sr);
+            for (slot, &tv) in ev[2..].iter_mut().zip(&ts[2..]) {
                 let (c0, c1) = (K::ONE + tv, tv);
                 let eq_t = c0 * eql + c1 * eqr;
-                let mut inner = K::ZERO;
-                for x in 0..np {
-                    let a_t = c0 * c0 * al[x] + c1 * c1 * ar[x] + c0 * c1 * cx[x];
-                    let b_t = c0 * bl[x] + c1 * br[x];
-                    inner += beta[x] * (a_t + b_t);
-                }
-                inner += beta[p] * (c0 * il + c1 * ir) * (c0 * sl + c1 * sr);
-                *slot += eq_t * inner;
+                let a_t = c0 * c0 * al_sum + c1 * c1 * ar_sum + c0 * c1 * ac_sum;
+                let b_t = c0 * bl_sum + c1 * br_sum;
+                let i_t = bp * (c0 * il + c1 * ir) * (c0 * sl + c1 * sr);
+                *slot += eq_t * (a_t + b_t + i_t);
             }
             ev
         };

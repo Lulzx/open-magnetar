@@ -210,8 +210,7 @@ impl BitPCS {
         bits: &PackedBits,
         tr: &mut Transcript,
     ) -> (Commitment, BitStatePacked) {
-        let (root, mut st) = lg::commit_owned(&self.pcs.p, self.pcs.h, rsw::pack_packed(bits));
-        st.strip();
+        let (root, st) = lg::commit_stripped(&self.pcs.p, self.pcs.h, rsw::pack_packed(bits));
         lg::absorb_setup(&self.pcs.p, &root, tr);
         (
             Commitment {
@@ -243,8 +242,9 @@ impl BitPCS {
         // `v` is the packed polynomial's value at `r_s` (what `open`
         // asserts against `mle_eval`); a wrong `v` would fail the first
         // Ligerito sum-check round's consistency check.
-        let st = state.with_f(rsw::pack_packed(bits));
-        let pf = lg::open_owned(&self.pcs.p, self.pcs.h, st, &r_s, v, tr);
+        let pf = lg::open_owned_repack(&self.pcs.p, self.pcs.h, state, &r_s, v, tr, &|| {
+            rsw::pack_packed(bits)
+        });
         (y, (rs_proof, pf))
     }
 

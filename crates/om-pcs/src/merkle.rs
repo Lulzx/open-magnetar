@@ -25,20 +25,15 @@ pub const NODE: u8 = 0x01;
 pub const EMPTY: u8 = 0x02;
 
 /// `H(0x00 || data)`.
+#[inline]
 pub fn hash_leaf(h: Hasher, data: &[u8]) -> Digest {
-    let mut input = Vec::with_capacity(1 + data.len());
-    input.push(LEAF);
-    input.extend_from_slice(data);
-    h.digest(&input)
+    h.digest_slices(&[&[LEAF], data])
 }
 
 /// `H(0x01 || left || right)`.
+#[inline]
 pub fn hash_node(h: Hasher, left: &[u8], right: &[u8]) -> Digest {
-    let mut input = Vec::with_capacity(1 + left.len() + right.len());
-    input.push(NODE);
-    input.extend_from_slice(left);
-    input.extend_from_slice(right);
-    h.digest(&input)
+    h.digest_slices(&[&[NODE], left, right])
 }
 
 /// `H(0x02)`, the padding entry.

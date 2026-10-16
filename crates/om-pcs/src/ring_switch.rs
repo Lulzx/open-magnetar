@@ -55,14 +55,17 @@ pub fn pack_packed(bits: &PackedBits) -> Vec<K> {
         bits.len().is_multiple_of(W),
         "bit vector length must be a multiple of 128"
     );
-    bits.words()
-        .chunks(2)
-        .map(|pair| {
-            let lo = u128::from(pair[0]);
-            let hi = pair.get(1).map_or(0, |&h| u128::from(h));
-            K::from_u128(lo | (hi << 64))
-        })
-        .collect()
+    let words = bits.words();
+    let pair_to_k = |pair: &[u64]| {
+        let lo = u128::from(pair[0]);
+        let hi = pair.get(1).map_or(0, |&h| u128::from(h));
+        K::from_u128(lo | (hi << 64))
+    };
+    if bits.len() >= PAR_THRESHOLD {
+        words.par_chunks(2).map(pair_to_k).collect()
+    } else {
+        words.chunks(2).map(pair_to_k).collect()
+    }
 }
 
 /// [`partial_evals`] from packed bits: only set bits are visited.
@@ -216,19 +219,25 @@ pub fn transpose_bits(s: &[K]) -> Vec<K> {
 /// `a[v] = Σ_i eq(ρ, i) · bit_i(eq(r_hi, v))`.
 pub fn a_table(r_hi: &[K], rho: &[K]) -> Vec<K> {
     let er: Vec<u128> = eq_table(rho).iter().map(|e| e.value()).collect();
+    let mut lut = [[0u128; 256]; 16];
+    for (byte_idx, table) in lut.iter_mut().enumerate() {
+        for b in 1..256usize {
+            let bit = b.trailing_zeros() as usize;
+            let idx = 8 * byte_idx + bit;
+            let val = if idx < er.len() { er[idx] } else { 0 };
+            table[b] = table[b & (b - 1)] ^ val;
+        }
+    }
     // eq(r_hi, v) = lo[v_lo] * hi[v_hi], computed per entry instead of
     // holding a second table of the output's size.
     let h = r_hi.len() / 2;
     let (lo, hi) = (eq_table(&r_hi[..h]), eq_table(&r_hi[h..]));
+    let mask = (1usize << h) - 1;
     let at = |v: usize| {
-        let e = lo[v & ((1usize << h) - 1)] * hi[v >> h];
-        let (mut acc, mut x, mut i) = (0u128, e.value(), 0usize);
-        while x != 0 {
-            if x & 1 == 1 {
-                acc ^= er[i];
-            }
-            x >>= 1;
-            i += 1;
+        let e = (lo[v & mask] * hi[v >> h]).value().to_le_bytes();
+        let mut acc = 0u128;
+        for (byte_idx, &b) in e.iter().enumerate() {
+            acc ^= lut[byte_idx][b as usize];
         }
         K::from_u128(acc)
     };

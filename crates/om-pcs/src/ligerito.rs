@@ -282,9 +282,9 @@ impl LevelData {
     }
 
     /// Columns at the codeword positions `qs`. If the codewords were
-    /// dropped, the rows of the level table `f` (the one this level
-    /// committed to) are encoded again, one row at a time per thread,
-    /// and only the queried positions are kept.
+    /// dropped, the active cosets of the level table `f` (the one this
+    /// level committed to) are encoded in column-major order and only
+    /// the queried positions are kept.
     ///
     /// # Panics
     /// Panics if the codewords were dropped and `f` has the wrong size.
@@ -299,15 +299,69 @@ impl LevelData {
             cols << self.r,
             "LevelData::columns: table size does not match the tree"
         );
-        let pick = |i: usize| -> Vec<K> {
-            let row: Vec<K> = (0..cols).map(|j| f[i + rows * j]).collect();
-            let cw = ntt::encode(&row, self.r);
-            qs.iter().map(|&q| cw[q]).collect()
+        let mut out = vec![Vec::new(); qs.len()];
+        let mut buf = Vec::new();
+        for coset in 0..(1usize << self.r) {
+            let (q_lo, q_hi) = (coset * cols, (coset + 1) * cols);
+            if !qs.iter().any(|&q| q >= q_lo && q < q_hi) {
+                continue;
+            }
+            if buf.is_empty() {
+                buf.resize(f.len(), K::ZERO);
+            }
+            buf.copy_from_slice(f);
+            ntt::encode_coset_col_major(&mut buf, rows, cols, self.r, coset);
+            for (slot, &q) in out.iter_mut().zip(qs) {
+                if q >= q_lo && q < q_hi {
+                    let q_local = q - q_lo;
+                    *slot = buf[q_local * rows..(q_local + 1) * rows].to_vec();
+                }
+            }
+        }
+        out
+    }
+
+    fn columns_consuming(&self, qs: &[usize], mut f: Vec<K>) -> Vec<Vec<K>> {
+        if !self.cw.is_empty() {
+            return qs.iter().map(|&q| self.column(q)).collect();
+        }
+        let rows = 1usize << self.k;
+        let cols = f.len() / rows;
+        assert_eq!(
+            self.tree.num_leaves,
+            cols << self.r,
+            "LevelData::columns: table size does not match the tree"
+        );
+        let active: Vec<usize> = (0..(1usize << self.r))
+            .filter(|&coset| {
+                let (q_lo, q_hi) = (coset * cols, (coset + 1) * cols);
+                qs.iter().any(|&q| q >= q_lo && q < q_hi)
+            })
+            .collect();
+        let mut out = vec![Vec::new(); qs.len()];
+        let mut buf = if active.len() > 1 {
+            vec![K::ZERO; f.len()]
+        } else {
+            Vec::new()
         };
-        let by_row: Vec<Vec<K>> = (0..rows).into_par_iter().map(pick).collect();
-        (0..qs.len())
-            .map(|c| by_row.iter().map(|row| row[c]).collect())
-            .collect()
+        for (idx_c, &coset) in active.iter().enumerate() {
+            let (q_lo, q_hi) = (coset * cols, (coset + 1) * cols);
+            let slice: &mut [K] = if idx_c + 1 < active.len() {
+                buf.copy_from_slice(&f);
+                &mut buf
+            } else {
+                drop(std::mem::take(&mut buf));
+                &mut f
+            };
+            ntt::encode_coset_col_major(slice, rows, cols, self.r, coset);
+            for (slot, &q) in out.iter_mut().zip(qs) {
+                if q >= q_lo && q < q_hi {
+                    let q_local = q - q_lo;
+                    *slot = slice[q_local * rows..(q_local + 1) * rows].to_vec();
+                }
+            }
+        }
+        out
     }
 
     /// Drop the level table and the codewords, keeping the Merkle tree
@@ -397,6 +451,19 @@ pub fn column_bytes(col: &[K]) -> Vec<u8> {
     out
 }
 
+#[inline]
+fn hash_col_slice(h: Hasher, col: &[K]) -> Digest {
+    if col.len() <= 64 {
+        let mut buf = [0u8; 64 * 16];
+        for (i, x) in col.iter().enumerate() {
+            buf[16 * i..16 * (i + 1)].copy_from_slice(&x.to_bytes());
+        }
+        hash_leaf(h, &buf[..16 * col.len()])
+    } else {
+        hash_leaf(h, &column_bytes(col))
+    }
+}
+
 /// Encode the rows of `f` and commit to the columns (§4.4).
 pub fn commit_level(h: Hasher, f: Vec<K>, k: usize, r: usize) -> LevelData {
     let rows = 1 << k;
@@ -442,6 +509,64 @@ pub fn commit_owned(p: &LigeritoParams, h: Hasher, table: Vec<K>) -> (Digest, Le
     let ld = commit_level(h, table, p.ks[0], p.rs[0]);
     let root = ld.tree.root();
     (root, ld)
+}
+
+/// Commit to `table` (level 0) and return a stripped [`LevelData`]
+/// (Merkle tree only, without retaining `f` or `cw`), encoding one
+/// coset at a time in column-major layout to minimize peak memory.
+///
+/// # Panics
+/// As [`commit`].
+pub fn commit_stripped(p: &LigeritoParams, h: Hasher, mut table: Vec<K>) -> (Digest, LevelData) {
+    assert_eq!(table.len(), 1 << p.n, "table must have 2^n entries");
+    let (k, r) = (p.ks[0], p.rs[0]);
+    let rows = 1usize << k;
+    let cols = table.len() / rows;
+    let num_cosets = 1usize << r;
+    let n_cw = cols << r;
+    let mut leaves: Vec<Digest> = Vec::with_capacity(n_cw);
+    let mut buf = if num_cosets > 1 {
+        vec![K::ZERO; table.len()]
+    } else {
+        Vec::new()
+    };
+    for coset in 0..num_cosets {
+        let slice: &mut [K] = if coset + 1 < num_cosets {
+            buf.copy_from_slice(&table);
+            &mut buf
+        } else {
+            drop(std::mem::take(&mut buf));
+            &mut table
+        };
+        ntt::encode_coset_col_major(slice, rows, cols, r, coset);
+        if cols * rows >= PAR_THRESHOLD {
+            let chunk_leaves: Vec<Digest> = (0..cols)
+                .into_par_iter()
+                .map(|q_local| hash_col_slice(h, &slice[q_local * rows..(q_local + 1) * rows]))
+                .collect();
+            leaves.extend(chunk_leaves);
+        } else {
+            for q_local in 0..cols {
+                leaves.push(hash_col_slice(
+                    h,
+                    &slice[q_local * rows..(q_local + 1) * rows],
+                ));
+            }
+        }
+    }
+    drop(table);
+    let tree = MerkleTree::from_leaf_hashes(h, leaves);
+    let root = tree.root();
+    (
+        root,
+        LevelData {
+            f: Vec::new(),
+            k,
+            r,
+            cw: Vec::new(),
+            tree,
+        },
+    )
 }
 
 /// Setup absorption (§4.1): `pcs/params` then `pcs/root`.
@@ -538,7 +663,22 @@ pub fn open_owned(
     open_inner(p, h, ld0, r, y, tr, &commit_level)
 }
 
-#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+/// [`open_owned`] where level 0's table `f` can be regenerated on demand
+/// via `repack` after the level-0 sum-check finishes, avoiding holding
+/// both `f` and its sum-check copy simultaneously alongside `b`.
+pub fn open_owned_repack(
+    p: &LigeritoParams,
+    h: Hasher,
+    ld0: LevelData,
+    r: &[K],
+    y: K,
+    tr: &mut Transcript,
+    repack: &dyn Fn() -> Vec<K>,
+) -> LigeritoProof {
+    open_inner_repack(p, h, ld0, r, y, tr, &commit_level, Some(repack))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn open_inner(
     p: &LigeritoParams,
     h: Hasher,
@@ -548,6 +688,20 @@ fn open_inner(
     tr: &mut Transcript,
     commit_fn: CommitFn<'_>,
 ) -> LigeritoProof {
+    open_inner_repack(p, h, ld0, r, y, tr, commit_fn, None)
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn open_inner_repack(
+    p: &LigeritoParams,
+    h: Hasher,
+    ld0: LevelData,
+    r: &[K],
+    y: K,
+    tr: &mut Transcript,
+    commit_fn: CommitFn<'_>,
+    repack0: Option<&dyn Fn() -> Vec<K>>,
+) -> LigeritoProof {
     assert_eq!(r.len(), p.n, "point has wrong length");
     tr.absorb_ks(b"pcs/point", r);
     tr.absorb_k(b"pcs/value", y);
@@ -556,7 +710,11 @@ fn open_inner(
     let mut ld = ld0;
     // The prover's own level table. The committed state normally holds
     // the same table; the test-only commit hook may commit another one.
-    let mut f = std::mem::take(&mut ld.f);
+    let mut f = if ld.f.is_empty() {
+        repack0.expect("level 0 needs f or repack0")()
+    } else {
+        std::mem::take(&mut ld.f)
+    };
     let (mut roots, mut scs, mut ops) = (Vec::new(), Vec::new(), Vec::new());
     let mut final_poly = Vec::new();
     for i in 0..p.levels() {
@@ -565,9 +723,16 @@ fn open_inner(
         // The level sum-check binds the low `k` variables of `f * b`
         // summed over the columns; binding the whole tables in place is
         // the same as binding each column's block (C3 low-first order).
+        let need_f_after = reps > 1 || ld.cw.is_empty();
+        let can_repack = i == 0 && repack0.is_some();
+        let f_sc = if need_f_after && !can_repack {
+            f.clone()
+        } else {
+            std::mem::take(&mut f)
+        };
         let (proof, rho, mut fin) = sumcheck_prove_rounds(
             c,
-            vec![f.clone(), std::mem::take(&mut b)],
+            vec![f_sc, std::mem::take(&mut b)],
             &|v: &[K]| v[0] * v[1],
             2,
             k,
@@ -579,6 +744,9 @@ fn open_inner(
         let g = fin.pop().expect("f table");
         debug_assert_eq!(g.len(), cols);
         let cp = g.iter().zip(&bp).fold(K::ZERO, |acc, (&x, &z)| acc + x * z);
+        if need_f_after && can_repack {
+            f = repack0.expect("repack0 checked")();
+        }
         let mut rhos = vec![rho];
         for _ in 1..reps {
             rhos.push(tr.challenge_ks(b"pcs/fold", k));
@@ -599,7 +767,7 @@ fn open_inner(
             Some(nxt)
         };
         let idx = sample_indices(tr, p.log_codeword(i), p.ts[i]);
-        let cols_data: Vec<Vec<K>> = ld.columns(&idx, &f);
+        let cols_data: Vec<Vec<K>> = ld.columns_consuming(&idx, std::mem::take(&mut f));
         ops.push(LevelOpening {
             columns: cols_data.clone(),
             auth: ld.tree.open(&idx).expect("sampled indices are valid"),
@@ -616,18 +784,40 @@ fn open_inner(
         let mut b_next = bp;
         b_next.resize(1 << (m + s), K::ZERO);
         let off = 1 << m;
+        let split_rows = ntt::split_basis_rows(&idx, m, p.log_codeword(i));
+        let lo_len = 1usize << (m / 2);
         for j in 0..reps {
             let mut pw = K::ONE;
-            for (q, col) in idx.iter().zip(&cols_data) {
+            let mut pws = Vec::with_capacity(idx.len());
+            for col in &cols_data {
                 pw *= betas[j];
+                pws.push(pw);
                 let vq = ers[j]
                     .iter()
                     .zip(col)
                     .fold(K::ZERO, |acc, (&e, &x)| acc + e * x);
                 c += pw * vq;
-                let row = ntt::basis_row(*q, m, p.log_codeword(i));
-                for u in 0..off {
-                    b_next[j * off + u] += pw * row[u];
+            }
+            let dst = &mut b_next[j * off..(j + 1) * off];
+            if off >= PAR_THRESHOLD {
+                dst.par_chunks_mut(lo_len)
+                    .enumerate()
+                    .for_each(|(u_hi, chunk)| {
+                        for ((lo_q, hi_q), &pw_q) in split_rows.iter().zip(&pws) {
+                            let coeff = pw_q * hi_q[u_hi];
+                            for (slot, &l) in chunk.iter_mut().zip(lo_q) {
+                                *slot += coeff * l;
+                            }
+                        }
+                    });
+            } else {
+                for (u_hi, chunk) in dst.chunks_mut(lo_len).enumerate() {
+                    for ((lo_q, hi_q), &pw_q) in split_rows.iter().zip(&pws) {
+                        let coeff = pw_q * hi_q[u_hi];
+                        for (slot, &l) in chunk.iter_mut().zip(lo_q) {
+                            *slot += coeff * l;
+                        }
+                    }
                 }
             }
         }

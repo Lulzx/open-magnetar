@@ -24,11 +24,11 @@ All 27 files in `reference/vectors/` are reproduced byte for byte by the Rust cr
 
 The specification in [`docs/spec/`](docs/spec/) covers sections 00 to 15. Choices that the paper does not dictate are marked **[OM-choice]**. Section 04 §4.4a contains a full soundness proof for the gap amplification composition used by the `provable-120` parameters.
 
-All 15 workloads from Table 1 of the paper are present as guests in [`guest/examples/`](guest/examples/) and pass 47 execution cases against a Python oracle. All 15 are proved and verified end to end. The largest, `radix-sort-u64`, runs T = 2²² cycles, proves in 107 s with a 10.1 GiB peak on a 24 GiB laptop, and verifies in 0.42 s.
+All 15 workloads from Table 1 of the paper are present as guests in [`guest/examples/`](guest/examples/) and pass 47 execution cases against a Python oracle. All 15 are proved and verified end to end. The largest, `radix-sort-u64`, runs T = 2²² cycles: at the `provable-120` profile it produces a 603,942 B (589.8 KiB) proof in 21.6 s (8.2 GiB peak RSS) and verifies in 60 ms; at the test profile it proves in 20.8 s (7.7 GiB peak RSS) and verifies in 20 ms.
 
 | Suite | Result |
 |---|---|
-| Rust workspace, `cargo test --workspace` | 343 tests, 0 failures |
+| Rust workspace, `cargo test --workspace` | 346 tests, 0 failures |
 | Python reference model | 223 tests, 0 failures |
 | Reference vectors | 27 of 27 files reproduced byte for byte |
 | Guest execution cases | 47 cases, all pass |
@@ -40,16 +40,16 @@ Measured on an Apple M4 Pro (24 GiB) with a release build, `A = 16` unless state
 
 | Guest | Profile | Prove | Verify | Proof |
 |---|---|---:|---:|---:|
-| `fib(19)`, T = 256 | test | 0.95 s | 15 ms | 23,526 B |
-| `fib(19)`, T = 256 | provable-120 | 0.81 s | 23 ms | 83,654 B |
-| `sha256("abc")`, T = 8,192 | test | 0.27 s | 52 ms | 34,526 B |
-| `erc20-transfer`, T = 512 | test | 1.40 s | 16 ms | 25,974 B |
-| `keccak-f1600`, T = 32,768 | test | 0.97 s | 10 ms | 40,158 B |
-| `radix-sort-u64`, T = 2²², `A = 17` | test | 107 s (10.1 GiB peak) | 0.42 s | 61,446 B |
+| `fib(19)`, T = 256 | test | 0.03 s | 10 ms | 23,526 B |
+| `fib(19)`, T = 256 | provable-120 | 0.03 s | 20 ms | 83,654 B |
+| `sha256("abc")`, T = 8,192 | test | 0.15 s | 10 ms | 34,526 B |
+| `erc20-transfer`, T = 512 | test | 0.03 s | 10 ms | 25,398 B |
+| `keccak-f1600`, T = 32,768 | test | 0.27 s | 10 ms | 39,806 B |
+| `keccak-f1600`, T = 32,768 | provable-120 | 0.27 s | 30 ms | 289,406 B |
+| `radix-sort-u64`, T = 2²², `A = 17` | test | 20.8 s (7.7 GiB peak) | 20 ms | 60,806 B |
+| `radix-sort-u64`, T = 2²², `A = 17` | provable-120 | 21.6 s (8.2 GiB peak) | 60 ms | 603,942 B (589.8 KiB) |
 
-The first four rows are from before the prover rewrite described below; only the sha256 row was re-timed.
-
-Verifier time is close to the numbers in the paper. Prover time is not: about 39 k cycles per second at T = 2²², against the paper's millions. Every prover phase now works from packed bits or compact per-cycle data, so memory grows by small constants times T bits, plus transients at commit and open time. Proof bytes did not change at any step. The T = 2²² proof above is at the test profile (8 queries per level). A `provable-120` proof at that size is modelled at about 656 KiB, close to the paper, but has not been generated yet. Measured numbers are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Verifier time (10–60 ms) and `provable-120` proof size (589.8 KiB at T = 2²², below the paper's 599 KiB bound) are close to the numbers in the paper. Prover throughput at T = 2²² is about 202 k cycles/s on the test profile and 194 k cycles/s on `provable-120` (up from 39 k cycles/s before the hardware SHA-256, column-major coset NTT, compiled sparse Spartan, and bitwise witness packing optimizations), against the paper's ~7M cycles/s. Every prover phase works from packed bits or compact per-cycle data, and proof bytes are unchanged across all optimizations. Measured numbers and per-phase breakdowns are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ## Quick start
 
@@ -118,8 +118,8 @@ Audit items are tracked in [§13.9](docs/spec/13-security.md), and all seven are
 
 ## Roadmap
 
-1. Prover throughput. All phases are now memory-bounded, and T = 2²² proves in 107 s on a laptop. The paper reports about 7M cycles per second, so this is still more than two orders of magnitude behind. The largest remaining transients are the level-0 codeword rows at commit time and the level-0 tables of the Ligerito opening.
-2. Generate and measure a `provable-120` proof at T = 2²², and replace the modelled size of about 656 KiB with a measured one. The measured T = 2²² proof is at the test profile.
+1. Prover throughput. T = 2²² now proves in 20.8 s (test) / 21.6 s (`provable-120`) on a laptop (~194–202 k cycles/s, 5× faster than the initial 107 s bounded-memory run). The paper reports about 7M cycles per second, so further algorithmic and SIMD work remains.
+2. Full-security T = 2²² proof. Done: `radix-sort-u64` at `provable-120` (`T = 2²²`, `A = 17`) is proved and verified end to end, measuring 603,942 B (589.8 KiB) against the 656 KiB model.
 3. Rust guests. Done for the basic path. The runtime crate `guest/rust/om-guest` provides the entry point, a bump allocator, and I/O helpers, and the Fibonacci example in `guest/rust/examples/fib` is proved and verified end to end. Build it with `make -C guest/rust`. See [§14](docs/spec/14-guest-abi.md). More Rust examples would still be useful.
 
 ## Contributing

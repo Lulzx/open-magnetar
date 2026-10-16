@@ -190,6 +190,24 @@ impl AddrComps {
             AddrComps::Addrs { addrs, .. } => {
                 let ac = self.ac();
                 let mut out = PackedBits::zero(addrs.len() << ac);
+                if ac <= 16 && out.words().len() >= 1024 {
+                    let shift = i * ac;
+                    let mask = (1usize << ac) - 1;
+                    let cycles_per_chunk = 65536 >> ac;
+                    out.words_mut()
+                        .par_chunks_mut(1024)
+                        .enumerate()
+                        .for_each(|(ci, wchunk)| {
+                            let j_start = ci * cycles_per_chunk;
+                            let j_end = (j_start + cycles_per_chunk).min(addrs.len());
+                            for (lj, &ad) in addrs[j_start..j_end].iter().enumerate() {
+                                let ch = ((ad as usize) >> shift) & mask;
+                                let bit = ch + (lj << ac);
+                                wchunk[bit / 64] |= 1u64 << (bit % 64);
+                            }
+                        });
+                    return out;
+                }
                 for (j, &ad) in addrs.iter().enumerate() {
                     out.set(chunk(ad as usize, ac, i) + (j << ac));
                 }

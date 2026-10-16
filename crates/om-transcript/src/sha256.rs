@@ -11,73 +11,231 @@ const K256: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-pub fn digest(data: &[u8]) -> [u8; 32] {
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    // Padding: 0x80, zeros, 64-bit big-endian bit length, to a multiple of 64.
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    let mut msg = Vec::with_capacity(data.len() + 72);
-    msg.extend_from_slice(data);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
+const IV256: [u32; 8] = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+];
 
-    for block in msg.as_chunks::<64>().0 {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                block[4 * i],
-                block[4 * i + 1],
-                block[4 * i + 2],
-                block[4 * i + 3],
-            ]);
+#[inline]
+pub fn digest(data: &[u8]) -> [u8; 32] {
+    digest_slices(&[data])
+}
+
+pub fn digest_slices(slices: &[&[u8]]) -> [u8; 32] {
+    let mut h = IV256;
+    let mut buf = [0u8; 64];
+    let mut buf_len = 0usize;
+    let mut total_len = 0u64;
+
+    for &slice in slices {
+        total_len = total_len.wrapping_add(slice.len() as u64);
+        let mut s = slice;
+        if buf_len > 0 {
+            let take = (64 - buf_len).min(s.len());
+            buf[buf_len..buf_len + take].copy_from_slice(&s[..take]);
+            buf_len += take;
+            s = &s[take..];
+            if buf_len == 64 {
+                compress_block(&mut h, &buf);
+                buf_len = 0;
+            }
         }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
+        let (blocks, rem) = s.as_chunks::<64>();
+        for block in blocks {
+            compress_block(&mut h, block);
         }
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let t1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K256[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
+        if !rem.is_empty() {
+            buf[..rem.len()].copy_from_slice(rem);
+            buf_len = rem.len();
         }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
     }
+
+    // Padding: 0x80, zeros, 64-bit big-endian bit length, to a multiple of 64.
+    let bit_len = total_len.wrapping_mul(8);
+    buf[buf_len] = 0x80;
+    buf_len += 1;
+    if buf_len > 56 {
+        buf[buf_len..64].fill(0);
+        compress_block(&mut h, &buf);
+        buf[..56].fill(0);
+    } else {
+        buf[buf_len..56].fill(0);
+    }
+    buf[56..64].copy_from_slice(&bit_len.to_be_bytes());
+    compress_block(&mut h, &buf);
+
     let mut out = [0u8; 32];
     for (i, word) in h.iter().enumerate() {
         out[4 * i..4 * i + 4].copy_from_slice(&word.to_be_bytes());
     }
     out
+}
+
+#[inline(always)]
+fn compress_block(h: &mut [u32; 8], block: &[u8; 64]) {
+    #[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]
+    {
+        // SAFETY: `sha2` target feature is enabled at compile time.
+        unsafe { compress_block_aarch64(h, block) };
+        return;
+    }
+    #[cfg(all(target_arch = "aarch64", not(target_feature = "sha2")))]
+    {
+        if std::arch::is_aarch64_feature_detected!("sha2") {
+            // SAFETY: `sha2` feature was just detected at runtime.
+            unsafe { compress_block_aarch64(h, block) };
+            return;
+        }
+    }
+    #[allow(unreachable_code)]
+    compress_block_portable(h, block);
+}
+
+pub(crate) fn compress_block_portable(h: &mut [u32; 8], block: &[u8; 64]) {
+    let mut w = [0u32; 64];
+    for i in 0..16 {
+        w[i] = u32::from_be_bytes([
+            block[4 * i],
+            block[4 * i + 1],
+            block[4 * i + 2],
+            block[4 * i + 3],
+        ]);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
+    }
+    let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
+        (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ ((!e) & g);
+        let t1 = hh
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K256[i])
+            .wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        hh = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t1);
+        d = c;
+        c = b;
+        b = a;
+        a = t1.wrapping_add(t2);
+    }
+    h[0] = h[0].wrapping_add(a);
+    h[1] = h[1].wrapping_add(b);
+    h[2] = h[2].wrapping_add(c);
+    h[3] = h[3].wrapping_add(d);
+    h[4] = h[4].wrapping_add(e);
+    h[5] = h[5].wrapping_add(f);
+    h[6] = h[6].wrapping_add(g);
+    h[7] = h[7].wrapping_add(hh);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+#[target_feature(enable = "sha2,neon")]
+unsafe fn compress_block_aarch64(h: &mut [u32; 8], block: &[u8; 64]) {
+    use core::arch::aarch64::{
+        vaddq_u32, vld1q_u8, vld1q_u32, vreinterpretq_u32_u8, vrev32q_u8, vsha256h2q_u32,
+        vsha256hq_u32, vsha256su0q_u32, vsha256su1q_u32, vst1q_u32,
+    };
+
+    // SAFETY: `h` has 8 `u32` elements and `block` has 64 `u8` elements;
+    // `K256` has 64 `u32` elements. All pointer offsets are in-bounds.
+    unsafe {
+        let abcd_orig = vld1q_u32(h.as_ptr());
+        let efgh_orig = vld1q_u32(h.as_ptr().add(4));
+        let mut abcd = abcd_orig;
+        let mut efgh = efgh_orig;
+
+        let mut w0 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr())));
+        let mut w1 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(16))));
+        let mut w2 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(32))));
+        let mut w3 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(48))));
+
+        macro_rules! round4 {
+            ($w:ident, $idx:expr) => {{
+                let wk = vaddq_u32($w, vld1q_u32(K256.as_ptr().add($idx)));
+                let prev_abcd = abcd;
+                abcd = vsha256hq_u32(abcd, efgh, wk);
+                efgh = vsha256h2q_u32(efgh, prev_abcd, wk);
+            }};
+            ($w0:ident, $w1:ident, $w2:ident, $w3:ident, $idx:expr) => {{
+                round4!($w0, $idx);
+                $w0 = vsha256su1q_u32(vsha256su0q_u32($w0, $w1), $w2, $w3);
+            }};
+        }
+
+        round4!(w0, w1, w2, w3, 0);
+        round4!(w1, w2, w3, w0, 4);
+        round4!(w2, w3, w0, w1, 8);
+        round4!(w3, w0, w1, w2, 12);
+
+        round4!(w0, w1, w2, w3, 16);
+        round4!(w1, w2, w3, w0, 20);
+        round4!(w2, w3, w0, w1, 24);
+        round4!(w3, w0, w1, w2, 28);
+
+        round4!(w0, w1, w2, w3, 32);
+        round4!(w1, w2, w3, w0, 36);
+        round4!(w2, w3, w0, w1, 40);
+        round4!(w3, w0, w1, w2, 44);
+
+        round4!(w0, 48);
+        round4!(w1, 52);
+        round4!(w2, 56);
+        round4!(w3, 60);
+
+        abcd = vaddq_u32(abcd, abcd_orig);
+        efgh = vaddq_u32(efgh, efgh_orig);
+
+        vst1q_u32(h.as_mut_ptr(), abcd);
+        vst1q_u32(h.as_mut_ptr().add(4), efgh);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_sha2_matches_portable() {
+        if !std::arch::is_aarch64_feature_detected!("sha2") {
+            return;
+        }
+        let mut h_port = IV256;
+        let mut h_hw = IV256;
+        for b in 0..32u8 {
+            let mut block = [0u8; 64];
+            for (i, byte) in block.iter_mut().enumerate() {
+                *byte = b.wrapping_mul(37).wrapping_add(i as u8);
+            }
+            compress_block_portable(&mut h_port, &block);
+            // SAFETY: `sha2` was detected just above.
+            unsafe { compress_block_aarch64(&mut h_hw, &block) };
+            assert_eq!(h_hw, h_port);
+        }
+    }
+
+    #[test]
+    fn digest_slices_matches_concatenated() {
+        let a = b"hello ";
+        let b = &[0u8; 73];
+        let c = b"world of open magnetar";
+        let mut full = Vec::new();
+        full.extend_from_slice(a);
+        full.extend_from_slice(b);
+        full.extend_from_slice(c);
+        assert_eq!(digest_slices(&[a, b, c]), digest(&full));
+    }
 }

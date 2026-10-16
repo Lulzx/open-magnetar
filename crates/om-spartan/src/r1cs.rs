@@ -46,6 +46,11 @@ pub trait BitRow: Sync {
             }
         }
     }
+    /// Backing 64-bit words when the row is stored as [`PackedBits`].
+    #[inline(always)]
+    fn packed_words(&self) -> Option<&[u64]> {
+        None
+    }
 }
 
 impl BitRow for Vec<bool> {
@@ -67,14 +72,21 @@ impl BitRow for [bool] {
 }
 
 impl BitRow for PackedBits {
+    #[inline(always)]
     fn bit_len(&self) -> usize {
         PackedBits::len(self)
     }
+    #[inline(always)]
     fn bit(&self, i: usize) -> bool {
         PackedBits::bit(self, i)
     }
+    #[inline(always)]
     fn for_each_one<F: FnMut(usize)>(&self, f: F) {
         self.iter_ones().for_each(f);
+    }
+    #[inline(always)]
+    fn packed_words(&self) -> Option<&[u64]> {
+        Some(self.words())
     }
 }
 

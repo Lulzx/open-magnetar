@@ -119,12 +119,16 @@ impl Transcript {
     /// Panics if `label` is invalid (spec 02 §2.7).
     pub fn absorb_bytes(&mut self, label: &[u8], data: &[u8]) {
         check_label(label);
-        let mut input = Vec::with_capacity(1 + self.state.len() + 16 + label.len() + data.len());
-        input.push(DOM_ABSORB);
-        input.extend_from_slice(&self.state);
-        enc_into(&mut input, label);
-        enc_into(&mut input, data);
-        self.state = self.hasher.digest(&input);
+        let label_len = u64le(label.len() as u64);
+        let data_len = u64le(data.len() as u64);
+        self.state = self.hasher.digest_slices(&[
+            &[DOM_ABSORB],
+            &self.state,
+            &label_len,
+            label,
+            &data_len,
+            data,
+        ]);
         self.counter = 0;
     }
 
@@ -151,12 +155,11 @@ impl Transcript {
 
     fn squeeze(&mut self, label: &[u8]) -> Vec<u8> {
         check_label(label);
-        let mut input = Vec::with_capacity(1 + self.state.len() + 8 + 8 + label.len());
-        input.push(DOM_SQUEEZE);
-        input.extend_from_slice(&self.state);
-        input.extend_from_slice(&u64le(self.counter));
-        enc_into(&mut input, label);
-        let out = self.hasher.digest(&input);
+        let ctr = u64le(self.counter);
+        let label_len = u64le(label.len() as u64);
+        let out =
+            self.hasher
+                .digest_slices(&[&[DOM_SQUEEZE], &self.state, &ctr, &label_len, label]);
         self.counter += 1;
         out
     }

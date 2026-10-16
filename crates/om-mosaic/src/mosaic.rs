@@ -178,6 +178,7 @@ pub struct BatchProof {
 /// As [`build_g`].
 pub fn build_g_packed(layout: &Layout, tables: &BTreeMap<i64, PackedBits>) -> PackedBits {
     let mut g = PackedBits::zero(1usize << layout.ell);
+    let g_words = g.words_mut();
     for pl in &layout.placements {
         let table = tables
             .get(&pl.comp_id)
@@ -187,8 +188,15 @@ pub fn build_g_packed(layout: &Layout, tables: &BTreeMap<i64, PackedBits>) -> Pa
             1usize << pl.log_size,
             "component must be a bit table of 2^log_size entries"
         );
-        for idx in table.iter_ones() {
-            g.set(pl.offset + idx);
+        if pl.offset.is_multiple_of(64) && table.len() >= 64 {
+            let dst = pl.offset / 64;
+            let src = table.words();
+            g_words[dst..dst + src.len()].copy_from_slice(src);
+        } else {
+            for idx in table.iter_ones() {
+                let bit = pl.offset + idx;
+                g_words[bit / 64] |= 1u64 << (bit % 64);
+            }
         }
     }
     g
@@ -528,14 +536,10 @@ fn split_batch_prove(
         let half = gt.len() / 2;
         let pair = |i: usize| {
             let (e0, e1, g0, g1) = (et[2 * i], et[2 * i + 1], gt[2 * i], gt[2 * i + 1]);
-            let mut ev = [K::ZERO; 3];
-            for (slot, &x) in ev.iter_mut().zip(&tv) {
-                *slot = (e0 + x * (e0 + e1)) * (g0 + x * (g0 + g1));
-            }
-            ev
+            [e0 * g0, e1 * g1, (e0 + e1) * (g0 + g1)]
         };
         let sum3 = |a: [K; 3], b: [K; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-        let ev = if half >= PAR_BITS {
+        let [s0, s1, sd] = if half >= PAR_BITS {
             (0..half)
                 .into_par_iter()
                 .map(pair)
@@ -543,6 +547,7 @@ fn split_batch_prove(
         } else {
             (0..half).map(pair).fold([K::ZERO; 3], sum3)
         };
+        let ev = [s0, s1, s0 + (s0 + s1 + sd).mul_x() + sd.mul_x().mul_x()];
         let chal = round(ev, &mut cur, &mut rs, transcript);
         bind_low_in_place(&mut et, chal);
         bind_low_in_place(&mut gt, chal);

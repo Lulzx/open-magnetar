@@ -154,8 +154,8 @@ pub fn sumcheck_round_evals(
     degree: usize,
 ) -> Vec<K> {
     let half = tables[0].len() / 2;
+    let n = tables.len();
     if tables[0].len() >= PAR_THRESHOLD {
-        let n = tables.len();
         let (ev, ..) = (0..half)
             .into_par_iter()
             .fold(
@@ -173,10 +173,11 @@ pub fn sumcheck_round_evals(
                         base[idx] = a;
                         diff[idx] = a + b;
                     }
-                    for (k, slot) in ev.iter_mut().enumerate() {
-                        let t = K::t(k as u128);
+                    ev[0] += combine(&base);
+                    for (k, slot) in ev.iter_mut().enumerate().skip(1) {
+                        let ku = k as u128;
                         for idx in 0..n {
-                            vals[idx] = base[idx] + t * diff[idx];
+                            vals[idx] = base[idx] + diff[idx].mul_t(ku);
                         }
                         *slot += combine(&vals);
                     }
@@ -201,20 +202,24 @@ pub fn sumcheck_round_evals(
             );
         ev
     } else {
-        let mut ev = Vec::with_capacity(degree + 1);
-        let mut vals: Vec<K> = Vec::with_capacity(tables.len());
-        for k in 0..=degree {
-            let t = K::t(k as u128);
-            let mut acc = K::ZERO;
-            for i in 0..half {
-                vals.clear();
-                for table in tables {
-                    let (a, b) = (table[2 * i], table[2 * i + 1]);
-                    vals.push(a + t * (a + b));
-                }
-                acc += combine(&vals);
+        let mut ev = vec![K::ZERO; degree + 1];
+        let mut base = vec![K::ZERO; n];
+        let mut diff = vec![K::ZERO; n];
+        let mut vals = vec![K::ZERO; n];
+        for i in 0..half {
+            for (idx, table) in tables.iter().enumerate() {
+                let (a, b) = (table[2 * i], table[2 * i + 1]);
+                base[idx] = a;
+                diff[idx] = a + b;
             }
-            ev.push(acc);
+            ev[0] += combine(&base);
+            for (k, slot) in ev.iter_mut().enumerate().skip(1) {
+                let ku = k as u128;
+                for idx in 0..n {
+                    vals[idx] = base[idx] + diff[idx].mul_t(ku);
+                }
+                *slot += combine(&vals);
+            }
         }
         ev
     }

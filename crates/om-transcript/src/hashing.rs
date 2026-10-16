@@ -68,11 +68,23 @@ impl Hasher {
     }
 
     /// Hash `data`, returning `digest_size()` bytes.
+    #[inline]
     pub fn digest(&self, data: &[u8]) -> Vec<u8> {
         match self {
             Self::Sha256 => crate::sha256::digest(data).to_vec(),
             Self::Sha3_256 => crate::keccak::sha3_256(data).to_vec(),
             Self::Sha384 => crate::sha512::sha384(data).to_vec(),
+        }
+    }
+
+    /// Hash the concatenation of `slices` without allocating an intermediate
+    /// buffer, returning `digest_size()` bytes.
+    #[inline]
+    pub fn digest_slices(&self, slices: &[&[u8]]) -> Vec<u8> {
+        match self {
+            Self::Sha256 => crate::sha256::digest_slices(slices).to_vec(),
+            Self::Sha3_256 => crate::keccak::sha3_256_slices(slices).to_vec(),
+            Self::Sha384 => crate::sha512::sha384_slices(slices).to_vec(),
         }
     }
 }

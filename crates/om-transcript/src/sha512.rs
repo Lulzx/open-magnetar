@@ -94,61 +94,93 @@ const IV384: [u64; 8] = [
     0x47b5481dbefa4fa4,
 ];
 
-fn sha512_with_iv(data: &[u8], iv: [u64; 8]) -> [u8; 64] {
-    let mut h = iv;
-    let bit_len = (data.len() as u128).wrapping_mul(8);
-    let mut msg = Vec::with_capacity(data.len() + 144);
-    msg.extend_from_slice(data);
-    msg.push(0x80);
-    while msg.len() % 128 != 112 {
-        msg.push(0);
+fn compress_block_512(h: &mut [u64; 8], block: &[u8; 128]) {
+    let mut w = [0u64; 80];
+    for i in 0..16 {
+        w[i] = u64::from_be_bytes(block[8 * i..8 * i + 8].try_into().expect("8 bytes"));
     }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
+    for i in 16..80 {
+        let s0 = w[i - 15].rotate_right(1) ^ w[i - 15].rotate_right(8) ^ (w[i - 15] >> 7);
+        let s1 = w[i - 2].rotate_right(19) ^ w[i - 2].rotate_right(61) ^ (w[i - 2] >> 6);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
+    }
+    let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
+        (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+    for i in 0..80 {
+        let s1 = e.rotate_right(14) ^ e.rotate_right(18) ^ e.rotate_right(41);
+        let ch = (e & f) ^ ((!e) & g);
+        let t1 = hh
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K512[i])
+            .wrapping_add(w[i]);
+        let s0 = a.rotate_right(28) ^ a.rotate_right(34) ^ a.rotate_right(39);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        hh = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t1);
+        d = c;
+        c = b;
+        b = a;
+        a = t1.wrapping_add(t2);
+    }
+    h[0] = h[0].wrapping_add(a);
+    h[1] = h[1].wrapping_add(b);
+    h[2] = h[2].wrapping_add(c);
+    h[3] = h[3].wrapping_add(d);
+    h[4] = h[4].wrapping_add(e);
+    h[5] = h[5].wrapping_add(f);
+    h[6] = h[6].wrapping_add(g);
+    h[7] = h[7].wrapping_add(hh);
+}
 
-    for block in msg.as_chunks::<128>().0 {
-        let mut w = [0u64; 80];
-        for i in 0..16 {
-            w[i] = u64::from_be_bytes(block[8 * i..8 * i + 8].try_into().expect("8 bytes"));
+fn sha512_slices_with_iv(slices: &[&[u8]], iv: [u64; 8]) -> [u8; 64] {
+    let mut h = iv;
+    let mut buf = [0u8; 128];
+    let mut buf_len = 0usize;
+    let mut total_len = 0u128;
+
+    for &slice in slices {
+        total_len = total_len.wrapping_add(slice.len() as u128);
+        let mut s = slice;
+        if buf_len > 0 {
+            let take = (128 - buf_len).min(s.len());
+            buf[buf_len..buf_len + take].copy_from_slice(&s[..take]);
+            buf_len += take;
+            s = &s[take..];
+            if buf_len == 128 {
+                compress_block_512(&mut h, &buf);
+                buf_len = 0;
+            }
         }
-        for i in 16..80 {
-            let s0 = w[i - 15].rotate_right(1) ^ w[i - 15].rotate_right(8) ^ (w[i - 15] >> 7);
-            let s1 = w[i - 2].rotate_right(19) ^ w[i - 2].rotate_right(61) ^ (w[i - 2] >> 6);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
+        let (blocks, rem) = s.as_chunks::<128>();
+        for block in blocks {
+            compress_block_512(&mut h, block);
         }
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-        for i in 0..80 {
-            let s1 = e.rotate_right(14) ^ e.rotate_right(18) ^ e.rotate_right(41);
-            let ch = (e & f) ^ ((!e) & g);
-            let t1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K512[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(28) ^ a.rotate_right(34) ^ a.rotate_right(39);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
+        if !rem.is_empty() {
+            buf[..rem.len()].copy_from_slice(rem);
+            buf_len = rem.len();
         }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
     }
+
+    let bit_len = total_len.wrapping_mul(8);
+    buf[buf_len] = 0x80;
+    buf_len += 1;
+    if buf_len > 112 {
+        buf[buf_len..128].fill(0);
+        compress_block_512(&mut h, &buf);
+        buf[..112].fill(0);
+    } else {
+        buf[buf_len..112].fill(0);
+    }
+    buf[112..128].copy_from_slice(&bit_len.to_be_bytes());
+    compress_block_512(&mut h, &buf);
+
     let mut out = [0u8; 64];
     for (i, word) in h.iter().enumerate() {
         out[8 * i..8 * i + 8].copy_from_slice(&word.to_be_bytes());
@@ -157,7 +189,13 @@ fn sha512_with_iv(data: &[u8], iv: [u64; 8]) -> [u8; 64] {
 }
 
 /// SHA-384: SHA-512 core with the SHA-384 IV, truncated to 48 bytes.
+#[inline]
 pub fn sha384(data: &[u8]) -> [u8; 48] {
-    let full = sha512_with_iv(data, IV384);
+    sha384_slices(&[data])
+}
+
+/// SHA-384 over a sequence of slices without concatenating them on the heap.
+pub fn sha384_slices(slices: &[&[u8]]) -> [u8; 48] {
+    let full = sha512_slices_with_iv(slices, IV384);
     full[..48].try_into().expect("48 bytes")
 }

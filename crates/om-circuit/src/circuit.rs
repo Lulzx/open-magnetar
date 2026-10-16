@@ -1114,20 +1114,37 @@ impl RomFields {
 }
 
 /// Python `_rom_fields`: pack a ROM row into its witness fields.
+#[inline]
 pub fn rom_fields(row: &Row) -> RomFields {
-    let mut rf = 0u64;
-    for &nm in &FLAG_NAMES {
-        if row.flag(nm).expect("flag name") {
-            rf |= 1u64 << fp(nm);
-        }
-    }
-    for k in 0..6 {
-        rf |= u64::from((row.bsel >> k) & 1) << fp(&format!("bsel{k}"));
-    }
-    for k in 0..8 {
-        rf |= u64::from((row.ln >> k) & 1) << fp(&format!("ln{k}"));
-        rf |= u64::from((row.fill >> k) & 1) << fp(&format!("fill{k}"));
-    }
+    let rf = u64::from(row.head)
+        | (u64::from(row.halted) << 1)
+        | (u64::from(row.ecall) << 2)
+        | (u64::from(row.trap) << 3)
+        | (u64::from(row.b_imm) << 4)
+        | (u64::from(row.sub) << 5)
+        | (u64::from(row.w) << 6)
+        | (u64::from(row.c_add) << 7)
+        | (u64::from(row.e) << 8)
+        | (u64::from(row.g) << 9)
+        | (u64::from(row.f_ltu) << 10)
+        | (u64::from(row.f_lts) << 11)
+        | (u64::from(row.f_cmp) << 12)
+        | (u64::from(row.g_slt) << 13)
+        | (u64::from(row.f_eq) << 14)
+        | (u64::from(row.br) << 15)
+        | (u64::from(row.inv) << 16)
+        | (u64::from(row.sh_imm) << 17)
+        | (u64::from(row.mem) << 18)
+        | (u64::from(row.a_h) << 19)
+        | (u64::from(row.a_w) << 20)
+        | (u64::from(row.a_d) << 21)
+        | (u64::from(row.jalr) << 22)
+        | (u64::from(row.ldsb) << 23)
+        | (u64::from(row.ldsh) << 24)
+        | (u64::from(row.ldsw) << 25)
+        | (u64::from(row.bsel & 0x3f) << 26)
+        | (u64::from(row.ln) << 32)
+        | (u64::from(row.fill) << 40);
     RomFields {
         imm: row.imm,
         kc: row.kc,
@@ -1249,23 +1266,25 @@ impl CycleFields {
 }
 
 /// Python `cycle_fields`.
+#[inline]
 pub fn cycle_fields(rec: &TraceRecord) -> CycleFields {
     let d = &rec.dp;
-    let mut fl = 0u16;
-    let bit = |b: bool, pos: usize| -> u16 { u16::from(b) << pos };
-    fl |= bit(d.cout, flp("cout"));
-    fl |= bit(d.cond, flp("cond"));
-    for k in 0..6 {
-        fl |= bit(d.p[k], flp(&format!("p{k}")));
-    }
-    fl |= bit(d.u1, flp("u1"));
-    fl |= bit(d.u2, flp("u2"));
-    fl |= (d.rdslt as u16) << flp("rdslt");
-    fl |= (d.eqres as u16) << flp("eqres");
-    fl |= bit(d.take, flp("take"));
-    fl |= bit(d.tb, flp("tb"));
-    fl |= bit(d.th, flp("th"));
-    fl |= bit(d.tw, flp("tw"));
+    let fl = u16::from(d.cout)
+        | (u16::from(d.cond) << 1)
+        | (u16::from(d.p[0]) << 2)
+        | (u16::from(d.p[1]) << 3)
+        | (u16::from(d.p[2]) << 4)
+        | (u16::from(d.p[3]) << 5)
+        | (u16::from(d.p[4]) << 6)
+        | (u16::from(d.p[5]) << 7)
+        | (u16::from(d.u1) << 8)
+        | (u16::from(d.u2) << 9)
+        | ((d.rdslt as u16) << 10)
+        | ((d.eqres as u16) << 11)
+        | (u16::from(d.take) << 12)
+        | (u16::from(d.tb) << 13)
+        | (u16::from(d.th) << 14)
+        | (u16::from(d.tw) << 15);
     CycleFields {
         v1: rec.v1,
         v2: rec.v2,
@@ -1296,43 +1315,30 @@ pub fn cycle_fields(rec: &TraceRecord) -> CycleFields {
     }
 }
 
-/// State after cycle `k`: next micro-PC, pending-JALR target, halted
-/// flag of cycle `k`, exit code (Python `_state_out`).
-fn state_out(trace: &[TraceRecord], k: usize, exit_code: u64) -> Vec<bool> {
+/// State after cycle `k` packed into 4 `u64` words (256 bits).
+#[inline]
+fn state_out_words(trace: &[TraceRecord], k: usize, exit_code: u64) -> [u64; 4] {
     let rec = &trace[k];
     let row = &rec.rom;
-    let mut v = vec![false; 256];
-    for i in 0..32 {
-        v[ST_UPC + i] = (rec.next_upc >> i) & 1 == 1;
-    }
-    if row.jalr {
-        let tgt = rec.dp.s & !1 & M64;
-        for j in 1..64 {
-            v[ST_JT + j] = (tgt >> j) & 1 == 1;
-        }
-        v[ST_JF] = true;
-    }
-    v[ST_HALT] = row.halted;
-    for i in 0..64 {
-        v[ST_EX + i] = (exit_code >> i) & 1 == 1;
-    }
-    v
+    let jt = if row.jalr { rec.dp.s & !1 & M64 } else { 0 };
+    [
+        u64::from(rec.next_upc) | (jt << 32),
+        (jt >> 32)
+            | (u64::from(row.jalr) << 32)
+            | (u64::from(row.halted) << 33)
+            | (exit_code << 34),
+        exit_code >> 30,
+        0,
+    ]
 }
 
-/// State before cycle `k` (`k` = first cycle of an instance): the
-/// out-state of cycle `k-1`, or init (Python `_state_in`).
-fn state_in(trace: &[TraceRecord], k: usize, exit_code: u64) -> Vec<bool> {
+/// State before cycle `k` packed into 4 `u64` words (256 bits).
+#[inline]
+fn state_in_words(trace: &[TraceRecord], k: usize, exit_code: u64) -> [u64; 4] {
     if k == 0 {
-        let mut v = vec![false; 256];
-        for i in 0..32 {
-            v[ST_UPC + i] = (trace[0].upc >> i) & 1 == 1;
-        }
-        for i in 0..64 {
-            v[ST_EX + i] = (exit_code >> i) & 1 == 1;
-        }
-        return v;
+        return [u64::from(trace[0].upc), exit_code << 34, exit_code >> 30, 0];
     }
-    state_out(trace, k - 1, exit_code)
+    state_out_words(trace, k - 1, exit_code)
 }
 
 /// `W`: one row (list of `NW` bits) per SIMD instance (Python
@@ -1365,32 +1371,107 @@ pub fn witness_packed(
         !trace.is_empty() && trace.len().is_multiple_of(n),
         "trace length must be a nonzero multiple of 2^c"
     );
+
+    let o_v1 = cc.offset("v1");
+    let o_v2 = cc.offset("v2");
+    let o_rdv = cc.offset("rdv");
+    let o_rw = cc.offset("rw");
+    let o_ridx = cc.offset("ridx");
+    let o_y = cc.offset("Y");
+    let o_bop = cc.offset("Bop");
+    let o_cin = cc.offset("cin");
+    let o_nw = cc.offset("nw");
+    let o_and = cc.offset("AND");
+    let o_dw = cc.offset("Dw");
+    let o_t0 = cc.offset("T0");
+    let o_t1 = cc.offset("T1");
+    let o_t2 = cc.offset("T2");
+    let o_gs = cc.offset("Gs");
+    let o_shsrc = cc.offset("shsrc");
+    let o_stc = cc.offset("stc");
+    let o_off = cc.offset("off");
+    let o_x1 = cc.offset("x1");
+    let o_x2 = cc.offset("x2");
+    let o_x3 = cc.offset("x3");
+    let o_m = cc.offset("m");
+    let o_l = cc.offset("L");
+    let o_fl = cc.offset("fl");
+    let o_dynu = cc.offset("dynu");
+    let o_imm = cc.offset("imm");
+    let o_kc = cc.offset("kc");
+    let o_rpc = cc.offset("rpc");
+    let o_upc = cc.offset("upc");
+    let o_seq = cc.offset("seq");
+    let o_tgt = cc.offset("tgt");
+    let o_rf = cc.offset("rf");
+    let o_q_lo = cc.offset("Q_lo");
+    let o_q_hi = cc.offset("Q_hi");
+    let o_st_w = cc.offset("st_w");
+    let o_s_in = cc.offset("S_in");
+    let o_s_out = cc.offset("S_out");
+
+    #[inline(always)]
+    fn put_u64(words: &mut [u64], base_bit: usize, val: u64) {
+        words[base_bit / 64] = val;
+    }
+
+    #[inline(always)]
+    fn put_subword(words: &mut [u64], base_bit: usize, val: u64) {
+        words[base_bit / 64] |= val << (base_bit % 64);
+    }
+
     // Instances are independent; build them in parallel (order kept).
     (0..trace.len() / n)
         .into_par_iter()
         .map(|j| {
             let mut w = PackedBits::zero(cc.nw);
+            let words = w.words_mut();
             for t in 0..n {
-                for (name, val) in cycle_fields(&trace[j * n + t]).entries() {
-                    let width = field(name).expect("field name").width;
-                    let base = cc.c(name, 0, t);
-                    for i in 0..width {
-                        if (val >> i) & 1 == 1 {
-                            w.set(base + i);
-                        }
-                    }
-                }
+                let cf = cycle_fields(&trace[j * n + t]);
+                let t64 = t * 64;
+                let t32 = t * 32;
+                put_u64(words, o_v1 + t64, cf.v1);
+                put_u64(words, o_v2 + t64, cf.v2);
+                put_u64(words, o_rdv + t64, cf.rdv);
+                put_u64(words, o_rw + t64, cf.rw);
+                put_u64(words, o_ridx + t64, cf.ridx);
+                put_u64(words, o_y + t64, cf.y);
+                put_u64(words, o_bop + t64, cf.bop);
+                put_u64(words, o_cin + t64, cf.cin);
+                put_u64(words, o_nw + t64, cf.nw);
+                put_u64(words, o_and + t64, cf.and_val);
+                put_subword(words, o_dw + t32, u64::from(cf.dw));
+                put_u64(words, o_t0 + t64, cf.t0);
+                put_u64(words, o_t1 + t64, cf.t1);
+                put_u64(words, o_t2 + t64, cf.t2);
+                put_u64(words, o_gs + t64, cf.gs);
+                put_u64(words, o_shsrc + t64, cf.shsrc);
+                let stc_wi = (o_stc + t * 128) / 64;
+                words[stc_wi] = cf.stc as u64;
+                words[stc_wi + 1] = (cf.stc >> 64) as u64;
+                put_subword(words, o_off + t * 4, u64::from(cf.off & 0xf));
+                put_u64(words, o_x1 + t64, cf.x1);
+                put_u64(words, o_x2 + t64, cf.x2);
+                put_u64(words, o_x3 + t64, cf.x3);
+                put_u64(words, o_m + t64, cf.m);
+                put_u64(words, o_l + t64, cf.l);
+                put_subword(words, o_fl + t * 16, u64::from(cf.fl));
+                put_subword(words, o_dynu + t32, u64::from(cf.dynu));
+                put_u64(words, o_imm + t64, cf.rom.imm);
+                put_u64(words, o_kc + t64, cf.rom.kc);
+                put_u64(words, o_rpc + t64, cf.rom.rpc);
+                put_subword(words, o_upc + t32, u64::from(cf.rom.upc));
+                put_subword(words, o_seq + t32, u64::from(cf.rom.seq));
+                put_subword(words, o_tgt + t32, u64::from(cf.rom.tgt));
+                put_u64(words, o_rf + t64, cf.rom.rf);
+                put_u64(words, o_q_lo + t64, cf.rom.q_lo);
+                put_subword(words, o_q_hi + t * 8, u64::from(cf.rom.q_hi));
+                put_subword(words, o_st_w + t * 4, u64::from(cf.rom.st_w & 0xf));
             }
-            for (name, st) in [
-                ("S_in", state_in(trace, j * n, exit_code)),
-                ("S_out", state_out(trace, j * n + n - 1, exit_code)),
-            ] {
-                for (i, &v) in st.iter().enumerate() {
-                    if v {
-                        w.set(cc.c(name, i, 0));
-                    }
-                }
-            }
+            let s_in = state_in_words(trace, j * n, exit_code);
+            let s_out = state_out_words(trace, j * n + n - 1, exit_code);
+            words[o_s_in / 64..o_s_in / 64 + 4].copy_from_slice(&s_in);
+            words[o_s_out / 64..o_s_out / 64 + 4].copy_from_slice(&s_out);
             w
         })
         .collect()
