@@ -82,6 +82,22 @@ table map as soon as their consumers are done; proof bytes unchanged,
 verified at test sizes). They lower the peak but do not change this
 scaling, and no further attempt at this size was made on a laptop.
 
+The Spartan outer and cross-step sum-checks were then made sparse in
+the same style as Twist: the row (and column) rounds stream over
+instances against sparse matrices folded by the challenges seen so
+far, and only the instance rounds run densely, on tables of length
+`q`. The shared sum-check prover also binds its tables in place now,
+which cuts the transient peak of every sum-check including the
+Mosaic batch. Proof bytes are unchanged again (all reference vectors
+still reproduce byte for byte, 332 Rust tests). What remains dense at
+`T = 2^22` is the Mosaic batch step and the commitment: the layout
+has `ell` of about 33 there, so its `eq` and `G` tables have `2^ell`
+field entries each, and the witness itself is held as one byte per
+bit. No attempt at this size has been made since these changes, on
+purpose: the Mosaic step alone would still not fit in a laptop's
+memory, so `radix-sort-u64` remains unproved until that step (and
+the witness representation) are made sparse or packed as well.
+
 ## Test suites
 
 | Suite | Count | Wall time (debug) |

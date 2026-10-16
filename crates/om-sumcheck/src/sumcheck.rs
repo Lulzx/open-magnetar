@@ -9,7 +9,7 @@ use om_transcript::{Transcript, u64le};
 
 use rayon::prelude::*;
 
-use crate::mle::{PAR_THRESHOLD, bind_low};
+use crate::mle::{PAR_THRESHOLD, bind_low_in_place};
 
 /// Verification failure (Python `sumcheck.VerificationError`; defined here
 /// and reused by every later crate, per C8).
@@ -273,7 +273,9 @@ pub fn sumcheck_prove(
         msgs.push(msg);
         rs.push(r);
         cur = interpolate_eval(&ev, r);
-        tables = tables.iter().map(|t| bind_low(t, r)).collect();
+        for t in &mut tables {
+            bind_low_in_place(t, r);
+        }
     }
     (SumcheckProof { round_msgs: msgs }, rs, {
         tables.iter().map(|t| t[0]).collect()

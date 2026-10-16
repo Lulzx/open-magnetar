@@ -18,6 +18,12 @@ Also useful if easy (for the proximity-gap citation in §13.9(1)):
 |---|---|
 | `bchks-proximity-gap.pdf` | BCHKS correlated-agreement / proximity-gap source cited as [5] in 04, and/or ECCC TR25-169 |
 
+Checked again 2026-10-16: this directory and the user's Downloads folder
+contain no copies of the ring-switching or Twist-and-Shout papers, and
+automated downloads (direct, browser user agent, reader proxy, Semantic
+Scholar) all fail. Items 13.9(2) and 13.9(3) therefore remain open until
+the two PDFs are dropped in here by hand.
+
 The Magnetar paper itself is already in the repo root as `paper.pdf`
 (gitignored). PDFs in this directory are gitignored too; only this README is
 tracked.

@@ -25,12 +25,12 @@
 use om_field::K;
 use om_sumcheck::{
     SumcheckProof, VerificationError, bind_low_in_place, eq_eval, eq_table, interpolate_eval,
-    mle_eval, mle_eval_bits, sumcheck_prove, sumcheck_verify,
+    mle_eval, mle_eval_bits, sumcheck_init, sumcheck_prove, sumcheck_round_evals, sumcheck_verify,
 };
 use om_transcript::{Transcript, u64le};
 use rayon::prelude::*;
 
-use crate::r1cs::{R1CS, build_z, check_witness_bits, public_part, simd_satisfied};
+use crate::r1cs::{R1CS, check_witness_bits, public_part, simd_satisfied};
 
 /// An evaluation claim `p~_{comp_id}(point) = value` on a component
 /// polynomial (Python `mosaic.Claim`, re-exported from `om-mosaic`;
@@ -287,6 +287,89 @@ fn fold_public(x: &[Vec<K>], nu: usize, r_inst: &[K]) -> Vec<K> {
     out
 }
 
+// -----------------------------------------------------------------
+// Sparse outer phase. The dense prover materialises, per relation,
+// four tables of `q * 2^rho` field elements. Here the `rho` row
+// rounds instead stream over instances: each relation's matrices are
+// kept as sparse rows folded by the row challenges seen so far, and
+// an instance's bound `Az`, `Bz`, `Cz` tables are computed from the
+// folded matrices and its witness row on demand, then dropped. The
+// `eq` table factors as `eq_row(row) * eq_inst(inst)`, so a round's
+// evaluations are the eq_inst-weighted sum over instances of the
+// per-instance evaluations. After the row rounds, one scalar per
+// instance and matrix remains, and the `s` instance rounds run
+// densely on tables of length `q`. Transcript and proof bytes are
+// identical to the dense definition.
+
+/// One sparse matrix as rows of `(column, coefficient)` lists.
+type SparseRows = Vec<Vec<(usize, K)>>;
+
+fn sparse_rows(mat: &crate::r1cs::SparseMatrix) -> SparseRows {
+    let mut rows: SparseRows = vec![Vec::new(); 1 << mat.rho];
+    for &(r, c, v) in mat.entries() {
+        rows[r].push((c, v));
+    }
+    rows
+}
+
+/// Fold sparse rows by one row challenge: new row `i` is
+/// `(1 + r) * row[2i] + r * row[2i+1]` merged by column.
+fn fold_sparse_rows(rows: SparseRows, r: K) -> SparseRows {
+    let (c0, c1) = (K::ONE + r, r);
+    (0..rows.len() / 2)
+        .map(|i| {
+            let (l, rr) = (&rows[2 * i], &rows[2 * i + 1]);
+            let mut out: Vec<(usize, K)> = Vec::with_capacity(l.len() + rr.len());
+            let (mut a, mut b) = (0, 0);
+            while a < l.len() && b < rr.len() {
+                match l[a].0.cmp(&rr[b].0) {
+                    core::cmp::Ordering::Less => {
+                        out.push((l[a].0, c0 * l[a].1));
+                        a += 1;
+                    }
+                    core::cmp::Ordering::Greater => {
+                        out.push((rr[b].0, c1 * rr[b].1));
+                        b += 1;
+                    }
+                    core::cmp::Ordering::Equal => {
+                        let v = c0 * l[a].1 + c1 * rr[b].1;
+                        if !v.is_zero() {
+                            out.push((l[a].0, v));
+                        }
+                        a += 1;
+                        b += 1;
+                    }
+                }
+            }
+            out.extend(l[a..].iter().map(|&(c, v)| (c, c0 * v)));
+            out.extend(rr[b..].iter().map(|&(c, v)| (c, c1 * v)));
+            out
+        })
+        .collect()
+}
+
+/// `z[col]` for instance `(w_row, x_row)` without building `z`
+/// (`build_z` layout: `w`, then `1`, then `x`, then zeros).
+fn z_at(w_row: &[bool], x_row: &[K], half: usize, col: usize) -> K {
+    if col < half {
+        K::from_bit(w_row[col])
+    } else if col == half {
+        K::ONE
+    } else {
+        x_row.get(col - half - 1).copied().unwrap_or(K::ZERO)
+    }
+}
+
+/// One relation in the sparse row phase.
+struct OuterRel {
+    /// Folded sparse rows of `(A, B, C)`.
+    mats: [SparseRows; 3],
+    /// Bound `eq(tau_row, .)` table over the remaining row variables.
+    eq_row: Vec<K>,
+    /// `eq(tau_inst, u)` per instance.
+    eq_inst: Vec<K>,
+}
+
 /// The Spartan prover (spec 06 §6.3, 6.5, 6.6). Returns
 /// `(proof, claims)`. `unchecked` skips the satisfiability check (and
 /// the outer-claim check); it exists for negative tests only, as in
@@ -345,45 +428,124 @@ pub fn prove(
 
     let tau = setup(transcript, p, t, rho, nu, s, nx, x, &names);
 
-    // Outer tables, index = row + 2^rho * instance.
-    let zs: Vec<Vec<K>> = w
+    // Sparse row phase: stream instances against folded sparse
+    // matrices (see the note above `OuterRel`). No table of
+    // `q * 2^rho` field elements is materialised.
+    let half = 1usize << (nu - 1);
+    let mut orels: Vec<OuterRel> = rels
         .iter()
-        .zip(x)
-        .map(|(wi, xi)| build_z(wi, xi, nu))
+        .enumerate()
+        .map(|(ti, rel)| OuterRel {
+            mats: [
+                sparse_rows(&rel.a),
+                sparse_rows(&rel.b),
+                sparse_rows(&rel.c),
+            ],
+            eq_row: eq_table(&tau[ti][..rho]),
+            eq_inst: eq_table(&tau[ti][rho..]),
+        })
         .collect();
-    let mut tabs: Vec<[Vec<K>; 4]> = Vec::with_capacity(t);
-    for (ti, rel) in rels.iter().enumerate() {
-        let mut cols: [Vec<K>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        for z in &zs {
-            for (m, mat) in rel.mats().into_iter().enumerate() {
-                cols[m].extend(mat.mul_vec(z));
-            }
-        }
-        let [ca, cb, cc] = cols;
-        tabs.push([eq_table(&tau[ti]), ca, cb, cc]);
-    }
-    drop(zs);
-    if !unchecked {
-        for tab in &tabs {
-            let ev = g_evals(&tab[0], &tab[1], &tab[2], &tab[3]);
-            assert!(ev[0] + ev[1] == K::ZERO, "outer claim is non-zero");
-        }
-    }
-
     let mut msgs: Vec<Vec<Vec<K>>> = vec![Vec::new(); t];
     let mut r_row: Vec<Vec<K>> = vec![Vec::new(); t];
     let mut r_inst: Vec<K> = Vec::new();
-    for _ in 0..rho {
+    for round in 0..rho {
+        // Round evaluations for every relation, summed over instances.
+        // Each instance contribution is `eq_inst[u]` times `g_evals` on
+        // its bound Az/Bz/Cz tables against the shared bound eq_row.
+        let evs: Vec<[K; 4]> = (0..q)
+            .into_par_iter()
+            .fold(
+                || (vec![[K::ZERO; 4]; t], [Vec::new(), Vec::new(), Vec::new()]),
+                |(mut acc, mut scratch), u| {
+                    for (ti, orel) in orels.iter().enumerate() {
+                        for (m, rows) in orel.mats.iter().enumerate() {
+                            let out = &mut scratch[m];
+                            out.clear();
+                            out.resize(rows.len(), K::ZERO);
+                            for (row, entries) in rows.iter().enumerate() {
+                                let mut v = K::ZERO;
+                                for &(col, coef) in entries {
+                                    if col < half {
+                                        if w[u][col] {
+                                            v += coef;
+                                        }
+                                    } else {
+                                        let zv = z_at(&w[u], &x[u], half, col);
+                                        if !zv.is_zero() {
+                                            v += coef * zv;
+                                        }
+                                    }
+                                }
+                                out[row] = v;
+                            }
+                        }
+                        let ev = g_evals(&orel.eq_row, &scratch[0], &scratch[1], &scratch[2]);
+                        for (slot, e) in acc[ti].iter_mut().zip(ev) {
+                            *slot += orel.eq_inst[u] * e;
+                        }
+                    }
+                    (acc, scratch)
+                },
+            )
+            .reduce(
+                || (vec![[K::ZERO; 4]; t], [Vec::new(), Vec::new(), Vec::new()]),
+                |(mut a, _), (b, scratch)| {
+                    for (x, y) in a.iter_mut().zip(&b) {
+                        for (s, v) in x.iter_mut().zip(y) {
+                            *s += *v;
+                        }
+                    }
+                    (a, scratch)
+                },
+            )
+            .0;
+        if round == 0 && !unchecked {
+            for ev in &evs {
+                assert!(ev[0] + ev[1] == K::ZERO, "outer claim is non-zero");
+            }
+        }
         for ti in 0..t {
-            let ev = g_evals(&tabs[ti][0], &tabs[ti][1], &tabs[ti][2], &tabs[ti][3]);
-            let msg = vec![ev[0], ev[2], ev[3]];
+            let msg = vec![evs[ti][0], evs[ti][2], evs[ti][3]];
             transcript.absorb_ks(&lbl(p, &[b"outer", &names[ti], b"msg"]), &msg);
             let r = transcript.challenge_k(&lbl(p, &[b"outer", &names[ti], b"row"]));
             msgs[ti].push(msg);
             r_row[ti].push(r);
-            for tab in &mut tabs[ti] {
-                bind_low_in_place(tab, r);
+            bind_low_in_place(&mut orels[ti].eq_row, r);
+            let mats = std::mem::take(&mut orels[ti].mats);
+            orels[ti].mats = mats.map(|rows| fold_sparse_rows(rows, r));
+        }
+    }
+    // Instance phase tables: one scalar per instance and matrix.
+    let mut tabs: Vec<[Vec<K>; 4]> = Vec::with_capacity(t);
+    for orel in &orels {
+        let scalar = |rows: &SparseRows, u: usize| -> K {
+            let mut v = K::ZERO;
+            for &(col, coef) in &rows[0] {
+                if col < half {
+                    if w[u][col] {
+                        v += coef;
+                    }
+                } else {
+                    v += coef * z_at(&w[u], &x[u], half, col);
+                }
             }
+            v
+        };
+        let e0 = orel.eq_row[0];
+        tabs.push([
+            orel.eq_inst.iter().map(|&e| e0 * e).collect(),
+            (0..q).map(|u| scalar(&orel.mats[0], u)).collect(),
+            (0..q).map(|u| scalar(&orel.mats[1], u)).collect(),
+            (0..q).map(|u| scalar(&orel.mats[2], u)).collect(),
+        ]);
+    }
+    drop(orels);
+    if rho == 0 && !unchecked {
+        for tab in &tabs {
+            let total = (0..q).fold(K::ZERO, |acc, i| {
+                acc + tab[0][i] * (tab[1][i] * tab[2][i] + tab[3][i])
+            });
+            assert!(total == K::ZERO, "outer claim is non-zero");
         }
     }
     for _ in 0..s {
@@ -562,6 +724,16 @@ fn xs_setup(
     })
 }
 
+/// The bound table of instance `u`'s segment at `off` after the
+/// column challenges `chals`, rebuilt from its witness bits.
+fn bound_segment(w: &[Vec<bool>], u: usize, off: usize, n: usize, chals: &[K], out: &mut Vec<K>) {
+    out.clear();
+    out.extend((0..n).map(|col| K::from_bit(w[u][off + col])));
+    for &rho in chals {
+        bind_low_in_place(out, rho);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cross_prove(
     proof: &mut SpartanProof,
@@ -590,29 +762,122 @@ fn cross_prove(
             (if u >= 1 { equ[u - 1] } else { K::ZERO }) + (if u == 0 { gamma } else { K::ZERO })
         })
         .collect();
-    let tbl_in = segment_table(w, &setup.seg_in);
-    let tbl_out = segment_table(w, &setup.seg_out);
-    let size = n * q;
-    let e: Vec<K> = (0..size).map(|i| eqk[i % n]).collect();
-    let ao: Vec<K> = (0..size).map(|i| a_out_u[i / n]).collect();
-    let ai: Vec<K> = (0..size).map(|i| a_in_u[i / n]).collect();
-    let as_ks = |bits: &[bool]| -> Vec<K> { bits.iter().map(|&b| K::from_bit(b)).collect() };
+    // Sparse form of the same sum-check: the column rounds stream
+    // over instances, rebuilding each instance's bound segment tables
+    // from its witness bits (the eq table is shared, the a_out/a_in
+    // weights are per-instance scalars), and the instance rounds then
+    // run densely over `q` scalars. No table of `n * q` field elements
+    // is materialised; transcript and proof bytes are unchanged.
+    let (off_in, off_out) = (setup.seg_in.block << lam, setup.seg_out.block << lam);
+    let combine = |v: &[K]| v[0] * (v[1] * v[2] + v[3] * v[4]);
     if unchecked {
         // A cheating prover proves the *true* sum instead of the
         // public claim.
         claim = K::ZERO;
-        for i in 0..size {
-            claim += e[i] * (ao[i] * K::from_bit(tbl_out[i]) + ai[i] * K::from_bit(tbl_in[i]));
+        for u in 0..q {
+            for col in 0..n {
+                claim += eqk[col]
+                    * (a_out_u[u] * K::from_bit(w[u][off_out + col])
+                        + a_in_u[u] * K::from_bit(w[u][off_in + col]));
+            }
         }
     }
-    let (sc, r, fin) = sumcheck_prove(
-        claim,
-        vec![e, ao, as_ks(&tbl_out), ai, as_ks(&tbl_in)],
-        &|v: &[K]| v[0] * (v[1] * v[2] + v[3] * v[4]),
-        2,
-        transcript,
-        &lbl(p, &[b"xs", b"sc"]),
-    );
+    let sc_label = lbl(p, &[b"xs", b"sc"]);
+    sumcheck_init(transcript, &sc_label, claim, lam + s, 2);
+    let (msg_label, chal_label) = (lbl(&sc_label, &[b"msg"]), lbl(&sc_label, &[b"chal"]));
+    // `lbl` joins with '/'; the dense sum-check labels are
+    // `label || "/msg"` and `label || "/chal"`, which is the same bytes.
+    let (mut msgs, mut r_all): (Vec<Vec<K>>, Vec<K>) = (Vec::new(), Vec::new());
+    let mut cur = claim;
+    let mut eqk_bound = eqk.clone();
+    let mut col_chals: Vec<K> = Vec::with_capacity(lam);
+    // Bound segment table of one instance at the current round.
+    for _ in 0..lam {
+        let ev: Vec<K> = (0..q)
+            .into_par_iter()
+            .fold(
+                || (vec![K::ZERO; 3], Vec::new(), Vec::new()),
+                |(mut acc, mut out_b, mut in_b), u| {
+                    bound_segment(w, u, off_out, n, &col_chals, &mut out_b);
+                    bound_segment(w, u, off_in, n, &col_chals, &mut in_b);
+                    let half = out_b.len() / 2;
+                    for i in 0..half {
+                        for (k, slot) in acc.iter_mut().enumerate() {
+                            let tv = K::t(k as u128);
+                            let at = |tab: &[K]| tab[2 * i] + tv * (tab[2 * i] + tab[2 * i + 1]);
+                            *slot += combine(&[
+                                at(&eqk_bound),
+                                a_out_u[u],
+                                at(&out_b),
+                                a_in_u[u],
+                                at(&in_b),
+                            ]);
+                        }
+                    }
+                    (acc, out_b, in_b)
+                },
+            )
+            .reduce(
+                || (vec![K::ZERO; 3], Vec::new(), Vec::new()),
+                |(mut a, _, _), (b, out_b, in_b)| {
+                    for (s, v) in a.iter_mut().zip(&b) {
+                        *s += *v;
+                    }
+                    (a, out_b, in_b)
+                },
+            )
+            .0;
+        assert_eq!(
+            ev[0] + ev[1],
+            cur,
+            "claim inconsistent with tables (g(0)+g(1) != claim)"
+        );
+        let msg = vec![ev[0], ev[2]];
+        transcript.absorb_ks(&msg_label, &msg);
+        let chal = transcript.challenge_k(&chal_label);
+        msgs.push(msg);
+        r_all.push(chal);
+        cur = interpolate_eval(&ev, chal);
+        col_chals.push(chal);
+        bind_low_in_place(&mut eqk_bound, chal);
+    }
+    // Instance rounds over per-instance scalars.
+    let (mut out_s, mut in_s) = (Vec::with_capacity(q), Vec::with_capacity(q));
+    {
+        let (mut ob, mut ib) = (Vec::new(), Vec::new());
+        for u in 0..q {
+            bound_segment(w, u, off_out, n, &col_chals, &mut ob);
+            bound_segment(w, u, off_in, n, &col_chals, &mut ib);
+            out_s.push(ob[0]);
+            in_s.push(ib[0]);
+        }
+    }
+    let mut tables: Vec<Vec<K>> = vec![
+        vec![eqk_bound[0]; q],
+        a_out_u.clone(),
+        out_s,
+        a_in_u.clone(),
+        in_s,
+    ];
+    for _ in 0..s {
+        let ev = sumcheck_round_evals(&tables, &combine, 2);
+        assert_eq!(
+            ev[0] + ev[1],
+            cur,
+            "claim inconsistent with tables (g(0)+g(1) != claim)"
+        );
+        let msg = vec![ev[0], ev[2]];
+        transcript.absorb_ks(&msg_label, &msg);
+        let chal = transcript.challenge_k(&chal_label);
+        msgs.push(msg);
+        r_all.push(chal);
+        cur = interpolate_eval(&ev, chal);
+        for tab in &mut tables {
+            bind_low_in_place(tab, chal);
+        }
+    }
+    let fin: Vec<K> = tables.iter().map(|tb| tb[0]).collect();
+    let (sc, r) = (SumcheckProof { round_msgs: msgs }, r_all);
     let (v_out, v_in) = (fin[2], fin[4]);
     transcript.absorb_ks(&lbl(p, &[b"xs", b"final"]), &[v_in, v_out]);
     proof.xs_proof = Some(sc);
