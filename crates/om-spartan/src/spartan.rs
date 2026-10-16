@@ -30,7 +30,9 @@ use om_sumcheck::{
 use om_transcript::{Transcript, u64le};
 use rayon::prelude::*;
 
-use om_sumcheck::{PackedBits, mle_eval_packed};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use om_sumcheck::PackedBits;
 
 use crate::r1cs::{BitRow, R1CS, check_witness_bits, public_part, simd_satisfied};
 
@@ -387,6 +389,102 @@ struct OuterRel {
     eq_inst: Vec<K>,
 }
 
+/// `W~(., r_inst)` as a column table: `sum_u eq(r_inst, u) W[u][c]`
+/// for `c < half`, given `eqi = eq(r_inst, .)`. Instances are folded
+/// in parallel chunks; each slot is a XOR-sum, so the result is exact.
+fn fold_witness<R: BitRow>(w: &[R], eqi: &[K], half: usize) -> Vec<K> {
+    let chunk = w.len().div_ceil(4 * rayon::current_num_threads()).max(1);
+    w.par_chunks(chunk)
+        .zip(eqi.par_chunks(chunk))
+        .map(|(ws, es)| {
+            let mut acc = vec![K::ZERO; half];
+            for (wu, &e) in ws.iter().zip(es) {
+                wu.for_each_one(|c| acc[c] += e);
+            }
+            acc
+        })
+        .reduce(
+            || vec![K::ZERO; half],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(&b) {
+                    *x += *y;
+                }
+                a
+            },
+        )
+}
+
+/// [`fold_public`] from the instance `eq` table, touching only the
+/// non-zero entries `(1, x_u)` of each public part. Same values: the
+/// skipped terms are `eq * 0`.
+fn fold_public_sparse(x: &[Vec<K>], nu: usize, eqi: &[K]) -> Vec<K> {
+    let half = 1usize << (nu - 1);
+    let mut out = vec![K::ZERO; half];
+    for (u, xu) in x.iter().enumerate() {
+        assert!(xu.len() < half, "public input too long");
+        out[0] += eqi[u];
+        for (slot, &v) in out[1..].iter_mut().zip(xu) {
+            *slot += eqi[u] * v;
+        }
+    }
+    out
+}
+
+/// The value at `r_col[..log_cols] || r_inst` of every non-pad
+/// segment's MLE (in layout order), read straight from the witness
+/// rows. The `eq` table of the point factors as
+/// `eq(r_col[..log_cols], y) * eq(r_inst, u)`, so each value is
+/// `sum_u eqi[u] * (sum over set bits y of eq_col[y])`, with no
+/// table over `2^(log_cols + s)` points.
+fn segment_values<R: BitRow>(
+    w: &[R],
+    segs: &[Segment],
+    r_col: &[K],
+    eqi: &[K],
+    half: usize,
+) -> Vec<K> {
+    // Column -> (real segment index, eq_col weight).
+    let mut col_seg = vec![usize::MAX; half];
+    let mut col_w = vec![K::ZERO; half];
+    let mut n_real = 0;
+    for sg in segs.iter().filter(|sg| sg.kind != SegmentKind::Pad) {
+        let off = sg.block << sg.log_cols;
+        for (y, e) in eq_table(&r_col[..sg.log_cols]).into_iter().enumerate() {
+            col_seg[off + y] = n_real;
+            col_w[off + y] = e;
+        }
+        n_real += 1;
+    }
+    let chunk = w.len().div_ceil(4 * rayon::current_num_threads()).max(1);
+    w.par_chunks(chunk)
+        .zip(eqi.par_chunks(chunk))
+        .map(|(ws, es)| {
+            let (mut acc, mut inner) = (vec![K::ZERO; n_real], vec![K::ZERO; n_real]);
+            for (wu, &e) in ws.iter().zip(es) {
+                inner.fill(K::ZERO);
+                wu.for_each_one(|c| {
+                    let sgi = col_seg[c];
+                    if sgi != usize::MAX {
+                        inner[sgi] += col_w[c];
+                    }
+                });
+                for (a, &v) in acc.iter_mut().zip(&inner) {
+                    *a += e * v;
+                }
+            }
+            acc
+        })
+        .reduce(
+            || vec![K::ZERO; n_real],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(&b) {
+                    *x += *y;
+                }
+                a
+            },
+        )
+}
+
 /// The Spartan prover (spec 06 §6.3, 6.5, 6.6). Returns
 /// `(proof, claims)`. `unchecked` skips the satisfiability check (and
 /// the outer-claim check); it exists for negative tests only, as in
@@ -428,7 +526,10 @@ pub fn prove<R: BitRow>(
     let s = q.trailing_zeros() as usize;
     assert_eq!(x.len(), q, "W and X must have one row per instance");
     check_witness_bits(w, nu);
-    if !unchecked {
+    // With row rounds, the satisfiability check rides along the first
+    // row round (which computes every instance's `Az`, `Bz`, `Cz` rows
+    // anyway); without them it runs here.
+    if !unchecked && rho == 0 {
         assert!(
             simd_satisfied(rels, w, x),
             "witness does not satisfy the SIMD R1CS"
@@ -465,10 +566,14 @@ pub fn prove<R: BitRow>(
     let mut msgs: Vec<Vec<Vec<K>>> = vec![Vec::new(); t];
     let mut r_row: Vec<Vec<K>> = vec![Vec::new(); t];
     let mut r_inst: Vec<K> = Vec::new();
+    let unsatisfied = AtomicBool::new(false);
     for round in 0..rho {
         // Round evaluations for every relation, summed over instances.
         // Each instance contribution is `eq_inst[u]` times `g_evals` on
         // its bound Az/Bz/Cz tables against the shared bound eq_row.
+        // In round 0 the tables are the unfolded `Az`, `Bz`, `Cz` rows,
+        // so the SIMD satisfiability check is read off them.
+        let check = round == 0 && !unchecked;
         let evs: Vec<[K; 4]> = (0..q)
             .into_par_iter()
             .fold(
@@ -496,6 +601,15 @@ pub fn prove<R: BitRow>(
                                 out[row] = v;
                             }
                         }
+                        if check
+                            && scratch[0]
+                                .iter()
+                                .zip(&scratch[1])
+                                .zip(&scratch[2])
+                                .any(|((&a, &b), &c)| a * b != c)
+                        {
+                            unsatisfied.store(true, Ordering::Relaxed);
+                        }
                         let ev = g_evals(&orel.eq_row, &scratch[0], &scratch[1], &scratch[2]);
                         for (slot, e) in acc[ti].iter_mut().zip(ev) {
                             *slot += orel.eq_inst[u] * e;
@@ -516,7 +630,11 @@ pub fn prove<R: BitRow>(
                 },
             )
             .0;
-        if round == 0 && !unchecked {
+        if check {
+            assert!(
+                !unsatisfied.load(Ordering::Relaxed),
+                "witness does not satisfy the SIMD R1CS"
+            );
             for ev in &evs {
                 assert!(ev[0] + ev[1] == K::ZERO, "outer claim is non-zero");
             }
@@ -585,6 +703,7 @@ pub fn prove<R: BitRow>(
     let finals: Vec<Vec<K>> = (0..t)
         .map(|ti| vec![tabs[ti][1][0], tabs[ti][2][0], tabs[ti][3][0]])
         .collect();
+    drop(tabs);
     for ti in 0..t {
         transcript.absorb_ks(&lbl(p, &[b"outer", &names[ti], b"final"]), &finals[ti]);
     }
@@ -604,17 +723,9 @@ pub fn prove<R: BitRow>(
         }
     }
     let eqi = eq_table(&r_inst);
-    let half = 1usize << (nu - 1);
-    let mut wfold = vec![K::ZERO; half];
-    for (u, wu) in w.iter().enumerate() {
-        for (c, slot) in wfold.iter_mut().enumerate() {
-            if wu.bit(c) {
-                *slot += eqi[u];
-            }
-        }
-    }
+    let wfold = fold_witness(w, &eqi, half);
     let mut zfold = wfold.clone();
-    zfold.extend(fold_public(x, nu, &r_inst));
+    zfold.extend(fold_public_sparse(x, nu, &eqi));
     let (inner, r_y, _) = sumcheck_prove(
         v_star,
         vec![mcomb, zfold],
@@ -640,14 +751,14 @@ pub fn prove<R: BitRow>(
             });
         }
         Some(segs) => {
-            for sg in segs {
-                if sg.kind == SegmentKind::Pad {
-                    continue;
-                }
-                let tbl = segment_table_packed(w, sg);
+            let vals = segment_values(w, segs, &r_col, &eqi, half);
+            for (sg, v) in segs
+                .iter()
+                .filter(|sg| sg.kind != SegmentKind::Pad)
+                .zip(vals)
+            {
                 let mut point: Vec<K> = r_col[..sg.log_cols].to_vec();
                 point.extend_from_slice(&r_inst);
-                let v = mle_eval_packed(&tbl, &point);
                 transcript.absorb_k(&lbl(p, &[b"seg"]), v);
                 seg_vals.push(v);
                 claims.push(Claim {
@@ -658,6 +769,7 @@ pub fn prove<R: BitRow>(
             }
         }
     }
+    drop(eqi);
     let mut proof = SpartanProof {
         outer_msgs: msgs,
         outer_finals: finals,
@@ -876,13 +988,7 @@ fn cross_prove<R: BitRow>(
             in_s.push(ib[0]);
         }
     }
-    let mut tables: Vec<Vec<K>> = vec![
-        vec![eqk_bound[0]; q],
-        a_out_u.clone(),
-        out_s,
-        a_in_u.clone(),
-        in_s,
-    ];
+    let mut tables: Vec<Vec<K>> = vec![vec![eqk_bound[0]; q], a_out_u, out_s, a_in_u, in_s];
     for _ in 0..s {
         let ev = sumcheck_round_evals(&tables, &combine, 2);
         assert_eq!(
@@ -1116,4 +1222,100 @@ pub fn verify(
         });
     }
     Ok(claims)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use om_sumcheck::mle_eval_packed;
+
+    /// A small xorshift generator (deterministic, test only).
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    fn rand_k(state: &mut u64) -> K {
+        K::from_u128(u128::from(next(state)) << 64 | u128::from(next(state)))
+    }
+
+    /// The factored, streaming helpers equal the dense definitions
+    /// they replace, value for value.
+    #[test]
+    fn streaming_folds_match_dense() {
+        let mut st = 0x9e37_79b9_7f4a_7c15u64;
+        let (nu, s) = (7usize, 5usize);
+        let half = 1usize << (nu - 1);
+        let w: Vec<PackedBits> = (0..1usize << s)
+            .map(|_| {
+                let mut row = PackedBits::zero(half);
+                for c in 0..half {
+                    if next(&mut st) & 1 == 1 {
+                        row.set(c);
+                    }
+                }
+                row
+            })
+            .collect();
+        let x: Vec<Vec<K>> = (0..1usize << s)
+            .map(|_| (0..3).map(|_| rand_k(&mut st)).collect())
+            .collect();
+        let r_inst: Vec<K> = (0..s).map(|_| rand_k(&mut st)).collect();
+        let r_col: Vec<K> = (0..nu - 1).map(|_| rand_k(&mut st)).collect();
+        let eqi = eq_table(&r_inst);
+
+        let mut dense = vec![K::ZERO; half];
+        for (u, wu) in w.iter().enumerate() {
+            for (c, slot) in dense.iter_mut().enumerate() {
+                if wu.bit(c) {
+                    *slot += eqi[u];
+                }
+            }
+        }
+        assert_eq!(fold_witness(&w, &eqi, half), dense);
+        assert_eq!(
+            fold_public_sparse(&x, nu, &eqi),
+            fold_public(&x, nu, &r_inst)
+        );
+
+        let segs = [
+            Segment {
+                seg_id: 0,
+                kind: SegmentKind::Direct,
+                log_cols: 5,
+                block: 0,
+            },
+            Segment {
+                seg_id: 1,
+                kind: SegmentKind::Pad,
+                log_cols: 3,
+                block: 4,
+            },
+            Segment {
+                seg_id: 2,
+                kind: SegmentKind::Virtual,
+                log_cols: 3,
+                block: 5,
+            },
+            Segment {
+                seg_id: 3,
+                kind: SegmentKind::Direct,
+                log_cols: 0,
+                block: 48,
+            },
+        ];
+        check_layout(&segs, nu);
+        let want: Vec<K> = segs
+            .iter()
+            .filter(|sg| sg.kind != SegmentKind::Pad)
+            .map(|sg| {
+                let mut point = r_col[..sg.log_cols].to_vec();
+                point.extend_from_slice(&r_inst);
+                mle_eval_packed(&segment_table_packed(&w, sg), &point)
+            })
+            .collect();
+        assert_eq!(segment_values(&w, &segs, &r_col, &eqi, half), want);
+    }
 }

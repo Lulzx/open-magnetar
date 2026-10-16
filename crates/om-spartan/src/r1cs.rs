@@ -16,6 +16,8 @@
 
 use std::collections::BTreeMap;
 
+use rayon::prelude::*;
+
 use om_field::K;
 use om_sumcheck::{PackedBits, eq_table};
 
@@ -36,6 +38,14 @@ pub trait BitRow: Sync {
     fn bit_len(&self) -> usize;
     /// Bit `i` of the row.
     fn bit(&self, i: usize) -> bool;
+    /// Call `f` on the index of every set bit, in increasing order.
+    fn for_each_one<F: FnMut(usize)>(&self, mut f: F) {
+        for i in 0..self.bit_len() {
+            if self.bit(i) {
+                f(i);
+            }
+        }
+    }
 }
 
 impl BitRow for Vec<bool> {
@@ -62,6 +72,9 @@ impl BitRow for PackedBits {
     }
     fn bit(&self, i: usize) -> bool {
         PackedBits::bit(self, i)
+    }
+    fn for_each_one<F: FnMut(usize)>(&self, f: F) {
+        self.iter_ones().for_each(f);
     }
 }
 
@@ -316,7 +329,7 @@ pub fn simd_satisfied<R: BitRow>(structs: &[R1CS], w: &[R], x: &[Vec<K>]) -> boo
     let nu = structs.first().expect("no relations").nu;
     check_witness_bits(w, nu);
     structs.iter().all(|s| {
-        w.iter()
+        w.par_iter()
             .zip(x)
             .all(|(wi, xi)| s.check_instance(&build_z_row(wi, xi, nu)))
     })
