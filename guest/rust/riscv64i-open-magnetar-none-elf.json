@@ -5,8 +5,8 @@
   "cpu": "generic-rv64",
   "features": "-m,-a,-f,-d,-c,-zicsr,-zifencei",
   "llvm-abiname": "lp64",
-  "target-pointer-width": "64",
-  "target-c-int-width": "32",
+  "target-pointer-width": 64,
+  "target-c-int-width": 32,
   "os": "none",
   "env": "",
   "vendor": "open-magnetar",
@@ -26,6 +26,13 @@
   "static-position-independent-executables": false,
   "dynamic-linking": false,
   "has-thread-local": false,
-  "relax": false,
-  "pre-link-args": { "gnu-lld": ["-T", "guest/link.ld", "-z", "max-page-size=8", "-z", "common-page-size=8"] }
+  "pre-link-args": {
+    "gnu-lld": [
+      "-z",
+      "max-page-size=8",
+      "-z",
+      "common-page-size=8"
+    ]
+  },
+  "relax-elf-relocations": false
 }

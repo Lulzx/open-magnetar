@@ -220,8 +220,15 @@ Items derived without access to the source papers or whose composition is incomp
 source before this section moves to `stable`.
 
 1. **04 4.4/4.7, Ligerito.** Written from the structure of Novakovic-Angeris (ePrint 2025/1187), not its text:
-   the claim form `(star_i)`, the query batching, and the `t` derivation still need comparison against the paper
-   (PDF request in `papers/README.md`; ePrint blocks automated PDF downloads). The **tensor-fold gap loss `k`**
+   the claim form `(star_i)`, the query batching, and the `t` derivation still need comparison against the paper.
+   **Narrowed 2026-10-16 (later):** the paper was obtained from the first author's page
+   (`angeris.github.io/papers/ligerito.pdf`, local copy `papers/ligerito-2025-1187.pdf`) and the `t`
+   derivation was compared: the paper sets the per level query count from `((1 + rho)/2)^t` with
+   `t = -1 / log2((1 + rho)/2)` scaled to the security parameter (their Section 5 asymptotic
+   accounting), which is the same form as 04 4.7. Ours is the conservative side of that comparison:
+   04 uses `t_i = ceil(120 / -log2((1 + rho_i)/2))` at every level with no discount for the number
+   of levels. What remains open in this item is the claim form `(star_i)` and the query batching,
+   still to be compared line by line against the paper text. The **tensor-fold gap loss `k`**
    and **the gap amplification of 13.5** are no longer in this item: 04 4.4a now proves them (Lemmas B and C and
    the level-reduction theorem), conditional only on the single-step proximity gap (Lemma A there). What remains
    of the gap is bibliographic: the exact `N/|K|` per-challenge form of Lemma A against BCHKS [5] (I could

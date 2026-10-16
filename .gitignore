@@ -12,3 +12,4 @@
 
 # Built guest binaries (rebuild via guest/Makefile)
 /guest/examples/*.elf
+/guest/rust/examples/*.elf

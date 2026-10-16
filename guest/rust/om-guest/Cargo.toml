@@ -1,0 +1,7 @@
+[package]
+name = "om-guest"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Runtime support for Rust guests on open-magnetar (spec 14)"
+

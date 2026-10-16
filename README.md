@@ -96,7 +96,7 @@ reference/            executable Python reference model, stdlib only
   tests/              unit tests, sub protocol tests, end to end tests, negative tests
   vectors/            JSON test vectors that pin the exact bytes of each component
 guest/                guest toolchain and the 15 Table 1 workload guests
-  rust/               custom RV64I target JSON for Rust guests, runtime crate still to be written
+  rust/               Rust guests: target JSON, om-guest runtime crate, examples, Makefile
 crates/               Rust workspace, 16 crates, listed below
 docs/BENCHMARKS.md    measured prover and verifier numbers, with comparison to the paper
 papers/               source paper PDFs for the §13.9 audit, gitignored, see the README there
@@ -115,9 +115,9 @@ Open audit items are tracked in [§13.9](docs/spec/13-security.md). Items 4 to 7
 ## Roadmap
 
 1. Sparse prover, [spec §7.10](docs/spec/07-twist-shout.md). Proving time should grow with the trace length T, not with the dense `T · 2^a` tables. This is the path toward the proving throughput reported in the paper, about 7M cycles per second. No transcript, format, or verifier changes are needed.
-2. Prove all 15 Table 1 workloads end to end. At present `fibonacci`, `sha256`, and `erc20-transfer` are proved. The other twelve are checked at execution level only.
-3. Rust guests. The [target JSON](guest/rust/riscv64i-open-magnetar-none-elf.json) is specified in [§14](docs/spec/14-guest-abi.md). The runtime crate is not written yet. It needs an entry point, a panic handler, an allocator, and I/O helpers. Until then, C guests are the supported path.
-4. Close §13.9 items 1 to 3. This is blocked on the three source PDFs listed in [`papers/README.md`](papers/README.md).
+2. Prove the last four Table 1 workloads end to end. Eleven of the fifteen are proved now. `keccak-f1600`, `sha256-merkle-path`, `evm-erc20-transfer`, and `radix-sort-u64` remain. They need the sparse prover first, because the dense prover uses too much memory at their trace lengths. Details are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+3. Rust guests. Done for the basic path. The runtime crate `guest/rust/om-guest` provides the entry point, a bump allocator, and I/O helpers, and the Fibonacci example in `guest/rust/examples/fib` is proved and verified end to end. Build it with `make -C guest/rust`. See [§14](docs/spec/14-guest-abi.md). More Rust examples would still be useful.
+4. Close §13.9 items 1 to 3. The Ligerito paper has been obtained and its `t` derivation compared. The ring switching and Twist and Shout papers are still blocked on manual download. See [`papers/README.md`](papers/README.md).
 5. Measure a proof at T = 2²² and replace the modelled size of about 656 KiB with a measured one.
 
 ## Contributing
