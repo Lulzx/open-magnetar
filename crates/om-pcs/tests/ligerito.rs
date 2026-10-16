@@ -138,7 +138,7 @@ fn bitpcs_packed_matches_bool() {
 
     let mut tr2 = Transcript::new_default(b"t");
     let (cm2, st2) = b.commit_packed(&packed, &mut tr2);
-    let (y2, pf2) = b.open_packed(&st2, &r, &mut tr2);
+    let (y2, pf2) = b.open_packed(st2, &packed, &r, &mut tr2);
 
     assert_eq!((&cm1, y1, &pf1), (&cm2, y2, &pf2));
     let mut tv = Transcript::new_default(b"t");
@@ -283,4 +283,40 @@ fn conjectured100_profile_shape() {
     assert!(p.ts.iter().all(|&t| t == 50));
     assert!(p.gs.is_empty());
     let _ = Hasher::Sha256; // profile hashes are orthogonal to params
+}
+
+#[test]
+fn bitpcs_packed_matches_bool_multilevel() {
+    // Several levels, both profiles (provable-120 has gs = 2, so the
+    // second fold reads the level table after its sum-check), and
+    // enough variables that the split eq tables of ring switching are
+    // non-trivial. The packed path keeps only the tree after commit
+    // and re-encodes the queried columns.
+    for (ell, profile) in [
+        (19usize, "provable-120"),
+        (20, "conjectured-100"),
+        (14, "conjectured-100"),
+    ] {
+        let p = lg::make_params(ell - 7, profile, 2);
+        let mut rng = Rng(ell as u64);
+        let bits = rng.bits(1 << ell);
+        let packed = om_sumcheck::PackedBits::from_bools(&bits);
+        let b = BitPCS::new(p.clone());
+        let r = rng.ks(ell);
+
+        let mut tr1 = Transcript::new_default(b"t");
+        let (cm1, st1) = b.commit(&bits, &mut tr1);
+        let (y1, pf1) = b.open(&st1, &r, &mut tr1);
+
+        let mut tr2 = Transcript::new_default(b"t");
+        let (cm2, st2) = b.commit_packed(&packed, &mut tr2);
+        assert!(st2.f.is_empty() && st2.cw.is_empty());
+        let (y2, pf2) = b.open_packed(st2, &packed, &r, &mut tr2);
+
+        assert_eq!((&cm1, y1, &pf1), (&cm2, y2, &pf2), "ell {ell} {profile}");
+        assert_eq!(y1, mle_eval_bits(&bits, &r));
+        let mut tv = Transcript::new_default(b"t");
+        b.pcs.absorb_commitment(&cm2, &mut tv);
+        b.verify(&cm2, &r, y2, &pf2, &mut tv).unwrap();
+    }
 }

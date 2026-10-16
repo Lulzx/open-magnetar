@@ -117,6 +117,7 @@ dependencies = [
  "om-field",
  "om-sumcheck",
  "om-transcript",
+ "rayon",
  "serde_json",
 ]
 

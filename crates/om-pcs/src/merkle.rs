@@ -72,13 +72,23 @@ impl MerkleTree {
     /// # Panics
     /// Panics if `leaves` is empty.
     pub fn new(h: Hasher, leaves: &[Vec<u8>]) -> Self {
-        let num_leaves = leaves.len();
-        let depth = tree_depth(num_leaves);
-        let mut layer: Vec<Digest> = if leaves.len() >= PAR_HASHES {
+        let layer: Vec<Digest> = if leaves.len() >= PAR_HASHES {
             leaves.par_iter().map(|x| hash_leaf(h, x)).collect()
         } else {
             leaves.iter().map(|x| hash_leaf(h, x)).collect()
         };
+        Self::from_leaf_hashes(h, layer)
+    }
+
+    /// Build a tree from already hashed leaves (`hash_leaf` of each
+    /// leaf, in order): the same tree as [`MerkleTree::new`] on the
+    /// leaves, without holding the leaf bytes.
+    ///
+    /// # Panics
+    /// Panics if `layer` is empty.
+    pub fn from_leaf_hashes(h: Hasher, mut layer: Vec<Digest>) -> Self {
+        let num_leaves = layer.len();
+        let depth = tree_depth(num_leaves);
         layer.resize(1 << depth, empty_hash(h));
         let mut layers = vec![layer];
         while layers.last().expect("layers").len() > 1 {

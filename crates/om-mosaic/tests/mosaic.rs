@@ -273,3 +273,104 @@ fn batching_packed_matches_bool() {
     let (p2, r2, v2) = batch_prove_packed(&lay, &cl, &g_packed, &mut Transcript::new_default(b"m"));
     assert_eq!((p1, r1, v1), (p2, r2, v2));
 }
+
+/// The batching sum-check straight from its definition (spec 05 §5.4):
+/// full `E` and `G` tables over `2^ell`, bound low variable first.
+fn dense_batch_prove(
+    lay: &om_mosaic::Layout,
+    cl: &[Claim],
+    g: &[bool],
+    tr: &mut Transcript,
+) -> (BatchProof, Vec<K>, K) {
+    use om_sumcheck::{SumcheckProof, batch_claims, interpolate_eval, sumcheck_init};
+    let values: Vec<K> = cl.iter().map(|c| c.value).collect();
+    let (alphas, claim) = batch_claims(&values, tr, b"mos/batch");
+    let mut e = om_mosaic::eq_sum_table(lay, cl, &alphas);
+    let mut gt: Vec<K> = g.iter().map(|&b| K::from_bit(b)).collect();
+    sumcheck_init(tr, b"mos/batch", claim, lay.ell, 2);
+    let (mut msgs, mut rs, mut cur) = (Vec::new(), Vec::new(), claim);
+    for _ in 0..lay.ell {
+        let mut ev = [K::ZERO; 3];
+        for i in 0..gt.len() / 2 {
+            for (k, slot) in ev.iter_mut().enumerate() {
+                let x = K::t(k as u128);
+                *slot += (e[2 * i] + x * (e[2 * i] + e[2 * i + 1]))
+                    * (gt[2 * i] + x * (gt[2 * i] + gt[2 * i + 1]));
+            }
+        }
+        assert_eq!(ev[0] + ev[1], cur);
+        let msg = vec![ev[0], ev[2]];
+        tr.absorb_ks(b"mos/batch/msg", &msg);
+        let c = tr.challenge_k(b"mos/batch/chal");
+        cur = interpolate_eval(&ev, c);
+        msgs.push(msg);
+        rs.push(c);
+        om_sumcheck::bind_low_in_place(&mut e, c);
+        om_sumcheck::bind_low_in_place(&mut gt, c);
+    }
+    tr.absorb_k(b"mos/vg", gt[0]);
+    (
+        BatchProof {
+            sumcheck: SumcheckProof { round_msgs: msgs },
+            v_g: gt[0],
+        },
+        rs,
+        gt[0],
+    )
+}
+
+#[test]
+fn batching_split_matches_dense_definition() {
+    // Mixed sizes, including components smaller than the bit-level
+    // phase and claims spread over several components, against the
+    // dense definition for every split point of the two phases.
+    let comps: [(i64, usize); 9] = [
+        (0, 9),
+        (1, 8),
+        (2, 8),
+        (3, 6),
+        (4, 3),
+        (5, 1),
+        (6, 0),
+        (7, 4),
+        (8, 2),
+    ];
+    for (seed, ell_min) in [(1u64, 0usize), (2, 12), (3, 0)] {
+        let mut rng = Rng(seed);
+        let lay = compute_layout(&comps, ell_min);
+        let tables: BTreeMap<i64, Vec<bool>> = comps
+            .iter()
+            .map(|&(cid, ls)| {
+                let dense = seed == 3 && cid == 0;
+                let bits = (0..1usize << ls)
+                    .map(|_| dense || rng.next_u64().is_multiple_of(5))
+                    .collect();
+                (cid, bits)
+            })
+            .collect();
+        let g = build_g(&lay, &tables);
+        let packed = om_sumcheck::PackedBits::from_bools(&g);
+        let mut cl = Vec::new();
+        for (i, &(cid, ls)) in comps.iter().enumerate() {
+            for _ in 0..1 + i % 3 {
+                let r = rng.ks(ls);
+                cl.push(Claim {
+                    comp_id: cid,
+                    value: mle_eval_bits(&tables[&cid], &r),
+                    point: r,
+                });
+            }
+        }
+        let want = dense_batch_prove(&lay, &cl, &g, &mut Transcript::new_default(b"m"));
+        for m in [0, 1, 2, 3, 4, 7, 8, 10, lay.ell, lay.ell + 3] {
+            let got = om_mosaic::batch_prove_packed_with(
+                &lay,
+                &cl,
+                &packed,
+                &mut Transcript::new_default(b"m"),
+                m,
+            );
+            assert_eq!(got, want, "seed {seed} ell {} bit rounds {m}", lay.ell);
+        }
+    }
+}

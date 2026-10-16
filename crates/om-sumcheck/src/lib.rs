@@ -36,5 +36,5 @@ pub use mle::{
 pub use sumcheck::{
     BoxedCombine, MAX_BATCH_CLAIMS, SumcheckProof, VerificationError, batch_claims,
     batched_combine, combine_sum, interpolate_eval, sumcheck_init, sumcheck_prove,
-    sumcheck_round_evals, sumcheck_verify,
+    sumcheck_prove_rounds, sumcheck_round_evals, sumcheck_verify,
 };

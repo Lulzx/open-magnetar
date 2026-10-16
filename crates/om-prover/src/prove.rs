@@ -528,7 +528,7 @@ pub fn prove_execution(
     } else {
         let pcs = pcs.expect("ligerito pcs built at commit");
         let st = pcs_state.expect("ligerito state from commit");
-        let (y, (rs_proof, lig_proof)) = pcs.open_packed(&st, &r_g, &mut tr);
+        let (y, (rs_proof, lig_proof)) = pcs.open_packed(st, &g, &r_g, &mut tr);
         if y != v_g {
             return Err(ProverError::Internal("internal error: G(r_G) != v_G"));
         }

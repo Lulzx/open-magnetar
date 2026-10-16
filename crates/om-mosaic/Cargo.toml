@@ -11,6 +11,7 @@ description = "MosaicPCS layout, claim lifting and batching sum-check for Open M
 om-field = { path = "../om-field" }
 om-sumcheck = { path = "../om-sumcheck" }
 om-transcript = { path = "../om-transcript" }
+rayon.workspace = true
 
 [dev-dependencies]
 serde_json = "1"

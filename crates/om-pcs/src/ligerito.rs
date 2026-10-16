@@ -3,14 +3,16 @@
 //! transcript interaction, including the `gs > 1` composition of §4.4a.
 
 use om_field::K;
-use om_sumcheck::{SumcheckProof, VerificationError, eq_table, sumcheck_prove, sumcheck_verify};
+use om_sumcheck::{
+    SumcheckProof, VerificationError, eq_table, sumcheck_prove_rounds, sumcheck_verify,
+};
 use om_transcript::{Hasher, Transcript, u64le};
 use rayon::prelude::*;
 
 /// Tables at least this large use rayon (exact elementwise maps / XOR sums).
 const PAR_THRESHOLD: usize = 1 << 14;
 
-use crate::merkle::{Digest, MerkleTree, verify_multi};
+use crate::merkle::{Digest, MerkleTree, hash_leaf, verify_multi};
 use crate::ntt;
 
 // ---------------------------------------------------------------- parameters
@@ -271,8 +273,64 @@ pub struct LevelData {
 
 impl LevelData {
     /// Column `q`: all rows at codeword position `q`, in row order.
+    ///
+    /// # Panics
+    /// Panics if the codewords were dropped ([`LevelData::strip`]);
+    /// use [`LevelData::columns`] then.
     pub fn column(&self, q: usize) -> Vec<K> {
         self.cw.iter().map(|row| row[q]).collect()
+    }
+
+    /// Columns at the codeword positions `qs`. If the codewords were
+    /// dropped, the rows of the level table `f` (the one this level
+    /// committed to) are encoded again, one row at a time per thread,
+    /// and only the queried positions are kept.
+    ///
+    /// # Panics
+    /// Panics if the codewords were dropped and `f` has the wrong size.
+    pub fn columns(&self, qs: &[usize], f: &[K]) -> Vec<Vec<K>> {
+        if !self.cw.is_empty() {
+            return qs.iter().map(|&q| self.column(q)).collect();
+        }
+        let rows = 1usize << self.k;
+        let cols = f.len() / rows;
+        assert_eq!(
+            self.tree.num_leaves,
+            cols << self.r,
+            "LevelData::columns: table size does not match the tree"
+        );
+        let pick = |i: usize| -> Vec<K> {
+            let row: Vec<K> = (0..cols).map(|j| f[i + rows * j]).collect();
+            let cw = ntt::encode(&row, self.r);
+            qs.iter().map(|&q| cw[q]).collect()
+        };
+        let by_row: Vec<Vec<K>> = (0..rows).into_par_iter().map(pick).collect();
+        (0..qs.len())
+            .map(|c| by_row.iter().map(|row| row[c]).collect())
+            .collect()
+    }
+
+    /// Drop the level table and the codewords, keeping the Merkle tree
+    /// (and `k`, `r`). An opening then needs `f` put back
+    /// ([`LevelData::with_f`]); the queried columns are re-encoded.
+    pub fn strip(&mut self) {
+        self.f = Vec::new();
+        self.cw = Vec::new();
+    }
+
+    /// Put the level table back after [`LevelData::strip`].
+    ///
+    /// # Panics
+    /// Panics if `f` does not encode to this level's codeword length.
+    pub fn with_f(mut self, f: Vec<K>) -> Self {
+        let cols = f.len() >> self.k;
+        assert_eq!(
+            self.tree.num_leaves,
+            cols << self.r,
+            "LevelData::with_f: table size does not match the tree"
+        );
+        self.f = f;
+        self
     }
 }
 
@@ -351,13 +409,19 @@ pub fn commit_level(h: Hasher, f: Vec<K>, k: usize, r: usize) -> LevelData {
         (0..rows).map(encode_row).collect()
     };
     let n_cw = cw[0].len();
-    let leaf = |q: usize| column_bytes(&(0..rows).map(|i| cw[i][q]).collect::<Vec<_>>());
-    let leaves: Vec<Vec<u8>> = if n_cw * rows >= PAR_THRESHOLD {
+    // Hash each column as it is serialized: no leaf bytes are kept.
+    let leaf = |q: usize| {
+        hash_leaf(
+            h,
+            &column_bytes(&(0..rows).map(|i| cw[i][q]).collect::<Vec<_>>()),
+        )
+    };
+    let leaves: Vec<Digest> = if n_cw * rows >= PAR_THRESHOLD {
         (0..n_cw).into_par_iter().map(leaf).collect()
     } else {
         (0..n_cw).map(leaf).collect()
     };
-    let tree = MerkleTree::new(h, &leaves);
+    let tree = MerkleTree::from_leaf_hashes(h, leaves);
     LevelData { f, k, r, cw, tree }
 }
 
@@ -445,6 +509,24 @@ pub fn open_(
     y: K,
     tr: &mut Transcript,
 ) -> LigeritoProof {
+    open_inner(p, h, ld0.clone(), r, y, tr, &commit_level)
+}
+
+/// [`open_`] consuming the level-0 state: nothing of it is cloned, and
+/// a state whose codewords were dropped ([`LevelData::strip`], then
+/// [`LevelData::with_f`]) re-encodes only the queried columns. Same
+/// proof as [`open_`].
+///
+/// # Panics
+/// As [`open_`].
+pub fn open_owned(
+    p: &LigeritoParams,
+    h: Hasher,
+    ld0: LevelData,
+    r: &[K],
+    y: K,
+    tr: &mut Transcript,
+) -> LigeritoProof {
     open_inner(p, h, ld0, r, y, tr, &commit_level)
 }
 
@@ -452,7 +534,7 @@ pub fn open_(
 fn open_inner(
     p: &LigeritoParams,
     h: Hasher,
-    ld0: &LevelData,
+    ld0: LevelData,
     r: &[K],
     y: K,
     tr: &mut Transcript,
@@ -461,45 +543,39 @@ fn open_inner(
     assert_eq!(r.len(), p.n, "point has wrong length");
     tr.absorb_ks(b"pcs/point", r);
     tr.absorb_k(b"pcs/value", y);
-    let mut f = ld0.f.clone();
     let mut b = eq_table(r);
     let mut c = y;
-    let mut ld = ld0.clone();
+    let mut ld = ld0;
+    // The prover's own level table. The committed state normally holds
+    // the same table; the test-only commit hook may commit another one.
+    let mut f = std::mem::take(&mut ld.f);
     let (mut roots, mut scs, mut ops) = (Vec::new(), Vec::new(), Vec::new());
     let mut final_poly = Vec::new();
     for i in 0..p.levels() {
         let (k, reps, s, m) = (p.ks[i], p.reps(i), p.sbits(i), p.m_i(i));
-        let (rows, cols) = (1 << k, f.len() >> k);
-        let tabs: Vec<Vec<K>> = if f.len() >= PAR_THRESHOLD {
-            // `collect` of an indexed parallel iterator preserves order, so
-            // the `f` tables precede the `b` tables exactly as sequentially.
-            let mut tabs: Vec<Vec<K>> = (0..cols)
-                .into_par_iter()
-                .map(|y_| f[y_ * rows..(y_ + 1) * rows].to_vec())
-                .collect();
-            let b_tabs: Vec<Vec<K>> = (0..cols)
-                .into_par_iter()
-                .map(|y_| b[y_ * rows..(y_ + 1) * rows].to_vec())
-                .collect();
-            tabs.extend(b_tabs);
-            tabs
-        } else {
-            let mut tabs: Vec<Vec<K>> = (0..cols)
-                .map(|y_| f[y_ * rows..(y_ + 1) * rows].to_vec())
-                .collect();
-            tabs.extend((0..cols).map(|y_| b[y_ * rows..(y_ + 1) * rows].to_vec()));
-            tabs
-        };
-        let combine = |v: &[K]| (0..cols).fold(K::ZERO, |acc, a| acc + v[a] * v[cols + a]);
-        let (proof, rho, fin) = sumcheck_prove(c, tabs, &combine, 2, tr, b"pcs/sumcheck");
+        let cols = f.len() >> k;
+        // The level sum-check binds the low `k` variables of `f * b`
+        // summed over the columns; binding the whole tables in place is
+        // the same as binding each column's block (C3 low-first order).
+        let (proof, rho, mut fin) = sumcheck_prove_rounds(
+            c,
+            vec![f.clone(), std::mem::take(&mut b)],
+            &|v: &[K]| v[0] * v[1],
+            2,
+            k,
+            tr,
+            b"pcs/sumcheck",
+        );
         scs.push(proof);
-        let (g, bp) = (&fin[..cols], &fin[cols..]);
-        let cp = g.iter().zip(bp).fold(K::ZERO, |acc, (&x, &z)| acc + x * z);
+        let bp = fin.pop().expect("b table");
+        let g = fin.pop().expect("f table");
+        debug_assert_eq!(g.len(), cols);
+        let cp = g.iter().zip(&bp).fold(K::ZERO, |acc, (&x, &z)| acc + x * z);
         let mut rhos = vec![rho];
         for _ in 1..reps {
             rhos.push(tr.challenge_ks(b"pcs/fold", k));
         }
-        let mut f_next = g.to_vec();
+        let mut f_next = g;
         for rj in &rhos[1..] {
             f_next.extend(fold_table(&f, k, rj));
         }
@@ -515,7 +591,7 @@ fn open_inner(
             Some(nxt)
         };
         let idx = sample_indices(tr, p.log_codeword(i), p.ts[i]);
-        let cols_data: Vec<Vec<K>> = idx.iter().map(|&q| ld.column(q)).collect();
+        let cols_data: Vec<Vec<K>> = ld.columns(&idx, &f);
         ops.push(LevelOpening {
             columns: cols_data.clone(),
             auth: ld.tree.open(&idx).expect("sampled indices are valid"),
@@ -529,13 +605,12 @@ fn open_inner(
         let betas: Vec<K> = (0..reps).map(|_| tr.challenge_k(b"pcs/beta")).collect();
         let ers: Vec<Vec<K>> = rhos.iter().map(|rj| eq_table(rj)).collect();
         c = cp;
-        let mut b_next = bp.to_vec();
+        let mut b_next = bp;
         b_next.resize(1 << (m + s), K::ZERO);
         let off = 1 << m;
         for j in 0..reps {
             let mut pw = K::ONE;
-            for (q_idx, (q, col)) in idx.iter().zip(&cols_data).enumerate() {
-                let _ = q_idx;
+            for (q, col) in idx.iter().zip(&cols_data) {
                 pw *= betas[j];
                 let vq = ers[j]
                     .iter()
@@ -747,7 +822,7 @@ mod tests {
             }
             commit_level(h, f, k, rr)
         };
-        let pf = open_inner(&p, Hasher::Sha256, &ld, &r, y, &mut tr, &evil);
+        let pf = open_inner(&p, Hasher::Sha256, ld.clone(), &r, y, &mut tr, &evil);
         assert!(
             verify_fresh(&p, &root, &r, y, &pf),
             "non-fold must be caught"
@@ -774,7 +849,7 @@ mod tests {
                 }
                 commit_level(h, f, k, rr)
             };
-            let pf = open_inner(&p, Hasher::Sha256, &ld, &r, y, &mut tr, &evil);
+            let pf = open_inner(&p, Hasher::Sha256, ld.clone(), &r, y, &mut tr, &evil);
             assert!(
                 verify_fresh(&p, &root, &r, y, &pf),
                 "rep {rep} must be caught"

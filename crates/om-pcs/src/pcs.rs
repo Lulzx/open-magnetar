@@ -2,7 +2,7 @@
 //! Mirrors `reference/openmagnetar/pcs.py`.
 
 use om_field::K;
-use om_sumcheck::{PackedBits, VerificationError, mle_eval, mle_eval_bits, mle_eval_packed};
+use om_sumcheck::{PackedBits, VerificationError, mle_eval, mle_eval_bits};
 use om_transcript::{Hasher, Transcript};
 
 use crate::ligerito::{self as lg, LevelData, LigeritoParams, LigeritoProof};
@@ -152,8 +152,10 @@ impl Pcs for LigeritoPCS {
 pub type BitState = (LevelData, Vec<bool>);
 
 /// Prover state of the packed [`BitPCS::commit_packed`] path: the
-/// packed commitment state and the bits in packed form.
-pub type BitStatePacked = (LevelData, PackedBits);
+/// level-0 Merkle tree only ([`LevelData::strip`]ped). The bits are
+/// passed again to [`BitPCS::open_packed`], which re-packs the level
+/// table and re-encodes the queried columns.
+pub type BitStatePacked = LevelData;
 /// Proof of [`BitPCS`]: ring-switching proof and Ligerito proof.
 pub type BitProof = (RingSwitchProof, LigeritoProof);
 
@@ -208,26 +210,34 @@ impl BitPCS {
         bits: &PackedBits,
         tr: &mut Transcript,
     ) -> (Commitment, BitStatePacked) {
-        let (cm, st) = self.pcs.commit(&rsw::pack_packed(bits), tr);
-        (cm, (st, bits.clone()))
+        let (cm, mut st) = self.pcs.commit(&rsw::pack_packed(bits), tr);
+        st.strip();
+        (cm, st)
     }
 
     /// The packed counterpart of [`BitPCS::open`]: same transcript
-    /// and proof bytes, computed from the packed state.
+    /// and proof bytes, computed from the commitment's tree and the
+    /// packed `bits` it was made from. The value `y` comes from the
+    /// ring-switching partial evaluations; no table over all `2^ell`
+    /// bits is built.
     ///
     /// # Panics
-    /// As [`BitPCS::open`].
+    /// As [`BitPCS::open`] (a packed value inconsistent with ring
+    /// switching fails the first Ligerito round's check), plus if
+    /// `bits` has the wrong size for the tree.
     pub fn open_packed(
         &self,
-        state: &BitStatePacked,
+        state: BitStatePacked,
+        bits: &PackedBits,
         r: &[K],
         tr: &mut Transcript,
     ) -> (K, BitProof) {
-        let (st, bits) = state;
-        let y = mle_eval_packed(bits, r);
-        let (rs_proof, r_s, v) = rsw::rs_prove_packed(bits, r, y, tr);
-        let (yp, pf) = self.pcs.open(st, &r_s, tr);
-        assert_eq!(yp, v, "packed opening must match the ring-switching output");
+        let (rs_proof, r_s, v, y) = rsw::rs_prove_packed_value(bits, r, tr);
+        // `v` is the packed polynomial's value at `r_s` (what `open`
+        // asserts against `mle_eval`); a wrong `v` would fail the first
+        // Ligerito sum-check round's consistency check.
+        let st = state.with_f(rsw::pack_packed(bits));
+        let pf = lg::open_owned(&self.pcs.p, self.pcs.h, st, &r_s, v, tr);
         (y, (rs_proof, pf))
     }
 

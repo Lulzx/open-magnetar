@@ -237,12 +237,39 @@ pub fn sumcheck_round_evals(
 /// inconsistent with the tables (`g(0) + g(1) != claim` in some round).
 pub fn sumcheck_prove(
     claim: K,
-    mut tables: Vec<Vec<K>>,
+    tables: Vec<Vec<K>>,
     combine: &(dyn Fn(&[K]) -> K + Sync),
     degree: usize,
     transcript: &mut Transcript,
     label: &[u8],
 ) -> (SumcheckProof, Vec<K>, Vec<K>) {
+    assert!(!tables.is_empty(), "sumcheck_prove: no tables");
+    let m = tables[0].len().trailing_zeros() as usize;
+    let (proof, rs, tables) =
+        sumcheck_prove_rounds(claim, tables, combine, degree, m, transcript, label);
+    (proof, rs, tables.iter().map(|t| t[0]).collect())
+}
+
+/// [`sumcheck_prove`] over only the low `rounds` variables of the
+/// tables: the claim is `sum_x combine(tables at x)` over all
+/// entries, the sum-check binds `rounds` variables (low first) and
+/// returns the bound tables of length `size / 2^rounds`. With
+/// `rounds = log2(size)` it is [`sumcheck_prove`]. The transcript
+/// records `num_vars = rounds`, exactly as [`sumcheck_prove`] would
+/// on tables split into `size / 2^rounds` blocks whose `combine` sums
+/// over the blocks.
+///
+/// # Panics
+/// As [`sumcheck_prove`], plus if `2^rounds` exceeds the table length.
+pub fn sumcheck_prove_rounds(
+    claim: K,
+    mut tables: Vec<Vec<K>>,
+    combine: &(dyn Fn(&[K]) -> K + Sync),
+    degree: usize,
+    rounds: usize,
+    transcript: &mut Transcript,
+    label: &[u8],
+) -> (SumcheckProof, Vec<K>, Vec<Vec<K>>) {
     assert!(degree >= 1, "degree must be >= 1");
     assert!(!tables.is_empty(), "sumcheck_prove: no tables");
     let size = tables[0].len();
@@ -250,7 +277,8 @@ pub fn sumcheck_prove(
         size != 0 && size.is_power_of_two() && tables.iter().all(|t| t.len() == size),
         "tables must share a power-of-two length"
     );
-    let m = size.trailing_zeros() as usize;
+    let m = rounds;
+    assert!(1usize << m <= size, "more rounds than table variables");
     sumcheck_init(transcript, label, claim, m, degree);
     let msg_label = sublabel(label, b"/msg");
     let chal_label = sublabel(label, b"/chal");
@@ -277,9 +305,7 @@ pub fn sumcheck_prove(
             bind_low_in_place(t, r);
         }
     }
-    (SumcheckProof { round_msgs: msgs }, rs, {
-        tables.iter().map(|t| t[0]).collect()
-    })
+    (SumcheckProof { round_msgs: msgs }, rs, tables)
 }
 
 /// Verify a sum-check proof (spec 03 §3.4), returning

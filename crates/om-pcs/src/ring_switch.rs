@@ -74,11 +74,41 @@ pub fn partial_evals_packed(bits: &PackedBits, r_hi: &[K]) -> Vec<K> {
         bits.len().is_multiple_of(W),
         "bit vector length must be a multiple of 128"
     );
-    let eqt = eq_table(r_hi);
-    let mut acc = [0u128; W];
-    for i in bits.iter_ones() {
-        acc[i % W] ^= eqt[i / W].value();
-    }
+    // eq(r_hi, v) = lo[v_lo] * hi[v_hi]: two square-root tables
+    // instead of one of 2^len(r_hi) entries.
+    let h = r_hi.len() / 2;
+    let (lo, hi) = (eq_table(&r_hi[..h]), eq_table(&r_hi[h..]));
+    let words = bits.words();
+    let block = |vh: usize| -> [u128; W] {
+        let mut acc = [0u128; W];
+        for (vl, e) in lo.iter().enumerate() {
+            let e = (*e * hi[vh]).value();
+            let v = (vh << h) | vl;
+            for (half, &w) in words[2 * v..2 * v + 2].iter().enumerate() {
+                let mut w = w;
+                while w != 0 {
+                    let b = w.trailing_zeros() as usize;
+                    w &= w - 1;
+                    acc[64 * half + b] ^= e;
+                }
+            }
+        }
+        acc
+    };
+    let merge = |mut a: [u128; W], b: [u128; W]| {
+        for (x, y) in a.iter_mut().zip(b) {
+            *x ^= y;
+        }
+        a
+    };
+    let acc = if bits.len() >= PAR_THRESHOLD {
+        (0..hi.len())
+            .into_par_iter()
+            .map(block)
+            .reduce(|| [0u128; W], merge)
+    } else {
+        (0..hi.len()).map(block).fold([0u128; W], merge)
+    };
     acc.into_iter().map(K::from_u128).collect()
 }
 
@@ -93,18 +123,53 @@ pub fn rs_prove_packed(
     y: K,
     tr: &mut Transcript,
 ) -> (RingSwitchProof, Vec<K>, K) {
+    let s = partial_evals_packed_checked(bits, r);
+    rs_prove_from_s(bits, r, y, s, tr)
+}
+
+/// [`rs_prove_packed`] that also returns the value `y = w~(r)`,
+/// computed from the partial evaluations as `sum_j eq(r_lo, j) s_j`
+/// (the identity the verifier checks) instead of from a table over
+/// all `2^ell` positions. Returns `(proof, r_s, v, y)`.
+///
+/// # Panics
+/// As [`rs_prove_packed`].
+pub fn rs_prove_packed_value(
+    bits: &PackedBits,
+    r: &[K],
+    tr: &mut Transcript,
+) -> (RingSwitchProof, Vec<K>, K, K) {
+    let s = partial_evals_packed_checked(bits, r);
+    let y = eq_table(&r[..KAPPA])
+        .iter()
+        .zip(&s)
+        .fold(K::ZERO, |acc, (&e, &sj)| acc + e * sj);
+    let (proof, r_s, v) = rs_prove_from_s(bits, r, y, s, tr);
+    (proof, r_s, v, y)
+}
+
+fn partial_evals_packed_checked(bits: &PackedBits, r: &[K]) -> Vec<K> {
     let ell = r.len();
     assert!(
         ell > KAPPA && bits.len() == 1 << ell,
         "need ell >= 8 and 2^ell bits"
     );
-    let p = pack_packed(bits);
-    let s = partial_evals_packed(bits, &r[KAPPA..]);
+    partial_evals_packed(bits, &r[KAPPA..])
+}
+
+fn rs_prove_from_s(
+    bits: &PackedBits,
+    r: &[K],
+    y: K,
+    s: Vec<K>,
+    tr: &mut Transcript,
+) -> (RingSwitchProof, Vec<K>, K) {
     absorb_claim(tr, r, y);
     tr.absorb_ks(b"rs/s", &s);
     let rho = tr.challenge_ks(b"rs/rho", KAPPA);
     let target = target_of(&s, &rho);
     let a = a_table(&r[KAPPA..], &rho);
+    let p = pack_packed(bits);
     let (proof, r_s, finals) = sumcheck_prove(
         target,
         vec![p, a],
@@ -151,8 +216,12 @@ pub fn transpose_bits(s: &[K]) -> Vec<K> {
 /// `a[v] = Σ_i eq(ρ, i) · bit_i(eq(r_hi, v))`.
 pub fn a_table(r_hi: &[K], rho: &[K]) -> Vec<K> {
     let er: Vec<u128> = eq_table(rho).iter().map(|e| e.value()).collect();
-    let eqt = eq_table(r_hi);
-    let at = |e: &K| {
+    // eq(r_hi, v) = lo[v_lo] * hi[v_hi], computed per entry instead of
+    // holding a second table of the output's size.
+    let h = r_hi.len() / 2;
+    let (lo, hi) = (eq_table(&r_hi[..h]), eq_table(&r_hi[h..]));
+    let at = |v: usize| {
+        let e = lo[v & ((1usize << h) - 1)] * hi[v >> h];
         let (mut acc, mut x, mut i) = (0u128, e.value(), 0usize);
         while x != 0 {
             if x & 1 == 1 {
@@ -163,10 +232,11 @@ pub fn a_table(r_hi: &[K], rho: &[K]) -> Vec<K> {
         }
         K::from_u128(acc)
     };
-    if eqt.len() >= PAR_THRESHOLD {
-        eqt.par_iter().map(at).collect()
+    let n = 1usize << r_hi.len();
+    if n >= PAR_THRESHOLD {
+        (0..n).into_par_iter().map(at).collect()
     } else {
-        eqt.iter().map(at).collect()
+        (0..n).map(at).collect()
     }
 }
 
