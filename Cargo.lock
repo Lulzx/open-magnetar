@@ -60,6 +60,7 @@ dependencies = [
  "om-isa",
  "om-spartan",
  "om-sumcheck",
+ "rayon",
  "serde_json",
 ]
 

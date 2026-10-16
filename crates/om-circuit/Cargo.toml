@@ -12,6 +12,7 @@ om-field = { path = "../om-field" }
 om-isa = { path = "../om-isa" }
 om-spartan = { path = "../om-spartan" }
 om-sumcheck = { path = "../om-sumcheck" }
+rayon.workspace = true
 
 [dev-dependencies]
 serde_json = "1"

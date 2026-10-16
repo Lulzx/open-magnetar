@@ -21,6 +21,7 @@ use om_isa::riscv::M64;
 use om_spartan::r1cs::{R1CS, RelationField, SparseMatrix};
 use om_spartan::spartan::SegmentKind;
 use om_sumcheck::PackedBits;
+use rayon::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Parameters and layout
@@ -1364,33 +1365,35 @@ pub fn witness_packed(
         !trace.is_empty() && trace.len().is_multiple_of(n),
         "trace length must be a nonzero multiple of 2^c"
     );
-    let mut rows = Vec::with_capacity(trace.len() / n);
-    for j in 0..trace.len() / n {
-        let mut w = PackedBits::zero(cc.nw);
-        for t in 0..n {
-            for (name, val) in cycle_fields(&trace[j * n + t]).entries() {
-                let width = field(name).expect("field name").width;
-                let base = cc.c(name, 0, t);
-                for i in 0..width {
-                    if (val >> i) & 1 == 1 {
-                        w.set(base + i);
+    // Instances are independent; build them in parallel (order kept).
+    (0..trace.len() / n)
+        .into_par_iter()
+        .map(|j| {
+            let mut w = PackedBits::zero(cc.nw);
+            for t in 0..n {
+                for (name, val) in cycle_fields(&trace[j * n + t]).entries() {
+                    let width = field(name).expect("field name").width;
+                    let base = cc.c(name, 0, t);
+                    for i in 0..width {
+                        if (val >> i) & 1 == 1 {
+                            w.set(base + i);
+                        }
                     }
                 }
             }
-        }
-        for (name, st) in [
-            ("S_in", state_in(trace, j * n, exit_code)),
-            ("S_out", state_out(trace, j * n + n - 1, exit_code)),
-        ] {
-            for (i, &v) in st.iter().enumerate() {
-                if v {
-                    w.set(cc.c(name, i, 0));
+            for (name, st) in [
+                ("S_in", state_in(trace, j * n, exit_code)),
+                ("S_out", state_out(trace, j * n + n - 1, exit_code)),
+            ] {
+                for (i, &v) in st.iter().enumerate() {
+                    if v {
+                        w.set(cc.c(name, i, 0));
+                    }
                 }
             }
-        }
-        rows.push(w);
-    }
-    rows
+            w
+        })
+        .collect()
 }
 
 /// Python `public_inputs`.
