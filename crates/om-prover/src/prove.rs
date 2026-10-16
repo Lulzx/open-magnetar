@@ -277,40 +277,6 @@ pub fn prove_execution(
         &ridx,
         &trace.iter().map(|r| r.ram_new).collect::<Vec<_>>(),
     );
-    let sh_wit = rt::shift_witness(
-        &trace
-            .iter()
-            .map(|r| {
-                (
-                    r.shift_src,
-                    match (r.shift_amt, r.shift_kind) {
-                        (Some(amt), Some(kind)) => Some((usize::from(amt), usize::from(kind))),
-                        _ => None,
-                    },
-                )
-            })
-            .collect::<Vec<_>>(),
-        WORD_BITS,
-    );
-    let mut st_wit = rt::store_witness(
-        &trace
-            .iter()
-            .map(|r| {
-                (
-                    r.ram_old,
-                    r.store_src,
-                    r.store_width
-                        .map(|wd| (usize::from(wd), usize::from(r.store_off))),
-                )
-            })
-            .collect::<Vec<_>>(),
-        WORD_BITS,
-    );
-    // The offset bits are the circuit's `off` segment, defined on
-    // every cycle (not only on stores).
-    st_wit.abits = (0..3)
-        .map(|b| trace.iter().map(|r| (r.store_off >> b) & 1 == 1).collect())
-        .collect();
     let sh_comps = comp_tables(
         &trace.iter().map(|r| r.upc as usize).collect::<Vec<_>>(),
         derived.rom_a,
@@ -460,7 +426,26 @@ pub fn prove_execution(
 
     // Step 5: routers.
     let (r_oy, r_cy) = same_point(&virt, &["Y"], 6)?;
-    let (sh_proof, sh_claims) = rt::shift_prove_fast(
+    // Compact router witnesses (words and selector bytes per cycle),
+    // built here so they are live only during this step.
+    let sh_wit = rt::ShiftCompact {
+        src: trace.iter().map(|r| r.shift_src).collect(),
+        amt: trace
+            .iter()
+            .map(|r| match (r.shift_amt, r.shift_kind) {
+                (Some(amt), Some(_)) => amt,
+                _ => rt::NO_ROUTE,
+            })
+            .collect(),
+        kind: trace
+            .iter()
+            .map(|r| match (r.shift_amt, r.shift_kind) {
+                (Some(_), Some(kind)) => kind,
+                _ => rt::NO_ROUTE,
+            })
+            .collect(),
+    };
+    let (sh_proof, sh_claims) = rt::shift_prove_compact(
         n,
         &sh_wit,
         &r_oy,
@@ -470,7 +455,19 @@ pub fn prove_execution(
         b"router/shift",
         WORD_BITS,
     );
-    let (st_proof, st_claims) = rt::store_prove_fast(
+    drop(sh_wit);
+    // The offset bits are the circuit's `off` segment, defined on
+    // every cycle (not only on stores).
+    let st_wit = rt::StoreCompact {
+        old: trace.iter().map(|r| r.ram_old).collect(),
+        src: trace.iter().map(|r| r.store_src).collect(),
+        width: trace
+            .iter()
+            .map(|r| r.store_width.unwrap_or(rt::NO_ROUTE))
+            .collect(),
+        off: trace.iter().map(|r| r.store_off).collect(),
+    };
+    let (st_proof, st_claims) = rt::store_prove_compact(
         n,
         &st_wit,
         &r_or,
@@ -480,6 +477,7 @@ pub fn prove_execution(
         b"router/store",
         WORD_BITS,
     );
+    drop(st_wit);
     crate::memtrace::mark("routers");
 
     // Step 6: bytecode Shout.

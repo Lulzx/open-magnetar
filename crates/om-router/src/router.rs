@@ -6,15 +6,14 @@
 //! `wbits = 6` (`W = 64`); smaller values exist only to keep tests fast.
 //! For stores the offset has `wbits - 3` bits (3 for `W = 64`).
 
-use std::collections::HashMap;
-
 use om_field::K;
 use om_memcheck::onehot::EvalClaim;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, bind_low, combine_sum, eq_eval, eq_table, interpolate_eval,
-    sumcheck_init, sumcheck_prove, sumcheck_round_evals, sumcheck_verify,
+    SumcheckProof, VerificationError, bind_low_in_place, combine_sum, eq_eval, eq_table,
+    interpolate_eval, sumcheck_init, sumcheck_prove, sumcheck_round_evals, sumcheck_verify,
 };
 use om_transcript::Transcript;
+use rayon::prelude::*;
 
 use crate::sublabel;
 
@@ -636,18 +635,820 @@ pub fn store_verify(
 }
 
 // ---------------------------------------------------------------- fast provers
-// Same transcript and proof as shift_prove / store_prove, but the first n
-// rounds (cycle variables) exploit that Q is sparse per cycle. Informative
-// only; the spec is the dense definition (spec 08, Integration notes).
+// Same transcript and proof as `shift_prove` / `store_prove`, but memory
+// proportional to the compact per-cycle witness (spec 08, Integration
+// notes: informative; the dense functions remain the definition).
+//
+// * The witness is held as per-cycle words and selector bytes
+//   ([`ShiftCompact`], [`StoreCompact`]), never as `T × W` field or bool
+//   tables.
+// * `eq(r_j, ·)` is never bound: after binding `s_0..s_{i-1}` it equals
+//   `es · eq(r_j[i..], ·)` with the scalar `es = Π_l eq(r_l, s_l)`, and
+//   the suffix `eq` is a split table (two `√`-size halves).
+// * For the first `DIRECT_ROUNDS` cycle rounds the bound value of a
+//   per-cycle table at a position, `Σ_b eq(s_<i, b) · F(cycle)`, is
+//   gathered directly from the compact words (set bits only, and only in
+//   pairs whose selectors are non-zero). Afterwards the bound tables
+//   (`T / 2^DIRECT_ROUNDS` positions) are materialised and bound in place.
+// * Per pair, each factor is linear in `t`, so the routed source sum
+//   `B_h(t) = Σ_u X_u(t)·R(u, h)` is computed once from its values at
+//   `t = 0, 1`.
+// Field arithmetic is exact, so every round message equals the dense
+// prover's (checked against `shift_prove` / `store_prove` in the tests).
+
+/// Selector byte meaning "no one-hot entry on this cycle" in
+/// [`ShiftCompact`] and [`StoreCompact`].
+pub const NO_ROUTE: u8 = u8::MAX;
+
+/// Cycle rounds computed directly from the compact witness before the
+/// bound tables are materialised (at `T / 2^8` positions).
+pub const DIRECT_ROUNDS: usize = 8;
+
+/// Compact shift witness: per cycle the source word, the amount
+/// (`Q_lo`'s hot index) and the kind (`Q_hi`'s hot index), with
+/// [`NO_ROUTE`] for an all-zero selector. Equivalent to
+/// [`ShiftWitness`] minus `Y` (which the prover never reads).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShiftCompact {
+    /// Source word `X(·, j)` (bits at or above `W` are ignored).
+    pub src: Vec<u64>,
+    /// Amount `h_lo` with `Q_lo(h_lo, j) = 1`, or [`NO_ROUTE`].
+    pub amt: Vec<u8>,
+    /// Kind `h_hi` with `Q_hi(h_hi, j) = 1`, or [`NO_ROUTE`].
+    pub kind: Vec<u8>,
+}
+
+impl ShiftCompact {
+    /// From per-cycle `(src_word, route)` pairs, as [`shift_witness`].
+    pub fn from_cycles(cycles: &[ShiftCycle]) -> Self {
+        let byte = |v: usize| u8::try_from(v).expect("route fits a byte");
+        ShiftCompact {
+            src: cycles.iter().map(|c| c.0).collect(),
+            amt: cycles
+                .iter()
+                .map(|c| c.1.map_or(NO_ROUTE, |r| byte(r.0)))
+                .collect(),
+            kind: cycles
+                .iter()
+                .map(|c| c.1.map_or(NO_ROUTE, |r| byte(r.1)))
+                .collect(),
+        }
+    }
+
+    /// From the dense witness tables.
+    ///
+    /// # Panics
+    /// Panics if a selector is not one-hot or all-zero on some cycle.
+    pub fn from_witness(wit: &ShiftWitness, wbits: usize) -> Self {
+        let w = 1usize << wbits;
+        let t = wit.qhi.len() / 8;
+        ShiftCompact {
+            src: (0..t)
+                .map(|j| pack_word(&wit.x[w * j..w * (j + 1)]))
+                .collect(),
+            amt: (0..t).map(|j| hot(&wit.qlo[w * j..w * (j + 1)])).collect(),
+            kind: (0..t).map(|j| hot(&wit.qhi[8 * j..8 * (j + 1)])).collect(),
+        }
+    }
+}
+
+/// Compact store witness: per cycle the old word, the store-source word,
+/// the width (`Q_st`'s hot index, or [`NO_ROUTE`]) and the byte offset
+/// whose low `wbits − 3` bits are the `a_b` tables. Equivalent to
+/// [`StoreWitness`] minus `Inc` (which the prover never reads).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreCompact {
+    /// Old word, `X(u, j)` for `u < W`.
+    pub old: Vec<u64>,
+    /// Store-source word, `X(W + u, j)`.
+    pub src: Vec<u64>,
+    /// Width `h` with `Q_st(h, j) = 1`, or [`NO_ROUTE`].
+    pub width: Vec<u8>,
+    /// Offset: `a_b(j) = (off >> b) & 1`.
+    pub off: Vec<u8>,
+}
+
+impl StoreCompact {
+    /// From per-cycle `(old, src, route)` triples, as [`store_witness`]
+    /// (a non-store cycle has offset 0).
+    pub fn from_cycles(cycles: &[StoreCycle]) -> Self {
+        let byte = |v: usize| u8::try_from(v).expect("route fits a byte");
+        StoreCompact {
+            old: cycles.iter().map(|c| c.0).collect(),
+            src: cycles.iter().map(|c| c.1).collect(),
+            width: cycles
+                .iter()
+                .map(|c| c.2.map_or(NO_ROUTE, |r| byte(r.0)))
+                .collect(),
+            off: cycles
+                .iter()
+                .map(|c| c.2.map_or(0, |r| byte(r.1)))
+                .collect(),
+        }
+    }
+
+    /// From the dense witness tables.
+    ///
+    /// # Panics
+    /// Panics if the width selector is not one-hot or all-zero on some
+    /// cycle.
+    pub fn from_witness(wit: &StoreWitness, wbits: usize) -> Self {
+        let w = 1usize << wbits;
+        let t = wit.q.len() / 4;
+        StoreCompact {
+            old: (0..t)
+                .map(|j| pack_word(&wit.x[2 * w * j..2 * w * j + w]))
+                .collect(),
+            src: (0..t)
+                .map(|j| pack_word(&wit.x[2 * w * j + w..2 * w * (j + 1)]))
+                .collect(),
+            width: (0..t).map(|j| hot(&wit.q[4 * j..4 * (j + 1)])).collect(),
+            off: (0..t)
+                .map(|j| {
+                    wit.abits
+                        .iter()
+                        .enumerate()
+                        .map(|(b, tab)| u8::from(tab[j]) << b)
+                        .sum()
+                })
+                .collect(),
+        }
+    }
+}
+
+fn pack_word(bits: &[bool]) -> u64 {
+    bits.iter()
+        .enumerate()
+        .fold(0, |acc, (i, &b)| acc | (u64::from(b) << i))
+}
+
+fn hot(bits: &[bool]) -> u8 {
+    let mut it = bits.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i);
+    let h = it.next().map_or(NO_ROUTE, |i| {
+        u8::try_from(i).expect("selector index fits a byte")
+    });
+    assert!(it.next().is_none(), "selector is not one-hot");
+    h
+}
 
 fn tpt(a: K, b: K, t: K) -> K {
     a + t * (a + b)
 }
 
-fn bind_table(table: &[K], r: K) -> Vec<K> {
-    // Identical to `bind_low` (`tpt(a, b, r) = a + r·(a + b)`), which
-    // parallelises large tables.
-    bind_low(table, r)
+fn word_mask(wbits: usize) -> u64 {
+    if wbits >= 6 {
+        u64::MAX
+    } else {
+        (1u64 << (1usize << wbits)) - 1
+    }
+}
+
+/// Add `w` to `out[u]` for every set bit `u` of `word`.
+fn acc_bits(mut word: u64, w: K, out: &mut [K]) {
+    while word != 0 {
+        out[word.trailing_zeros() as usize] += w;
+        word &= word - 1;
+    }
+}
+
+/// `eq(r, ·)` as the product of two half tables (C2: low index bits pair
+/// with the first coordinates).
+struct SplitEq {
+    lo: Vec<K>,
+    hi: Vec<K>,
+    lbits: usize,
+}
+
+impl SplitEq {
+    fn new(r: &[K]) -> Self {
+        let lbits = r.len() / 2;
+        SplitEq {
+            lo: eq_table(&r[..lbits]),
+            hi: eq_table(&r[lbits..]),
+            lbits,
+        }
+    }
+
+    fn get(&self, p: usize) -> K {
+        self.lo[p & ((1 << self.lbits) - 1)] * self.hi[p >> self.lbits]
+    }
+}
+
+/// The per-cycle side of a routing instance: a cycle's features are its
+/// non-selector values (`nx`, gathered only for active pairs) followed by
+/// its selector values (`ns`), all multilinear in the cycle.
+trait CycleInstance: Sync {
+    fn nx(&self) -> usize;
+    fn ns(&self) -> usize;
+    /// `x += w · (non-selector features of cycle j)`.
+    fn acc_x(&self, j: usize, w: K, x: &mut [K]);
+    /// `s += w · (selector features of cycle j)`.
+    fn acc_sel(&self, j: usize, w: K, s: &mut [K]);
+    /// Whether a pair with selector halves `s0`, `s1` can contribute.
+    fn active(&self, s0: &[K], s1: &[K]) -> bool;
+    /// `out[k] += Σ (summand without eq)` at `t_k` for a pair of
+    /// positions with features `f0`, `f1` (`ts.len() = out.len()`).
+    fn eval_pair(&self, f0: &[K], f1: &[K], ts: &[K], out: &mut [K]);
+}
+
+/// The state after the `n` cycle rounds.
+struct CycleRounds {
+    /// Features at the bound cycle point (`nx + ns` values).
+    feats: Vec<K>,
+    /// `eq(r_j, s_j)`.
+    es: K,
+    rs: Vec<K>,
+    msgs: Vec<Vec<K>>,
+    /// Running claim (`None` if `n = 0`: the claim is not yet fixed).
+    cur: Option<K>,
+}
+
+fn add_into(acc: &mut [K], v: &[K]) {
+    for (a, &b) in acc.iter_mut().zip(v) {
+        *a += b;
+    }
+}
+
+type PairFn<'a> = dyn Fn(usize, &mut [K], &mut [K]) -> bool + Sync + 'a;
+
+/// `Σ_p` of the per-pair evaluations (`f` returns `false` for a pair that
+/// contributes nothing). Exact in any order: `K` addition is XOR.
+fn sum_pairs(pairs: usize, nf: usize, npts: usize, f: &PairFn<'_>) -> Vec<K> {
+    let zero = || vec![K::ZERO; npts];
+    (0..pairs)
+        .into_par_iter()
+        .fold(
+            || (zero(), vec![K::ZERO; 2 * nf], zero()),
+            |(mut acc, mut buf, mut tmp), p| {
+                tmp.fill(K::ZERO);
+                if f(p, &mut buf, &mut tmp) {
+                    add_into(&mut acc, &tmp);
+                }
+                (acc, buf, tmp)
+            },
+        )
+        .map(|(acc, _, _)| acc)
+        .reduce(zero, |mut a, b| {
+            add_into(&mut a, &b);
+            a
+        })
+}
+
+/// Run the `n` cycle rounds of a router sum-check, initialising it at
+/// round 0 with the actual table sum, as the dense prover.
+#[allow(clippy::too_many_arguments)]
+fn cycle_rounds<I: CycleInstance>(
+    inst: &I,
+    n: usize,
+    r_j: &[K],
+    degree: usize,
+    direct: usize,
+    transcript: &mut Transcript,
+    label: &[u8],
+    m_total: usize,
+) -> CycleRounds {
+    let (nx, nf) = (inst.nx(), inst.nx() + inst.ns());
+    let ts: Vec<K> = (0..=degree).map(|k| K::t(k as u128)).collect();
+    let direct = direct.min(n);
+    let msg_label = sublabel(label, b"/msg");
+    let chal_label = sublabel(label, b"/chal");
+    let (mut rs, mut msgs, mut cur, mut es) = (Vec::new(), Vec::new(), None, K::ONE);
+    let mut feats: Vec<K> = Vec::new();
+    for i in 0..n {
+        let eqs = SplitEq::new(&r_j[i + 1..]);
+        let pairs = 1usize << (n - i - 1);
+        let sums = if i < direct {
+            let wt = eq_table(&rs);
+            let half = 1usize << i;
+            sum_pairs(pairs, nf, degree + 1, &|p, buf, tmp| {
+                let base = p << (i + 1);
+                let (f0, f1) = buf.split_at_mut(nf);
+                f0[nx..].fill(K::ZERO);
+                f1[nx..].fill(K::ZERO);
+                for (b, &wb) in wt.iter().enumerate() {
+                    inst.acc_sel(base + b, wb, &mut f0[nx..]);
+                    inst.acc_sel(base + half + b, wb, &mut f1[nx..]);
+                }
+                if !inst.active(&f0[nx..], &f1[nx..]) {
+                    return false;
+                }
+                f0[..nx].fill(K::ZERO);
+                f1[..nx].fill(K::ZERO);
+                for (b, &wb) in wt.iter().enumerate() {
+                    inst.acc_x(base + b, wb, &mut f0[..nx]);
+                    inst.acc_x(base + half + b, wb, &mut f1[..nx]);
+                }
+                inst.eval_pair(f0, f1, &ts, tmp);
+                let e = eqs.get(p);
+                tmp.iter_mut().for_each(|v| *v *= e);
+                true
+            })
+        } else {
+            if i == direct {
+                feats = materialize(inst, &eq_table(&rs), direct, n);
+            }
+            let feats = &feats;
+            sum_pairs(pairs, nf, degree + 1, &|p, _, tmp| {
+                let f0 = &feats[2 * p * nf..(2 * p + 1) * nf];
+                let f1 = &feats[(2 * p + 1) * nf..(2 * p + 2) * nf];
+                if !inst.active(&f0[nx..], &f1[nx..]) {
+                    return false;
+                }
+                inst.eval_pair(f0, f1, &ts, tmp);
+                let e = eqs.get(p);
+                tmp.iter_mut().for_each(|v| *v *= e);
+                true
+            })
+        };
+        let ev: Vec<K> = sums
+            .iter()
+            .zip(&ts)
+            .map(|(&s, &t)| es * (K::ONE + r_j[i] + t) * s)
+            .collect();
+        if i == 0 {
+            let claim = ev[0] + ev[1];
+            sumcheck_init(transcript, label, claim, m_total, degree);
+            cur = Some(claim);
+        }
+        assert_eq!(
+            Some(ev[0] + ev[1]),
+            cur,
+            "claim inconsistent with tables (g(0)+g(1) != claim)"
+        );
+        let mut msg = vec![ev[0]];
+        msg.extend_from_slice(&ev[2..]);
+        transcript.absorb_ks(&msg_label, &msg);
+        let r = transcript.challenge_k(&chal_label);
+        msgs.push(msg);
+        rs.push(r);
+        cur = Some(interpolate_eval(&ev, r));
+        es *= K::ONE + r_j[i] + r;
+        if i >= direct {
+            bind_positions(&mut feats, nf, r);
+        }
+    }
+    if direct == n {
+        feats = materialize(inst, &eq_table(&rs), n, n);
+    }
+    CycleRounds {
+        feats,
+        es,
+        rs,
+        msgs,
+        cur,
+    }
+}
+
+/// The bound features at all `2^(n−k)` positions after `k` bound cycle
+/// variables with weights `wt = eq_table(s_<k)`.
+fn materialize<I: CycleInstance>(inst: &I, wt: &[K], k: usize, n: usize) -> Vec<K> {
+    let (nx, nf) = (inst.nx(), inst.nx() + inst.ns());
+    let mut feats = vec![K::ZERO; nf << (n - k)];
+    feats.par_chunks_mut(nf).enumerate().for_each(|(q, f)| {
+        let (x, s) = f.split_at_mut(nx);
+        for (b, &wb) in wt.iter().enumerate() {
+            inst.acc_x((q << k) + b, wb, x);
+            inst.acc_sel((q << k) + b, wb, s);
+        }
+    });
+    feats
+}
+
+/// Bind the lowest position variable at `r` in place (position-major
+/// layout, `nf` features per position).
+fn bind_positions(feats: &mut Vec<K>, nf: usize, r: K) {
+    let half = feats.len() / nf / 2;
+    for q in 0..half {
+        for f in 0..nf {
+            feats[q * nf + f] = tpt(feats[2 * q * nf + f], feats[(2 * q + 1) * nf + f], r);
+        }
+    }
+    feats.truncate(half * nf);
+}
+
+/// Linear-in-`t` evaluations of `(a, b)` at the points `ts`.
+fn lin(a: K, b: K, ts: &[K], out: &mut [K]) {
+    for (o, &t) in out.iter_mut().zip(ts) {
+        *o = tpt(a, b, t);
+    }
+}
+
+/// Indices `i` with `s0[i]` or `s1[i]` non-zero, into `buf`; returns the
+/// count.
+fn nonzero_idx(s0: &[K], s1: &[K], buf: &mut [usize]) -> usize {
+    let mut c = 0;
+    for (i, (a, b)) in s0.iter().zip(s1).enumerate() {
+        if !a.is_zero() || !b.is_zero() {
+            buf[c] = i;
+            c += 1;
+        }
+    }
+    c
+}
+
+fn dot(x: &[K], cols: &[(usize, K)]) -> K {
+    cols.iter().fold(K::ZERO, |acc, &(u, c)| acc + x[u] * c)
+}
+
+/// Upper bound on the number of evaluation points (`degree + 1 ≤ 7`).
+const MAXPTS: usize = 8;
+
+struct ShiftInst<'a> {
+    wit: &'a ShiftCompact,
+    w: usize,
+    mask: u64,
+    /// `cols[h]`: the non-zero `(u, R_{r_o}(u, h))`.
+    cols: Vec<Vec<(usize, K)>>,
+}
+
+impl CycleInstance for ShiftInst<'_> {
+    fn nx(&self) -> usize {
+        self.w
+    }
+    fn ns(&self) -> usize {
+        self.w + 8
+    }
+    fn acc_x(&self, j: usize, w: K, x: &mut [K]) {
+        acc_bits(self.wit.src[j] & self.mask, w, x);
+    }
+    fn acc_sel(&self, j: usize, w: K, s: &mut [K]) {
+        let (a, k) = (self.wit.amt[j], self.wit.kind[j]);
+        if a != NO_ROUTE {
+            s[usize::from(a)] += w;
+        }
+        if k != NO_ROUTE {
+            s[self.w + usize::from(k)] += w;
+        }
+    }
+    fn active(&self, s0: &[K], s1: &[K]) -> bool {
+        let w = self.w;
+        let any =
+            |r: std::ops::Range<usize>| r.into_iter().any(|h| !s0[h].is_zero() || !s1[h].is_zero());
+        any(0..w) && any(w..w + 8)
+    }
+    fn eval_pair(&self, f0: &[K], f1: &[K], ts: &[K], out: &mut [K]) {
+        let w = self.w;
+        let np = ts.len();
+        let (x0, s0) = f0.split_at(w);
+        let (x1, s1) = f1.split_at(w);
+        let (mut lo, mut hi) = ([0usize; 64], [0usize; 8]);
+        let nlo = nonzero_idx(&s0[..w], &s1[..w], &mut lo);
+        let nhi = nonzero_idx(&s0[w..], &s1[w..], &mut hi);
+        let mut qlt = [[K::ZERO; MAXPTS]; 64];
+        for &hl in &lo[..nlo] {
+            lin(s0[hl], s1[hl], ts, &mut qlt[hl][..np]);
+        }
+        let (mut qht, mut inner) = ([K::ZERO; MAXPTS], [K::ZERO; MAXPTS]);
+        for &hh in &hi[..nhi] {
+            lin(s0[w + hh], s1[w + hh], ts, &mut qht[..np]);
+            inner[..np].fill(K::ZERO);
+            for &hl in &lo[..nlo] {
+                let cols = &self.cols[hl + w * hh];
+                if cols.is_empty() {
+                    continue;
+                }
+                let (b0, b1) = (dot(x0, cols), dot(x1, cols));
+                for k in 0..np {
+                    inner[k] += qlt[hl][k] * tpt(b0, b1, ts[k]);
+                }
+            }
+            for k in 0..np {
+                out[k] += qht[k] * inner[k];
+            }
+        }
+    }
+}
+
+/// Fast shift prover: identical transcript and proof to [`shift_prove`]
+/// (Python `shift_prove_fast`), from the dense witness tables.
+///
+/// # Panics
+/// Panics on malformed witness tables (indexing, non-one-hot selectors).
+#[allow(clippy::too_many_arguments)]
+pub fn shift_prove_fast(
+    n: usize,
+    wit: &ShiftWitness,
+    r_o: &[K],
+    r_j: &[K],
+    y: K,
+    transcript: &mut Transcript,
+    label: &[u8],
+    wbits: usize,
+) -> (RouterProof, Vec<EvalClaim>) {
+    let compact = ShiftCompact::from_witness(wit, wbits);
+    shift_prove_compact(n, &compact, r_o, r_j, y, transcript, label, wbits)
+}
+
+/// Fast shift prover on the compact witness: identical transcript and
+/// proof to [`shift_prove`], with memory `O(T)` words plus
+/// `O(T / 2^DIRECT_ROUNDS)` field elements.
+///
+/// # Panics
+/// Panics if the witness does not have `2^n` cycles.
+#[allow(clippy::too_many_arguments)]
+pub fn shift_prove_compact(
+    n: usize,
+    wit: &ShiftCompact,
+    r_o: &[K],
+    r_j: &[K],
+    y: K,
+    transcript: &mut Transcript,
+    label: &[u8],
+    wbits: usize,
+) -> (RouterProof, Vec<EvalClaim>) {
+    shift_prove_compact_with(n, wit, r_o, r_j, y, transcript, label, wbits, DIRECT_ROUNDS)
+}
+
+/// [`shift_prove_compact`] with an explicit number of direct cycle
+/// rounds (every value gives the same proof; exposed for tests).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn shift_prove_compact_with(
+    n: usize,
+    wit: &ShiftCompact,
+    r_o: &[K],
+    r_j: &[K],
+    y: K,
+    transcript: &mut Transcript,
+    label: &[u8],
+    wbits: usize,
+    direct: usize,
+) -> (RouterProof, Vec<EvalClaim>) {
+    let w = 1usize << wbits;
+    let t = 1usize << n;
+    assert!(
+        wit.src.len() == t && wit.amt.len() == t && wit.kind.len() == t,
+        "shift witness must have 2^n cycles"
+    );
+    absorb_claim(transcript, label, r_o, r_j, y);
+    let eo = eq_table(r_o);
+    let mut rr = vec![K::ZERO; w * 8 * w]; // flat u + W*h
+    for (o, u, h) in shift_entries(wbits) {
+        rr[u + w * h] += eo[o];
+    }
+    let cols = (0..8 * w)
+        .map(|h| {
+            (0..w)
+                .filter(|&u| !rr[u + w * h].is_zero())
+                .map(|u| (u, rr[u + w * h]))
+                .collect()
+        })
+        .collect();
+    let inst = ShiftInst {
+        wit,
+        w,
+        mask: word_mask(wbits),
+        cols,
+    };
+    let m_total = n + 2 * wbits + 3;
+    let sc_label = sublabel(label, b"/sc");
+    let cr = cycle_rounds(&inst, n, r_j, 4, direct, transcript, &sc_label, m_total);
+    let (x, ql, qh) = (&cr.feats[..w], &cr.feats[w..2 * w], &cr.feats[2 * w..]);
+    let nr = w * w * 8;
+    let tabs = vec![
+        vec![cr.es; nr],
+        (0..nr).map(|i| x[i % w]).collect(),
+        (0..nr).map(|i| ql[(i / w) % w]).collect(),
+        (0..nr).map(|i| qh[i / (w * w)]).collect(),
+        rr,
+    ];
+    let cur = cr.cur.unwrap_or_else(|| {
+        let claim = combine_sum(&tabs, &mul5);
+        sumcheck_init(transcript, &sc_label, claim, m_total, 4);
+        claim
+    });
+    let (mut rs, mut msgs) = (cr.rs, cr.msgs);
+    let fin = dense_rounds(
+        tabs,
+        &mul5,
+        4,
+        cur,
+        transcript,
+        &sc_label,
+        m_total - n,
+        &mut rs,
+        &mut msgs,
+    );
+    let evs = vec![fin[1][0], fin[2][0], fin[3][0]];
+    transcript.absorb_ks(&sublabel(label, b"/evals"), &evs);
+    let claims = shift_claims(n, wbits, &rs, &evs);
+    (
+        RouterProof {
+            sc: SumcheckProof { round_msgs: msgs },
+            evals: evs,
+        },
+        claims,
+    )
+}
+
+struct StoreInst<'a> {
+    wit: &'a StoreCompact,
+    w: usize,
+    na: usize,
+    mask: u64,
+    /// `cols[a * 4 + h]`: the non-zero `(u, R_{r_o,a}(u, h))`.
+    cols: Vec<Vec<(usize, K)>>,
+}
+
+impl CycleInstance for StoreInst<'_> {
+    fn nx(&self) -> usize {
+        2 * self.w + self.na
+    }
+    fn ns(&self) -> usize {
+        4
+    }
+    fn acc_x(&self, j: usize, w: K, x: &mut [K]) {
+        let ww = self.w;
+        acc_bits(self.wit.old[j] & self.mask, w, &mut x[..ww]);
+        acc_bits(self.wit.src[j] & self.mask, w, &mut x[ww..2 * ww]);
+        acc_bits(
+            u64::from(self.wit.off[j]) & ((1 << self.na) - 1),
+            w,
+            &mut x[2 * ww..],
+        );
+    }
+    fn acc_sel(&self, j: usize, w: K, s: &mut [K]) {
+        let h = self.wit.width[j];
+        if h != NO_ROUTE {
+            s[usize::from(h)] += w;
+        }
+    }
+    fn active(&self, s0: &[K], s1: &[K]) -> bool {
+        s0.iter().chain(s1).any(|v| !v.is_zero())
+    }
+    fn eval_pair(&self, f0: &[K], f1: &[K], ts: &[K], out: &mut [K]) {
+        let (w2, na) = (2 * self.w, self.na);
+        let np = ts.len();
+        let (x0, ab0, s0) = (&f0[..w2], &f0[w2..w2 + na], &f0[w2 + na..]);
+        let (x1, ab1, s1) = (&f1[..w2], &f1[w2..w2 + na], &f1[w2 + na..]);
+        // la[a][k] = Π_b (1 + ã_b(t_k) + a_b)
+        let mut la = [[K::ONE; MAXPTS]; 8];
+        let mut abt = [K::ZERO; MAXPTS];
+        for b in 0..na {
+            lin(ab0[b], ab1[b], ts, &mut abt[..np]);
+            for (a, la_a) in la.iter_mut().enumerate().take(1 << na) {
+                let bit = K::from_bit((a >> b) & 1 == 1);
+                for k in 0..np {
+                    la_a[k] *= K::ONE + abt[k] + bit;
+                }
+            }
+        }
+        let mut hs = [0usize; 4];
+        let nh = nonzero_idx(s0, s1, &mut hs);
+        let (mut qt, mut inner) = ([K::ZERO; MAXPTS], [K::ZERO; MAXPTS]);
+        for &h in &hs[..nh] {
+            lin(s0[h], s1[h], ts, &mut qt[..np]);
+            inner[..np].fill(K::ZERO);
+            for (a, la_a) in la.iter().enumerate().take(1 << na) {
+                let cols = &self.cols[a * 4 + h];
+                if cols.is_empty() {
+                    continue;
+                }
+                let (b0, b1) = (dot(x0, cols), dot(x1, cols));
+                for k in 0..np {
+                    inner[k] += la_a[k] * tpt(b0, b1, ts[k]);
+                }
+            }
+            for k in 0..np {
+                out[k] += qt[k] * inner[k];
+            }
+        }
+    }
+}
+
+/// Fast store prover: identical transcript and proof to [`store_prove`]
+/// (Python `store_prove_fast`), from the dense witness tables.
+///
+/// # Panics
+/// Panics on malformed witness tables (indexing, non-one-hot selectors).
+#[allow(clippy::too_many_arguments)]
+pub fn store_prove_fast(
+    n: usize,
+    wit: &StoreWitness,
+    r_o: &[K],
+    r_j: &[K],
+    y: K,
+    transcript: &mut Transcript,
+    label: &[u8],
+    wbits: usize,
+) -> (RouterProof, Vec<EvalClaim>) {
+    let compact = StoreCompact::from_witness(wit, wbits);
+    store_prove_compact(n, &compact, r_o, r_j, y, transcript, label, wbits)
+}
+
+/// Fast store prover on the compact witness: identical transcript and
+/// proof to [`store_prove`], with memory `O(T)` words plus
+/// `O(T / 2^DIRECT_ROUNDS)` field elements.
+///
+/// # Panics
+/// Panics if the witness does not have `2^n` cycles.
+#[allow(clippy::too_many_arguments)]
+pub fn store_prove_compact(
+    n: usize,
+    wit: &StoreCompact,
+    r_o: &[K],
+    r_j: &[K],
+    y: K,
+    transcript: &mut Transcript,
+    label: &[u8],
+    wbits: usize,
+) -> (RouterProof, Vec<EvalClaim>) {
+    store_prove_compact_with(n, wit, r_o, r_j, y, transcript, label, wbits, DIRECT_ROUNDS)
+}
+
+/// [`store_prove_compact`] with an explicit number of direct cycle
+/// rounds (every value gives the same proof; exposed for tests).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn store_prove_compact_with(
+    n: usize,
+    wit: &StoreCompact,
+    r_o: &[K],
+    r_j: &[K],
+    y: K,
+    transcript: &mut Transcript,
+    label: &[u8],
+    wbits: usize,
+    direct: usize,
+) -> (RouterProof, Vec<EvalClaim>) {
+    let (t, w, na) = (1usize << n, 1usize << wbits, wbits - 3);
+    let na_count = 1usize << na;
+    assert!(
+        wit.old.len() == t && wit.src.len() == t && wit.width.len() == t && wit.off.len() == t,
+        "store witness must have 2^n cycles"
+    );
+    absorb_claim(transcript, label, r_o, r_j, y);
+    let eo = eq_table(r_o);
+    let mut ra = vec![vec![K::ZERO; 2 * w * 4]; na_count]; // flat u + 2W*h per offset a
+    for (o, u, h, a) in store_entries(wbits) {
+        ra[a][u + 2 * w * h] += eo[o];
+    }
+    let mut cols = Vec::with_capacity(4 * na_count);
+    for r in &ra {
+        for h in 0..4 {
+            cols.push(
+                (0..2 * w)
+                    .filter(|&u| !r[u + 2 * w * h].is_zero())
+                    .map(|u| (u, r[u + 2 * w * h]))
+                    .collect(),
+            );
+        }
+    }
+    let inst = StoreInst {
+        wit,
+        w,
+        na,
+        mask: word_mask(wbits),
+        cols,
+    };
+    let degree = 3 + na;
+    let m_total = n + wbits + 1 + 2;
+    let sc_label = sublabel(label, b"/sc");
+    let cr = cycle_rounds(
+        &inst, n, r_j, degree, direct, transcript, &sc_label, m_total,
+    );
+    let (x, ab, q) = (
+        &cr.feats[..2 * w],
+        &cr.feats[2 * w..2 * w + na],
+        &cr.feats[2 * w + na..],
+    );
+    let nr = 2 * w * 4;
+    let mut tabs: Vec<Vec<K>> = vec![
+        vec![cr.es; nr],
+        (0..nr).map(|i| x[i % (2 * w)]).collect(),
+        (0..nr).map(|i| q[i / (2 * w)]).collect(),
+    ];
+    tabs.extend(ab.iter().map(|&v| vec![v; nr]));
+    tabs.extend(ra);
+    let f = store_combine(na);
+    let cur = cr.cur.unwrap_or_else(|| {
+        let claim = combine_sum(&tabs, &f);
+        sumcheck_init(transcript, &sc_label, claim, m_total, degree);
+        claim
+    });
+    let (mut rs, mut msgs) = (cr.rs, cr.msgs);
+    let fin = dense_rounds(
+        tabs,
+        &f,
+        degree,
+        cur,
+        transcript,
+        &sc_label,
+        m_total - n,
+        &mut rs,
+        &mut msgs,
+    );
+    let mut evs = vec![fin[1][0], fin[2][0]];
+    evs.extend((0..na).map(|b| fin[3 + b][0]));
+    transcript.absorb_ks(&sublabel(label, b"/evals"), &evs);
+    let claims = store_claims(n, wbits, &rs, &evs);
+    (
+        RouterProof {
+            sc: SumcheckProof { round_msgs: msgs },
+            evals: evs,
+        },
+        claims,
+    )
 }
 
 /// Continue a sum-check (already initialised) for `nrounds` rounds on
@@ -680,341 +1481,9 @@ fn dense_rounds(
         msgs.push(msg);
         rs.push(r);
         cur = interpolate_eval(&ev, r);
-        tabs = tabs.iter().map(|tab| bind_low(tab, r)).collect();
+        for tab in &mut tabs {
+            bind_low_in_place(tab, r);
+        }
     }
     tabs
-}
-
-/// Run the `n` cycle rounds over a sparse state. `evals_fn(state)` gives
-/// `[g(t_0)..g(t_degree)]` (full, incl. `t_1`); the sum-check claim is
-/// `g(0) + g(1)` of the first round, bound by [`sumcheck_init`] exactly
-/// as the dense prover's table sum (Python `_sparse_phase`).
-#[allow(clippy::too_many_arguments)]
-fn sparse_phase<State, EvalsFn, BindFn>(
-    n: usize,
-    mut state: State,
-    evals_fn: EvalsFn,
-    bind_fn: BindFn,
-    degree: usize,
-    transcript: &mut Transcript,
-    label: &[u8],
-    m_total: usize,
-) -> (State, Vec<K>, Vec<Vec<K>>, K)
-where
-    EvalsFn: Fn(&State) -> Vec<K>,
-    BindFn: Fn(State, K) -> State,
-{
-    let mut ev = evals_fn(&state);
-    let claim = ev[0] + ev[1];
-    sumcheck_init(transcript, label, claim, m_total, degree);
-    let msg_label = sublabel(label, b"/msg");
-    let chal_label = sublabel(label, b"/chal");
-    let (mut rs, mut msgs, mut cur) = (Vec::new(), Vec::new(), claim);
-    for i in 0..n {
-        if i > 0 {
-            ev = evals_fn(&state);
-        }
-        assert_eq!(
-            ev[0] + ev[1],
-            cur,
-            "claim inconsistent with tables (g(0)+g(1) != claim)"
-        );
-        let mut msg = vec![ev[0]];
-        msg.extend_from_slice(&ev[2..]);
-        transcript.absorb_ks(&msg_label, &msg);
-        let r = transcript.challenge_k(&chal_label);
-        msgs.push(msg);
-        rs.push(r);
-        cur = interpolate_eval(&ev, r);
-        state = bind_fn(state, r);
-    }
-    (state, rs, msgs, cur)
-}
-
-struct ShiftFastState {
-    eq: Vec<K>,
-    x: Vec<Vec<K>>,  // per source u, over cycles
-    ql: Vec<Vec<K>>, // per amount, over cycles
-    qh: Vec<Vec<K>>, // per kind, over cycles
-}
-
-/// Fast shift prover: identical transcript and proof to [`shift_prove`]
-/// (Python `shift_prove_fast`).
-///
-/// # Panics
-/// Panics on malformed witness tables (indexing), as Python raises.
-#[allow(clippy::too_many_arguments)]
-pub fn shift_prove_fast(
-    n: usize,
-    wit: &ShiftWitness,
-    r_o: &[K],
-    r_j: &[K],
-    y: K,
-    transcript: &mut Transcript,
-    label: &[u8],
-    wbits: usize,
-) -> (RouterProof, Vec<EvalClaim>) {
-    let (t, w) = (1usize << n, 1usize << wbits);
-    absorb_claim(transcript, label, r_o, r_j, y);
-    let eo = eq_table(r_o);
-    let mut rh: HashMap<usize, HashMap<usize, K>> = HashMap::new();
-    let mut rr = vec![K::ZERO; w * 8 * w];
-    for (o, u, h) in shift_entries(wbits) {
-        let d = rh.entry(h).or_default();
-        *d.entry(u).or_insert(K::ZERO) += eo[o];
-        rr[u + w * h] += eo[o];
-    }
-    let wit_x = bits_to_k(&wit.x);
-    let wit_qlo = bits_to_k(&wit.qlo);
-    let wit_qhi = bits_to_k(&wit.qhi);
-    let st = ShiftFastState {
-        eq: eq_table(r_j),
-        x: (0..w)
-            .map(|u| (0..t).map(|j| wit_x[u + w * j]).collect())
-            .collect(),
-        ql: (0..w)
-            .map(|h| (0..t).map(|j| wit_qlo[h + w * j]).collect())
-            .collect(),
-        qh: (0..8)
-            .map(|h| (0..t).map(|j| wit_qhi[h + 8 * j]).collect())
-            .collect(),
-    };
-    let ts: Vec<K> = (0..5).map(|k| K::t(k as u128)).collect();
-    let evals_fn = |s: &ShiftFastState| -> Vec<K> {
-        let half = s.eq.len() / 2;
-        let mut out = vec![K::ZERO; 5];
-        for p in 0..half {
-            let (e0, e1) = (s.eq[2 * p], s.eq[2 * p + 1]);
-            let lo: Vec<usize> = (0..w)
-                .filter(|&h| !s.ql[h][2 * p].is_zero() || !s.ql[h][2 * p + 1].is_zero())
-                .collect();
-            let hi: Vec<usize> = (0..8)
-                .filter(|&h| !s.qh[h][2 * p].is_zero() || !s.qh[h][2 * p + 1].is_zero())
-                .collect();
-            if lo.is_empty() || hi.is_empty() {
-                continue;
-            }
-            for (k, out_k) in out.iter_mut().enumerate() {
-                let tt = ts[k];
-                let et = tpt(e0, e1, tt);
-                let xt: Vec<K> = (0..w)
-                    .map(|u| tpt(s.x[u][2 * p], s.x[u][2 * p + 1], tt))
-                    .collect();
-                let mut acc = K::ZERO;
-                for &hh in &hi {
-                    let qh = tpt(s.qh[hh][2 * p], s.qh[hh][2 * p + 1], tt);
-                    if qh.is_zero() {
-                        continue;
-                    }
-                    let mut inner = K::ZERO;
-                    for &hl in &lo {
-                        let ql = tpt(s.ql[hl][2 * p], s.ql[hl][2 * p + 1], tt);
-                        if ql.is_zero() {
-                            continue;
-                        }
-                        let mut b = K::ZERO;
-                        if let Some(d) = rh.get(&(hl + w * hh)) {
-                            for (&u, &c) in d {
-                                b += xt[u] * c;
-                            }
-                        }
-                        inner += ql * b;
-                    }
-                    acc += qh * inner;
-                }
-                *out_k += et * acc;
-            }
-        }
-        out
-    };
-    let bind_fn = |s: ShiftFastState, r: K| ShiftFastState {
-        eq: bind_table(&s.eq, r),
-        x: s.x.iter().map(|a| bind_table(a, r)).collect(),
-        ql: s.ql.iter().map(|a| bind_table(a, r)).collect(),
-        qh: s.qh.iter().map(|a| bind_table(a, r)).collect(),
-    };
-    let m_total = n + 2 * wbits + 3;
-    let sc_label = sublabel(label, b"/sc");
-    let (st, mut rs, mut msgs, cur) =
-        sparse_phase(n, st, evals_fn, bind_fn, 4, transcript, &sc_label, m_total);
-    let e = st.eq[0];
-    let nr = w * w * 8;
-    let tabs = vec![
-        vec![e; nr],
-        (0..nr).map(|i| st.x[i % w][0]).collect(),
-        (0..nr).map(|i| st.ql[(i / w) % w][0]).collect(),
-        (0..nr).map(|i| st.qh[i / (w * w)][0]).collect(),
-        rr,
-    ];
-    let fin = dense_rounds(
-        tabs,
-        &mul5,
-        4,
-        cur,
-        transcript,
-        &sc_label,
-        m_total - n,
-        &mut rs,
-        &mut msgs,
-    );
-    let mles: Vec<K> = fin.iter().map(|tab| tab[0]).collect();
-    let evs = vec![mles[1], mles[2], mles[3]];
-    transcript.absorb_ks(&sublabel(label, b"/evals"), &evs);
-    let claims = shift_claims(n, wbits, &rs, &evs);
-    (
-        RouterProof {
-            sc: SumcheckProof { round_msgs: msgs },
-            evals: evs,
-        },
-        claims,
-    )
-}
-
-struct StoreFastState {
-    eq: Vec<K>,
-    x: Vec<Vec<K>>,  // per source u, over cycles
-    q: Vec<Vec<K>>,  // per width, over cycles
-    ab: Vec<Vec<K>>, // per offset bit, over cycles
-}
-
-/// Fast store prover: identical transcript and proof to [`store_prove`]
-/// (Python `store_prove_fast`).
-///
-/// # Panics
-/// Panics on malformed witness tables (indexing), as Python raises.
-#[allow(clippy::too_many_arguments)]
-pub fn store_prove_fast(
-    n: usize,
-    wit: &StoreWitness,
-    r_o: &[K],
-    r_j: &[K],
-    y: K,
-    transcript: &mut Transcript,
-    label: &[u8],
-    wbits: usize,
-) -> (RouterProof, Vec<EvalClaim>) {
-    let (t, w, na) = (1usize << n, 1usize << wbits, wbits - 3);
-    let na_count = 1usize << na;
-    absorb_claim(transcript, label, r_o, r_j, y);
-    let eo = eq_table(r_o);
-    let mut rah: HashMap<(usize, usize), HashMap<usize, K>> = HashMap::new();
-    let mut ra = vec![vec![K::ZERO; 2 * w * 4]; na_count];
-    for (o, u, h, a) in store_entries(wbits) {
-        let d = rah.entry((a, h)).or_default();
-        *d.entry(u).or_insert(K::ZERO) += eo[o];
-        ra[a][u + 2 * w * h] += eo[o];
-    }
-    let wit_x = bits_to_k(&wit.x);
-    let wit_q = bits_to_k(&wit.q);
-    let wit_ab: Vec<Vec<K>> = wit.abits.iter().map(|tab| bits_to_k(tab)).collect();
-    let st = StoreFastState {
-        eq: eq_table(r_j),
-        x: (0..2 * w)
-            .map(|u| (0..t).map(|j| wit_x[u + 2 * w * j]).collect())
-            .collect(),
-        q: (0..4)
-            .map(|h| (0..t).map(|j| wit_q[h + 4 * j]).collect())
-            .collect(),
-        ab: (0..na)
-            .map(|b| (0..t).map(|j| wit_ab[b][j]).collect())
-            .collect(),
-    };
-    let degree = 3 + na;
-    let ts: Vec<K> = (0..=degree).map(|k| K::t(k as u128)).collect();
-    let evals_fn = |s: &StoreFastState| -> Vec<K> {
-        let half = s.eq.len() / 2;
-        let mut out = vec![K::ZERO; degree + 1];
-        for p in 0..half {
-            let hs: Vec<usize> = (0..4)
-                .filter(|&h| !s.q[h][2 * p].is_zero() || !s.q[h][2 * p + 1].is_zero())
-                .collect();
-            if hs.is_empty() {
-                continue;
-            }
-            for (k, out_k) in out.iter_mut().enumerate() {
-                let tt = ts[k];
-                let et = tpt(s.eq[2 * p], s.eq[2 * p + 1], tt);
-                let xt: Vec<K> = (0..2 * w)
-                    .map(|u| tpt(s.x[u][2 * p], s.x[u][2 * p + 1], tt))
-                    .collect();
-                let abt: Vec<K> = (0..na)
-                    .map(|b| tpt(s.ab[b][2 * p], s.ab[b][2 * p + 1], tt))
-                    .collect();
-                let la: Vec<K> = (0..na_count)
-                    .map(|a| {
-                        let mut v = K::ONE;
-                        for (b, &abt_b) in abt.iter().enumerate() {
-                            v *= K::ONE + abt_b + K::from_bit((a >> b) & 1 == 1);
-                        }
-                        v
-                    })
-                    .collect();
-                let mut acc = K::ZERO;
-                for &h in &hs {
-                    let qh = tpt(s.q[h][2 * p], s.q[h][2 * p + 1], tt);
-                    if qh.is_zero() {
-                        continue;
-                    }
-                    let mut inner = K::ZERO;
-                    for (a, &la_a) in la.iter().enumerate() {
-                        if la_a.is_zero() {
-                            continue;
-                        }
-                        let mut b_acc = K::ZERO;
-                        if let Some(d) = rah.get(&(a, h)) {
-                            for (&u, &c) in d {
-                                b_acc += xt[u] * c;
-                            }
-                        }
-                        inner += la_a * b_acc;
-                    }
-                    acc += qh * inner;
-                }
-                *out_k += et * acc;
-            }
-        }
-        out
-    };
-    let bind_fn = |s: StoreFastState, r: K| StoreFastState {
-        eq: bind_table(&s.eq, r),
-        x: s.x.iter().map(|a| bind_table(a, r)).collect(),
-        q: s.q.iter().map(|a| bind_table(a, r)).collect(),
-        ab: s.ab.iter().map(|a| bind_table(a, r)).collect(),
-    };
-    let m_total = n + wbits + 1 + 2;
-    let sc_label = sublabel(label, b"/sc");
-    let (st, mut rs, mut msgs, cur) = sparse_phase(
-        n, st, evals_fn, bind_fn, degree, transcript, &sc_label, m_total,
-    );
-    let nr = 2 * w * 4;
-    let mut tabs: Vec<Vec<K>> = vec![
-        vec![st.eq[0]; nr],
-        (0..nr).map(|i| st.x[i % (2 * w)][0]).collect(),
-        (0..nr).map(|i| st.q[i / (2 * w)][0]).collect(),
-    ];
-    tabs.extend((0..na).map(|b| vec![st.ab[b][0]; nr]));
-    tabs.extend(ra);
-    let fin = dense_rounds(
-        tabs,
-        &store_combine(na),
-        degree,
-        cur,
-        transcript,
-        &sc_label,
-        m_total - n,
-        &mut rs,
-        &mut msgs,
-    );
-    let mles: Vec<K> = fin.iter().map(|tab| tab[0]).collect();
-    let mut evs = vec![mles[1], mles[2]];
-    evs.extend((0..na).map(|b| mles[3 + b]));
-    transcript.absorb_ks(&sublabel(label, b"/evals"), &evs);
-    let claims = store_claims(n, wbits, &rs, &evs);
-    (
-        RouterProof {
-            sc: SumcheckProof { round_msgs: msgs },
-            evals: evs,
-        },
-        claims,
-    )
 }

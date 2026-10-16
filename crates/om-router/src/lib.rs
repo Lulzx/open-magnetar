@@ -33,10 +33,12 @@
 pub mod router;
 
 pub use router::{
-    KIND_NAMES, RouterProof, SEXT32, SLL, SLLW, SRA, SRAW, SRL, SRLW, ShiftCycle, ShiftWitness,
-    StoreCycle, StoreWitness, ZEXT32, apply_shift, apply_store, shift_entries, shift_prove,
-    shift_prove_fast, shift_r_eval, shift_source, shift_valid, shift_verify, shift_witness,
-    store_entries, store_prove, store_prove_fast, store_r_eval, store_valid, store_verify,
+    DIRECT_ROUNDS, KIND_NAMES, NO_ROUTE, RouterProof, SEXT32, SLL, SLLW, SRA, SRAW, SRL, SRLW,
+    ShiftCompact, ShiftCycle, ShiftWitness, StoreCompact, StoreCycle, StoreWitness, ZEXT32,
+    apply_shift, apply_store, shift_entries, shift_prove, shift_prove_compact,
+    shift_prove_compact_with, shift_prove_fast, shift_r_eval, shift_source, shift_valid,
+    shift_verify, shift_witness, store_entries, store_prove, store_prove_compact,
+    store_prove_compact_with, store_prove_fast, store_r_eval, store_valid, store_verify,
     store_witness,
 };
 
