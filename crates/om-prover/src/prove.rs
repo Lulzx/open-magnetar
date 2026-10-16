@@ -13,7 +13,7 @@ use om_elf::{AbiError, encode_region, extract_output};
 use om_format::{PcsMode, PcsProof, Proof, PublicInstance, VerifyingKey};
 use om_isa::bytecode::{TraceRecord, VirtualMachine};
 use om_isa::riscv::Trap;
-use om_memcheck::onehot::comp_tables;
+use om_memcheck::onehot::AddrComps;
 use om_memcheck::shout::shout_prove;
 use om_memcheck::twist::{self as tw, FinalMem, TwistClaims};
 use om_mosaic::{batch_prove_packed, build_g_packed};
@@ -21,7 +21,7 @@ use om_pcs::pcs::BitPCS;
 use om_router as rt;
 use om_spartan::SegmentKind;
 use om_spartan::spartan::{CrossStep, segment_table_packed};
-use om_sumcheck::{PackedBits, VerificationError, mle_eval_bits};
+use om_sumcheck::{PackedBits, VerificationError};
 use om_transcript::Transcript;
 
 use crate::common::{
@@ -255,33 +255,70 @@ pub fn prove_execution(
     let w = cpu::witness_packed(trace, &derived.cpu_params, Some(ex.exit_code));
     crate::memtrace::mark("witness");
 
-    let (reg_wit, reg_info) = tw::build_witness(
+    // Twist witnesses in compact form (one address per access and one
+    // Inc word per cycle, spec 07 §7.10).
+    let reg_wit = tw::build_witness_lean(
         &di.reg,
         &[0u64; 64],
-        &[
-            trace.iter().map(|r| usize::from(r.rs1)).collect(),
-            trace.iter().map(|r| usize::from(r.rs2)).collect(),
+        vec![
+            trace.iter().map(|r| u32::from(r.rs1)).collect(),
+            trace.iter().map(|r| u32::from(r.rs2)).collect(),
         ],
-        &trace.iter().map(|r| usize::from(r.rd)).collect::<Vec<_>>(),
+        trace.iter().map(|r| u32::from(r.rd)).collect(),
         &trace.iter().map(|r| r.rd_val).collect::<Vec<_>>(),
     );
     let ram_a = derived.ram_a;
     let m0_list: Vec<u64> = (0..1usize << ram_a)
         .map(|k| ex.m0.get(&k).copied().unwrap_or(0))
         .collect();
-    let ridx: Vec<usize> = trace.iter().map(|r| r.ram_idx).collect();
-    let (ram_wit, _) = tw::build_witness(
+    let ridx: Vec<u32> = trace
+        .iter()
+        .map(|r| u32::try_from(r.ram_idx).expect("RAM word index fits in u32"))
+        .collect();
+    let ram_wit = tw::build_witness_lean(
         &di.ram,
         &m0_list,
-        std::slice::from_ref(&ridx),
-        &ridx,
+        vec![ridx.clone()],
+        ridx,
         &trace.iter().map(|r| r.ram_new).collect::<Vec<_>>(),
     );
-    let sh_comps = comp_tables(
-        &trace.iter().map(|r| r.upc as usize).collect::<Vec<_>>(),
+    let sh_comps = AddrComps::from_addrs(
+        trace.iter().map(|r| r.upc).collect(),
         derived.rom_a,
         derived.rom_d,
     );
+    // Compact router witnesses (words and selector bytes per cycle).
+    let sh_wit = rt::ShiftCompact {
+        src: trace.iter().map(|r| r.shift_src).collect(),
+        amt: trace
+            .iter()
+            .map(|r| match (r.shift_amt, r.shift_kind) {
+                (Some(amt), Some(_)) => amt,
+                _ => rt::NO_ROUTE,
+            })
+            .collect(),
+        kind: trace
+            .iter()
+            .map(|r| match (r.shift_amt, r.shift_kind) {
+                (Some(_), Some(kind)) => kind,
+                _ => rt::NO_ROUTE,
+            })
+            .collect(),
+    };
+    // The offset bits are the circuit's `off` segment, defined on
+    // every cycle (not only on stores).
+    let st_wit = rt::StoreCompact {
+        old: trace.iter().map(|r| r.ram_old).collect(),
+        src: trace.iter().map(|r| r.store_src).collect(),
+        width: trace
+            .iter()
+            .map(|r| r.store_width.unwrap_or(rt::NO_ROUTE))
+            .collect(),
+        off: trace.iter().map(|r| r.store_off).collect(),
+    };
+    // Everything later reads the compact witnesses above; the trace
+    // (hundreds of bytes per cycle) is freed before G is built.
+    drop(std::mem::take(&mut ex.trace));
     crate::memtrace::mark("component witnesses");
 
     let mut tables: BTreeMap<i64, PackedBits> = BTreeMap::new();
@@ -295,31 +332,22 @@ pub fn prove_execution(
         ("ra1", &reg_wit.ra[1]),
         ("wa", &reg_wit.wa),
     ] {
-        for (i, c) in comps.iter().enumerate() {
-            tables.insert(
-                di.ids[&format!("twist/reg/{x}/{}", i + 1)],
-                PackedBits::from_bools(c),
-            );
+        for i in 0..comps.d() {
+            tables.insert(di.ids[&format!("twist/reg/{x}/{}", i + 1)], comps.packed(i));
         }
     }
-    tables.insert(
-        di.ids["twist/reg/inc"],
-        PackedBits::from_bools(&reg_wit.inc),
-    );
-    for (i, c) in ram_wit.ra[0].iter().enumerate() {
+    tables.insert(di.ids["twist/reg/inc"], reg_wit.inc_packed(di.reg.ell));
+    for i in 0..ram_wit.ra[0].d() {
         tables.insert(
             di.ids[&format!("twist/ram/ra0/{}", i + 1)],
-            PackedBits::from_bools(c),
+            ram_wit.ra[0].packed(i),
         );
     }
-    tables.insert(
-        di.ids["twist/ram/inc"],
-        PackedBits::from_bools(&ram_wit.inc),
-    );
-    for (i, c) in sh_comps.iter().enumerate() {
+    tables.insert(di.ids["twist/ram/inc"], ram_wit.inc_packed(di.ram.ell));
+    for i in 0..sh_comps.d() {
         tables.insert(
             di.ids[&format!("shout/bytecode/ra/{}", i + 1)],
-            PackedBits::from_bools(c),
+            sh_comps.packed(i),
         );
     }
     let g = build_g_packed(&di.layout, &tables);
@@ -366,14 +394,14 @@ pub fn prove_execution(
 
     // Step 3: register Twist.
     let (r_o, r_c) = same_point(&virt, &["v1", "v2", "rdv"], 6)?;
-    let honest = tw::honest_claims(&di.reg, &reg_info, &r_o, &r_c);
-    let reg_bits: Vec<_> = honest.bits.iter().flatten().copied().collect();
+    let honest_bits = tw::addr_bit_claims(&di.reg, &reg_wit, &r_c);
+    let reg_bits: Vec<_> = honest_bits.iter().flatten().copied().collect();
     let reg_claims = TwistClaims {
         r_o: r_o.clone(),
         r_c: r_c.clone(),
         rv: vec![virt["v1"].value, virt["v2"].value],
         wv: virt["rdv"].value,
-        bits: honest.bits,
+        bits: honest_bits,
     };
     let (reg_proof, reg_out) = tw::twist_prove(
         &di.reg,
@@ -385,19 +413,13 @@ pub fn prove_execution(
         None,
         false,
     );
+    drop(reg_wit);
     crate::memtrace::mark("register twist");
 
     // Step 4: RAM Twist with final memory; Inc claim at the Spartan point.
     let (r_or, r_cr) = same_point(&virt, &["rw", "ridx"], 6)?;
-    let ram_bits: Vec<_> = (0..ram_a)
-        .map(|t| {
-            let col: Vec<bool> = ridx.iter().map(|a| (a >> t) & 1 == 1).collect();
-            mle_eval_bits(&col, &r_cr)
-        })
-        .collect();
-    let mut inc_pt = r_or.clone();
-    inc_pt.extend_from_slice(&r_cr);
-    let y0 = mle_eval_bits(&ram_wit.inc, &inc_pt);
+    let ram_bits: Vec<_> = ram_wit.ra[0].bit_evals(ram_a, &r_cr);
+    let y0 = tw::word_mle_eval(&ram_wit.inc, &r_or, &r_cr);
     tr.absorb_k(b"twist/ram/incwv", y0);
     let ram_claims = TwistClaims {
         r_o: r_or.clone(),
@@ -422,29 +444,11 @@ pub fn prove_execution(
         Some(&final_mem),
         false,
     );
+    drop((ram_wit, m0_list));
     crate::memtrace::mark("ram twist");
 
     // Step 5: routers.
     let (r_oy, r_cy) = same_point(&virt, &["Y"], 6)?;
-    // Compact router witnesses (words and selector bytes per cycle),
-    // built here so they are live only during this step.
-    let sh_wit = rt::ShiftCompact {
-        src: trace.iter().map(|r| r.shift_src).collect(),
-        amt: trace
-            .iter()
-            .map(|r| match (r.shift_amt, r.shift_kind) {
-                (Some(amt), Some(_)) => amt,
-                _ => rt::NO_ROUTE,
-            })
-            .collect(),
-        kind: trace
-            .iter()
-            .map(|r| match (r.shift_amt, r.shift_kind) {
-                (Some(_), Some(kind)) => kind,
-                _ => rt::NO_ROUTE,
-            })
-            .collect(),
-    };
     let (sh_proof, sh_claims) = rt::shift_prove_compact(
         n,
         &sh_wit,
@@ -456,17 +460,6 @@ pub fn prove_execution(
         WORD_BITS,
     );
     drop(sh_wit);
-    // The offset bits are the circuit's `off` segment, defined on
-    // every cycle (not only on stores).
-    let st_wit = rt::StoreCompact {
-        old: trace.iter().map(|r| r.ram_old).collect(),
-        src: trace.iter().map(|r| r.store_src).collect(),
-        width: trace
-            .iter()
-            .map(|r| r.store_width.unwrap_or(rt::NO_ROUTE))
-            .collect(),
-        off: trace.iter().map(|r| r.store_off).collect(),
-    };
     let (st_proof, st_claims) = rt::store_prove_compact(
         n,
         &st_wit,
@@ -490,6 +483,7 @@ pub fn prove_execution(
         &mut tr,
         b"shout/bytecode",
     );
+    drop(sh_comps);
     crate::memtrace::mark("shout");
 
     // Step 7: Mosaic, ring switching, PCS.

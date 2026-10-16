@@ -416,9 +416,20 @@ eq-weight of a constant segment is a range sum over the bound cycle bits), and t
 run densely on tables of size `2^a` only. No `T * 2^a` table is materialised. The transcript and
 proof bytes are unchanged: the crate's vector tests reproduce the dense reference vectors byte
 for byte, and workloads that previously ran out of memory at `T = 32768` (keccak-f1600,
-sha256-merkle-path) now prove in seconds. The Python reference model remains dense. Shout and
-the Spartan witness handling are still dense in the Rust prover; they were not the memory
-bottleneck at the measured sizes.
+sha256-merkle-path) now prove in seconds. The Python reference model remains dense.
+
+Since then (still no transcript change) the whole of `crates/om-memcheck` follows the first three
+bullets: the witness is `onehot::AddrComps` (one `u32` address per cycle) and one `Inc` word per
+cycle; cell values in the `rw` cycle rounds come from a per-address write log (binary search for
+the segment, prefix sums of the bound cycle `eq` table for its weight), round 1 reads the
+per-cycle data directly and later groups live in flat CSR arrays; the Val, final-memory,
+virtualization and one-hot sum-checks evaluate their tables per cycle (split `eq`/`LT` tables,
+`eq_table(r)[chunk]`, byte-table word evaluation), computing the first rounds directly and
+materialising only once the tables have shrunk by `2^3` (virtualization folds each group's terms
+into one table, which is linear and so leaves every message unchanged); Shout's `ra~(k, r_c)` is a
+histogram. Measured on keccak-f1600 (`T = 2^15`, `A = 16`): the register and RAM Twist phases
+peak 6–8 MiB above the live heap (was about 50 MiB), and the RAM Twist takes about 0.3 s (was
+14 s; the old cross-term evaluation scanned every write to a cell).
 
 ### 7.11 Resolved questions
 

@@ -4,7 +4,7 @@ mod common;
 
 use common::Rng;
 use om_field::K;
-use om_memcheck::onehot::comp_tables;
+use om_memcheck::onehot::{AddrComps, comp_tables};
 use om_memcheck::shout::{
     ShoutClaims, ShoutParams, ShoutProof, shout_honest_claims, shout_prove, shout_verify,
 };
@@ -15,7 +15,7 @@ fn tr() -> Transcript {
     Transcript::new_default(b"test/shout")
 }
 
-type Made = (ShoutParams, Vec<Vec<K>>, Vec<usize>, Vec<Vec<bool>>, Vec<K>);
+type Made = (ShoutParams, Vec<Vec<K>>, Vec<usize>, AddrComps, Vec<K>);
 
 fn make(a: usize, d: usize, n: usize, c: usize, seed: u64) -> Made {
     let mut rng = Rng(seed);
@@ -34,7 +34,7 @@ fn make(a: usize, d: usize, n: usize, c: usize, seed: u64) -> Made {
         })
         .collect();
     let addrs: Vec<usize> = (0..t).map(|_| rng.below(nk)).collect();
-    let comps = comp_tables(&addrs, a, d);
+    let comps = AddrComps::from_usizes(&addrs, a, d);
     let r_c = rng.ks(n);
     (
         ShoutParams {
@@ -62,13 +62,7 @@ fn check_cfg(
     n: usize,
     c: usize,
     seed: u64,
-) -> (
-    ShoutParams,
-    Vec<Vec<K>>,
-    Vec<Vec<bool>>,
-    ShoutClaims,
-    ShoutProof,
-) {
+) -> (ShoutParams, Vec<Vec<K>>, AddrComps, ShoutClaims, ShoutProof) {
     let (p, table, addrs, comps, r_c) = make(a, d, n, c, seed);
     let claims = shout_honest_claims(&p, &table, &comps, &r_c, None, true);
     for (h, col) in table.iter().enumerate().take(c) {
@@ -94,8 +88,26 @@ fn check_cfg(
     assert_eq!(oc, vc);
     for x in &vc {
         let i: usize = x.poly.rsplit('/').next().unwrap().parse::<usize>().unwrap() - 1;
-        assert_eq!(mle_eval_bits(&comps[i], &x.point), x.value);
+        assert_eq!(mle_eval_bits(&comps.table(i), &x.point), x.value);
     }
+    // The dense bit-table form proves the same bytes as the compact one.
+    let dense = AddrComps::Bits {
+        tables: comp_tables(&addrs, a, d),
+        ac: a / d,
+    };
+    assert_eq!(
+        shout_honest_claims(&p, &table, &dense, &r_c, None, true),
+        claims
+    );
+    let (proof2, oc2) = shout_prove(
+        &p,
+        &table,
+        &dense,
+        std::slice::from_ref(&claims),
+        &mut tr(),
+        b"S",
+    );
+    assert_eq!((proof2, oc2), (proof.clone(), oc));
     (p, table, comps, claims, proof)
 }
 
@@ -132,7 +144,7 @@ fn multi_point_groups() {
         assert_eq!(oc, vc);
         for x in &vc {
             let i: usize = x.poly.rsplit('/').next().unwrap().parse::<usize>().unwrap() - 1;
-            assert_eq!(mle_eval_bits(&comps[i], &x.point), x.value);
+            assert_eq!(mle_eval_bits(&comps.table(i), &x.point), x.value);
         }
         let mut bad = groups.clone();
         bad[1] = ShoutClaims {
@@ -172,9 +184,9 @@ fn wrong_address_bit() {
 #[test]
 fn hamming_two() {
     let (p, table, addrs, mut comps, r_c) = make(4, 2, 3, 2, 6);
-    comps[0][1 + 4 * 2] = true;
-    comps[0][2 + 4 * 2] = true;
-    let good = comp_tables(&addrs, 4, 2);
+    comps.bits_mut()[0][1 + 4 * 2] = true;
+    comps.bits_mut()[0][2 + 4 * 2] = true;
+    let good = AddrComps::from_usizes(&addrs, 4, 2);
     let claims = shout_honest_claims(&p, &table, &good, &r_c, None, true);
     let (proof, _) = shout_prove(
         &p,
@@ -191,9 +203,9 @@ fn hamming_two() {
 fn hamming_zero() {
     let (p, table, addrs, mut comps, r_c) = make(4, 2, 3, 2, 7);
     for u in 0..4 {
-        comps[1][u + 4 * 3] = false; // row j = 3 of component 2 is all-zero
+        comps.bits_mut()[1][u + 4 * 3] = false; // row j = 3 of component 2 is all-zero
     }
-    let good = comp_tables(&addrs, 4, 2);
+    let good = AddrComps::from_usizes(&addrs, 4, 2);
     let claims = shout_honest_claims(&p, &table, &good, &r_c, None, true);
     let (proof, _) = shout_prove(
         &p,
@@ -210,9 +222,9 @@ fn hamming_zero() {
 fn hamming_zero_d1() {
     let (p, table, addrs, mut comps, r_c) = make(3, 1, 3, 1, 8);
     for u in 0..8 {
-        comps[0][u + 8 * 5] = false;
+        comps.bits_mut()[0][u + 8 * 5] = false;
     }
-    let good = comp_tables(&addrs, 3, 1);
+    let good = AddrComps::from_usizes(&addrs, 3, 1);
     let claims = shout_honest_claims(&p, &table, &good, &r_c, None, true);
     let (proof, _) = shout_prove(
         &p,
@@ -223,4 +235,10 @@ fn hamming_zero_d1() {
         b"S",
     );
     assert!(shout_verify(&p, &table, &[claims], &proof, &mut tr(), b"S").is_err());
+}
+
+#[test]
+fn shout_parallel_cycles() {
+    // T = 2^14: the parallel histogram and row-evaluated sum-checks.
+    check_cfg(8, 2, 14, 2, 9);
 }

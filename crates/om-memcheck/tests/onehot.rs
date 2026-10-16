@@ -5,7 +5,7 @@ mod common;
 use common::Rng;
 use om_field::K;
 use om_memcheck::onehot::{
-    EvalClaim, VirtGroup, VirtTerm, comp_tables, full_table, onehot_aux, onehot_prove,
+    AddrComps, EvalClaim, VirtGroup, VirtTerm, comp_tables, full_table, onehot_aux, onehot_prove,
     onehot_verify, split_addr, virt_prove, virt_verify,
 };
 use om_sumcheck::{eq_eval, eq_table, mle_eval_bits};
@@ -100,7 +100,16 @@ fn run_check(
 ) -> Result<(Vec<EvalClaim>, Vec<EvalClaim>), om_sumcheck::VerificationError> {
     let names: Vec<String> = (0..comps.len()).map(|i| format!("c{i}")).collect();
     let (mut t1, mut t2) = (tr(), tr());
-    let (proof, claims) = onehot_prove(comps, &names, ac, n, &mut t1, b"oh");
+    // Arbitrary bit tables (the general, possibly cheating, form).
+    let wrapped: Vec<AddrComps> = comps
+        .iter()
+        .map(|c| AddrComps::Bits {
+            tables: vec![c.clone()],
+            ac,
+        })
+        .collect();
+    let refs: Vec<&AddrComps> = wrapped.iter().collect();
+    let (proof, claims) = onehot_prove(&refs, &names, ac, n, &mut t1, b"oh");
     let vclaims = onehot_verify(&names, ac, n, &proof, &mut t2, b"oh")?;
     Ok((claims, vclaims))
 }
@@ -109,14 +118,24 @@ fn run_check(
 fn onehot_honest() {
     let mut rng = Rng(3);
     let (n, ac) = (3usize, 3usize);
-    let comps: Vec<Vec<bool>> = (0..3)
-        .map(|_| {
-            let addrs: Vec<usize> = (0..8).map(|_| rng.below(8)).collect();
-            comp_tables(&addrs, 3, 1).into_iter().next().unwrap()
-        })
+    let addr_lists: Vec<Vec<usize>> = (0..3)
+        .map(|_| (0..8).map(|_| rng.below(8)).collect())
+        .collect();
+    let comps: Vec<Vec<bool>> = addr_lists
+        .iter()
+        .map(|addrs| comp_tables(addrs, 3, 1).into_iter().next().unwrap())
         .collect();
     let (claims, vclaims) = run_check(&comps, ac, n).unwrap();
     assert_eq!(claims, vclaims);
+    // The compact (address) form proves the same bytes.
+    let compact: Vec<AddrComps> = addr_lists
+        .iter()
+        .map(|a| AddrComps::from_usizes(a, 3, 1))
+        .collect();
+    let refs: Vec<&AddrComps> = compact.iter().collect();
+    let names: Vec<String> = (0..3).map(|i| format!("c{i}")).collect();
+    let (_, claims2) = onehot_prove(&refs, &names, ac, n, &mut tr(), b"oh");
+    assert_eq!(claims, claims2);
     for c in &claims {
         let idx: usize = c.poly[1..].parse().unwrap();
         assert_eq!(mle_eval_bits(&comps[idx], &c.point), c.value);
@@ -174,9 +193,16 @@ fn virt_d2_d3() {
                 },
             ],
         };
+        let compact = AddrComps::from_usizes(&addrs, a, d);
+        let bits = AddrComps::Bits {
+            tables: comps.clone(),
+            ac: a / d,
+        };
+        let (proof_b, claims_b) =
+            virt_prove(std::slice::from_ref(&g), &[&bits], a, d, n, &mut tr(), b"v");
         let (proof, claims) = virt_prove(
             std::slice::from_ref(&g),
-            std::slice::from_ref(&comps),
+            &[&compact],
             a,
             d,
             n,
@@ -195,6 +221,7 @@ fn virt_d2_d3() {
         .unwrap();
         assert_eq!(claims.len(), d);
         assert_eq!(claims, vclaims);
+        assert_eq!((proof_b, claims_b), (proof.clone(), claims.clone()));
         for c in &claims {
             let i: usize = c.poly[1..].parse().unwrap();
             assert_eq!(mle_eval_bits(&comps[i], &c.point), c.value);

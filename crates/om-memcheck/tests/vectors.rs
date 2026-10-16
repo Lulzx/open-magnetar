@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use om_field::K;
 use om_memcheck::onehot::{
-    EvalClaim, OneHotProof, VirtProof, comp_tables, onehot_aux, onehot_prove, onehot_verify,
+    AddrComps, EvalClaim, OneHotProof, VirtProof, comp_tables, onehot_aux, onehot_prove,
+    onehot_verify,
 };
 use om_memcheck::shout::{ShoutClaims, ShoutParams, ShoutProof, shout_prove, shout_verify};
 use om_memcheck::twist::{
@@ -159,12 +160,24 @@ fn onehot_vector() {
     }
     let inst = &v["instance"];
     let (ac, n) = (u(&inst["ac"]), u(&inst["n"]));
-    let comps = comp_tables(&us(&inst["addrs"]), ac, 1);
+    let comps = AddrComps::from_usizes(&us(&inst["addrs"]), ac, 1);
+    let dense = AddrComps::Bits {
+        tables: comp_tables(&us(&inst["addrs"]), ac, 1),
+        ac,
+    };
     let names = vec!["A".to_string()];
     let proto = inst["protocol_label"].as_str().unwrap().as_bytes();
     let label = inst["label"].as_str().unwrap().as_bytes();
+    let dense_out = onehot_prove(
+        &[&dense],
+        &names,
+        ac,
+        n,
+        &mut Transcript::new_default(proto),
+        label,
+    );
     let (proof, claims) = onehot_prove(
-        &comps,
+        &[&comps],
         &names,
         ac,
         n,
@@ -181,6 +194,7 @@ fn onehot_vector() {
         .collect();
     assert_eq!(got_evals, exp_evals, "onehot evals");
     assert_claims(&claims, &v["claims"], "onehot claims");
+    assert_eq!(dense_out, (proof.clone(), claims.clone()), "dense form");
 
     let stored = OneHotProof {
         sc: sc(&v["proof"]["round_msgs"]),
@@ -208,7 +222,7 @@ fn shout_vector(name: &str) {
         n: u(&p["n"]),
     };
     let table = kss(&v["table"]);
-    let comps = comp_tables(&us(&v["addrs"]), params.a, params.d);
+    let comps = AddrComps::from_usizes(&us(&v["addrs"]), params.a, params.d);
     let groups: Vec<ShoutClaims> = v["claim_groups"]
         .as_array()
         .unwrap()
