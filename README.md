@@ -24,11 +24,11 @@ All 27 files in `reference/vectors/` are reproduced byte for byte by the Rust cr
 
 The specification in [`docs/spec/`](docs/spec/) covers sections 00 to 15. Choices that the paper does not dictate are marked **[OM-choice]**. Section 04 §4.4a contains a full soundness proof for the gap amplification composition used by the `provable-120` parameters.
 
-All 15 workloads from Table 1 of the paper are present as guests in [`guest/examples/`](guest/examples/) and pass 47 execution cases against a Python oracle.
+All 15 workloads from Table 1 of the paper are present as guests in [`guest/examples/`](guest/examples/) and pass 47 execution cases against a Python oracle. All 15 are proved and verified end to end. The largest, `radix-sort-u64`, runs T = 2²² cycles, proves in 107 s with a 10.1 GiB peak on a 24 GiB laptop, and verifies in 0.42 s.
 
 | Suite | Result |
 |---|---|
-| Rust workspace, `cargo test --workspace` | 331 tests, 0 failures |
+| Rust workspace, `cargo test --workspace` | 343 tests, 0 failures |
 | Python reference model | 223 tests, 0 failures |
 | Reference vectors | 27 of 27 files reproduced byte for byte |
 | Guest execution cases | 47 cases, all pass |
@@ -36,16 +36,20 @@ All 15 workloads from Table 1 of the paper are present as guests in [`guest/exam
 
 ## Benchmarks
 
-Measured on an Apple M4 Pro with a release build and `A = 16`. Method and comparison with the paper are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Measured on an Apple M4 Pro (24 GiB) with a release build, `A = 16` unless stated. Method and comparison with the paper are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 | Guest | Profile | Prove | Verify | Proof |
 |---|---|---:|---:|---:|
 | `fib(19)`, T = 256 | test | 0.95 s | 15 ms | 23,526 B |
 | `fib(19)`, T = 256 | provable-120 | 0.81 s | 23 ms | 83,654 B |
-| `sha256("abc")`, T = 8,192 | test | 61.7 s | 52 ms | 34,526 B |
+| `sha256("abc")`, T = 8,192 | test | 0.27 s | 52 ms | 34,526 B |
 | `erc20-transfer`, T = 512 | test | 1.40 s | 16 ms | 25,974 B |
+| `keccak-f1600`, T = 32,768 | test | 0.97 s | 10 ms | 40,158 B |
+| `radix-sort-u64`, T = 2²², `A = 17` | test | 107 s (10.1 GiB peak) | 0.42 s | 61,446 B |
 
-Verifier time is close to the numbers in the paper. Prover time is not, though the gap is smaller than it was. The Twist read and write sum check now uses the sparse algorithm of [spec §7.10](docs/spec/07-twist-shout.md) in the Rust prover, so it no longer builds tables of size `T · 2^a`. Proof bytes are unchanged. Workloads at T = 32,768 and T = 65,536 that previously ran out of memory now prove in tens of seconds. The Spartan witness handling and the Mosaic commitment tables are still dense in T, which is what limits large traces now. A proof at T = 2²² is modelled at about 656 KiB, close to the paper, but has not been measured at that size. Measured numbers are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+The first four rows are from before the prover rewrite described below; only the sha256 row was re-timed.
+
+Verifier time is close to the numbers in the paper. Prover time is not: about 39 k cycles per second at T = 2²², against the paper's millions. Every prover phase now works from packed bits or compact per-cycle data, so memory grows by small constants times T bits, plus transients at commit and open time. Proof bytes did not change at any step. The T = 2²² proof above is at the test profile (8 queries per level). A `provable-120` proof at that size is modelled at about 656 KiB, close to the paper, but has not been generated yet. Measured numbers are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ## Quick start
 
@@ -63,7 +67,7 @@ cargo run -p om --release -- verify --vk /tmp/fib.vk --instance /tmp/fib.inst --
 # prints OK
 ```
 
-The values of A, I, and O at guest build time must match the values passed to `keygen`. A = 16 keeps memory use reasonable for the current dense prover. See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+The values of A, I, and O at guest build time must match the values passed to `keygen`. Set `OM_TRACE=1` to print the time and memory of each prover phase. See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 Test suites:
 
@@ -110,15 +114,13 @@ The default `provable-120` profile targets 120 bits of provable security per rou
 
 No third party has audited this code or the specification. The system is not zero knowledge, so proofs leak information about the execution and about any data the guest handled. Do not prove executions that involve secrets. Against a quantum adversary, SHA-256 collision resistance is about 85 bits by the BHT bound. The `sha384` profile raises that to about 128 bits. The prover is not constant time.
 
-Open audit items are tracked in [§13.9](docs/spec/13-security.md). Items 4 to 7 are resolved. They were checked against the Magnetar paper, proved inside the specification, or rederived and then asserted by tests. Items 1 to 3 are still open, but only as comparisons against the source papers for Ligerito, ring switching, and Twist and Shout. ePrint blocks automated PDF downloads, so [`papers/README.md`](papers/README.md) lists the three files to download by hand. The internal correctness of those components does not depend on that comparison. It rests on proofs in the specification and on tests. Section 13.9 records, item by item, what has already been checked and what has not.
+Audit items are tracked in [§13.9](docs/spec/13-security.md), and all seven are resolved. Items 4 to 7 were checked against the Magnetar paper, proved inside the specification, or rederived and then asserted by tests. Items 1 to 3 were compared against the source papers for Ligerito, ring switching (Diamond–Posen), Twist and Shout, and the proximity gap (BCIKS). No soundness discrepancy was found. The comparison corrected one citation and one informative cost figure. [`papers/README.md`](papers/README.md) lists which revision of each paper was used.
 
 ## Roadmap
 
-1. Stream the remaining dense parts of the prover: the Ligerito commitment and ring switching tables over the packed polynomial, the Twist component tables inside their witnesses, and the execution trace itself. Twist, the Spartan outer and cross step sum checks, and the Mosaic batch are sparse now, and the witness is generated and committed in packed form. Proof bytes did not change at any of these steps. What is left is the remaining path toward the proving throughput reported in the paper, about 7M cycles per second, and toward proving at T = 2²² on ordinary hardware.
-2. Prove the last Table 1 workload, `radix-sort-u64`. Fourteen of the fifteen are proved now. Two proof attempts at T = 2²² were killed by the OS at 10.2 and 12.6 GiB resident memory. It waits on item 1. Details are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+1. Prover throughput. All phases are now memory-bounded, and T = 2²² proves in 107 s on a laptop. The paper reports about 7M cycles per second, so this is still more than two orders of magnitude behind. The largest remaining transients are the level-0 codeword rows at commit time and the level-0 tables of the Ligerito opening.
+2. Generate and measure a `provable-120` proof at T = 2²², and replace the modelled size of about 656 KiB with a measured one. The measured T = 2²² proof is at the test profile.
 3. Rust guests. Done for the basic path. The runtime crate `guest/rust/om-guest` provides the entry point, a bump allocator, and I/O helpers, and the Fibonacci example in `guest/rust/examples/fib` is proved and verified end to end. Build it with `make -C guest/rust`. See [§14](docs/spec/14-guest-abi.md). More Rust examples would still be useful.
-4. Close §13.9 items 1 to 3. The Ligerito paper has been obtained and its `t` derivation compared. The ring switching and Twist and Shout papers are still blocked on manual download. See [`papers/README.md`](papers/README.md).
-5. Measure a proof at T = 2²² and replace the modelled size of about 656 KiB with a measured one.
 
 ## Contributing
 

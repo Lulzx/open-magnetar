@@ -57,63 +57,99 @@ Before this change, a `sha256-merkle-path` attempt at `A = 16` was
 killed by the OS for memory use, and a `keccak-f1600` attempt was
 stopped by hand for the same reason.
 
-The last workload, `radix-sort-u64`, is still not proved. It needs
-`A = 17` at load time, because its static buffers (about 384 KiB) do
-not fit under the I/O window at `A = 16`, and an execution budget
-above the default `2^20` cycles (the CLI now takes `--max-cycles`;
-its sorted output is correct under `om run`). A proof attempt at
-`A = 17` with a `2^24` budget ran 330 s and was killed by the OS at
-10.2 GiB resident memory. At its trace length (padded to
-`T = 2^22`) the bottleneck is no longer Twist: the Spartan witness
-and the Mosaic commitment tables are still dense in `T`, so this
-workload waits on sparse handling there, not on the prover of 07.10.
-Fourteen of the fifteen Table 1 workloads are now proved end to end.
+The last workload, `radix-sort-u64`, needs `A = 17` at load time (its
+static buffers, about 384 KiB, do not fit under the I/O window at
+`A = 16`) and an execution budget above the default `2^20` cycles. Its
+run is padded to `T = 2^22`. Two proof attempts at that size were
+killed by the OS at 10.2 and 12.6 GiB resident memory.
 
-The scale of the remaining problem, from `cpu_circuit.stats`: one
-instance holds 4 cycles and 8,192 witness bits, and the relations have
-862 (GF(2)) and 123 (GF(2^128)) rows, padded to `2^10`. At
-`T = 2^22` there are `2^20` instances, so the witness alone is
-`2^20 * 8,192` bits held as bytes, and each Spartan outer table has
-`2^20 * 2^10 = 2^30` field elements (16 GiB per table in `K`).
-Constant factor reductions were made after the killed attempt
-(in-place binding of the Spartan outer tables instead of allocating
-a fresh table per round, and freeing the witness and the component
-table map as soon as their consumers are done; proof bytes unchanged,
-verified at test sizes). They lower the peak but do not change this
-scaling, and no further attempt at this size was made on a laptop.
+## Bounded-memory prover, and the first T = 2^22 proof (2026-10-16)
 
-The Spartan outer and cross-step sum-checks were then made sparse in
-the same style as Twist: the row (and column) rounds stream over
-instances against sparse matrices folded by the challenges seen so
-far, and only the instance rounds run densely, on tables of length
-`q`. The shared sum-check prover also binds its tables in place now,
-which cuts the transient peak of every sum-check including the
-Mosaic batch. Proof bytes are unchanged again (all reference vectors
-still reproduce byte for byte, 332 Rust tests).
+The prover was then profiled per phase (`OM_TRACE=1` prints time, RSS
+and the heap peak of every phase; it costs nothing when unset). At
+`T = 2^15` almost every phase, scaled to `2^22`, would have needed more
+than 24 GiB on its own. The previous Mosaic batch prover was also slow:
+it spent 259 s of a 276 s keccak proof. Every phase was rewritten to
+work from packed bits or compact per-cycle data. Proof bytes are
+unchanged throughout: every reference vector still reproduces, and a
+full keccak proof is byte-identical before and after.
 
-The Mosaic batch step and the witness representation were then made
-sparse and packed in the same spirit. The batch sum-check keeps
-only suffixes whose bound `G` value is nonzero and recomputes the
-`eq` side from the lifted claim points, so neither `2^ell` field
-table is built. The circuit witness is generated directly in
-packed form (one bit per bit, in `u64` words), the Spartan prover
-reads it through a bit-row trait without expanding it, `G` is
-assembled and committed in packed form, and ring switching packs
-from words. Proof bytes unchanged again (335 tests). What remains
-dense at `T = 2^22` is the commitment itself: the packed polynomial
-has `2^(ell-7)` field entries (about `2^26` there) and the Ligerito
-and ring-switching sum-checks work on tables of that size, the
-Twist component tables are still held as bools inside their
-witnesses, and the execution trace itself is one record per cycle.
-No attempt at this size has been made since these changes, on
-purpose, so `radix-sort-u64` remains unproved until the remaining
-dense parts are streamed as well or a larger machine is used.
+- **Mosaic batch.** The first 10 rounds are computed straight from the
+  packed bits of `G` (split-eq sums over set bits per claim region).
+  Then the bound `G` and `E` tables (`2^(ell-10)` entries) are built and
+  the remaining rounds run densely in place.
+- **PCS.** The commit hashes columns as it serializes them. Afterwards
+  only the Merkle tree is kept: the opening re-packs `f` from `G` and
+  re-encodes only the queried columns. The Ligerito opening takes its
+  state by value and runs the level sum-check over whole tables in
+  place. Ring switching uses split-eq tables, and the opened value comes
+  from its partial evaluations, not from a `2^ell` eq table.
+- **Spartan.** Segment claims are read from the packed witness rows,
+  without a table over `2^(log_cols + s)` points. The satisfiability
+  check reuses the first outer round.
+- **Twist/Shout.** Witnesses are one address or word per cycle. The
+  read/write sum-check answers cell lookups from a per-address write
+  log (the old range scan was close to quadratic on hot cells). The
+  other sum-checks build their tables row by row after three direct
+  rounds.
+- **Routers.** They work from compact per-cycle witnesses (words plus
+  selector bytes), with the eq factor split, and materialise only
+  `T/256` positions.
+- **Trace.** The execution trace (hundreds of bytes per cycle) is freed
+  once the witnesses are built.
+- **Verifier.** The public-input fold of the Spartan verifier visited
+  `q · 2^(nu-1)` zeros; it now visits only non-zero entries. Same
+  value, so no protocol change.
+
+### radix-sort-u64 at T = 2^22
+
+Proved and verified with the `om` CLI. Test profile (`t = 8`), `A = 17`,
+`I = O = 14`, `--max-cycles 16777216`, input of 8,192 random keys. The
+public instance carries the 64 KiB sorted output, which matches an
+independent sort of the input.
+
+| Quantity | Value |
+|---|---|
+| T (cycles, padded) | 4,194,304 |
+| Prove (wall) | 107 s (≈ 39 k cycles/s; 794 s CPU on 12 cores) |
+| Peak resident memory | 10.1 GiB (`/usr/bin/time -l`) |
+| Verify | 0.42 s wall, 30 ms CPU, 67 MiB resident |
+| Proof size | 61,446 B |
+
+Per phase (heap peak within the phase, from `OM_TRACE`):
+
+| Phase | Ends at | Heap peak |
+|---|---|---|
+| execute | 0.8 s | 1.5 GiB (the trace) |
+| packed witness | 17.7 s | 2.6 GiB |
+| component witnesses | 18.1 s | 2.9 GiB |
+| build G | 25.3 s | 3.1 GiB |
+| commit | 36.8 s | 8.5 GiB (codeword rows) |
+| Virtual Spartan | 88.4 s | 3.4 GiB |
+| register Twist | 91.8 s | 3.0 GiB |
+| RAM Twist (A = 17) | 96.0 s | 2.7 GiB |
+| routers | 96.7 s | 2.1 GiB |
+| bytecode Shout | 97.0 s | 2.0 GiB |
+| Mosaic batch | 99.8 s | 2.2 GiB |
+| ring switching + Ligerito open | 107.0 s | 7.9 GiB |
+
+All fifteen Table 1 workloads are now proved and verified end to end.
+The two largest transients are the level-0 codeword rows during commit
+and the level-0 tables during the opening. Both could be streamed
+further if a smaller footprint is wanted.
+
+The same build on smaller workloads (`A = 16`, test profile):
+
+| Guest | T | Prove before | Prove now | Proof size |
+|---|---|---|---|---|
+| keccak-f1600 | 32,768 | 18.8 s (276 s just before this change) | 0.97 s | 40,158 B (byte-identical before/after) |
+| sha256 of `"abc"` | 8,192 | 61.7 s | 0.27 s | 34,526 B (as recorded above) |
 
 ## Test suites
 
 | Suite | Count | Wall time (debug) |
 |---|---|---|
-| Rust workspace (`cargo test --workspace`) | 331 tests, 0 failures | ~1 min |
+| Rust workspace (`cargo test --workspace`) | 343 tests, 0 failures | ~1 min |
 | Python reference (`unittest discover`) | 223 tests, 0 failures | 114 s |
 | Guest oracle executions (Python harness) | 47 cases, all pass | ~1 min |
 
@@ -121,7 +157,7 @@ Every `reference/vectors/**/*.json` file (27 files) is reproduced
 byte-for-byte by the corresponding Rust crate's tests, including the
 end-to-end Fibonacci proof (15,630 bytes) and its verifying key.
 
-## Proof-size model at scale (not measured at that size)
+## Proof-size model at scale
 
 From `params.proof_size_bytes` (spec 04.7 / 13.5), provable-120 profile:
 
@@ -133,31 +169,25 @@ From `params.proof_size_bytes` (spec 04.7 / 13.5), provable-120 profile:
 | 26 (T = 2^22 machine) | 624 KiB, ≈ 656 KiB whole proof |
 
 The paper reports at most 599 KiB for the whole proof, so the model is in the
-paper's range. Treat absolute values as estimates (±15%) until a T = 2^22
-proof is actually generated and measured.
+paper's range. The only proof measured at T = 2^22 so far is at the test
+profile (`t = 8`, 61,446 B). Treat the provable-120 figures as estimates
+(±15%) until a provable-120 proof at that size is generated; it needs
+`t = 177` queries per level and `gs = 2`, so prover memory and time grow
+only modestly, but it has not been run.
 
 ## Comparison with the paper, honestly
 
 | Quantity | Paper (Magnetar) | This implementation |
 |---|---|---|
-| Proving throughput | ~1.45 M fib steps/s (≈ 7 M cycles/s class) | ~10^2–10^3 cycles/s at small T (see below) |
-| Proof size | ≤ 599 KiB | 84 KiB measured at T = 256; ≈ 656 KiB modelled at T = 2^22 |
-| Verifier time | ~13 ms | 14–52 ms measured at the sizes above |
+| Proving throughput | ~1.45 M fib steps/s (≈ 7 M cycles/s class) | ≈ 39 k cycles/s at T = 2^22, test profile (see above) |
+| Proof size | ≤ 599 KiB | 61 KiB measured at T = 2^22 (test profile); ≈ 656 KiB modelled at provable-120 |
+| Verifier time | ~13 ms | 15–52 ms at small T; 0.42 s wall (30 ms CPU) at T = 2^22 |
 
-The verifier is in the paper's ballpark. The prover is closer than it
-was, but still well behind the paper. The Twist read/write sum-check no
-longer materialises dense `T · 2^a` tables: the Rust prover implements
-the sparse algorithm of spec 07.10 for that step (proof bytes
-unchanged), which is what made the `T = 32768` and `T = 65536`
-workloads above practical at all. What remains dense is the Spartan
-witness handling and the Mosaic commitment tables, both linear in `T`
-with large constants, plus the Python reference model, which is dense
-throughout by design. The paper's prover is sparse in those parts too.
-A rayon pass over the hot loops (sum-check rounds, table construction,
-Ligerito row encodes, Merkle layers) gave 4–8× (sha256 prove:
-510 s → 62 s) with bit-identical proofs. Throughput is of the order
-of a thousand cycles per second at the sizes measured here, against
-the paper's figure in the millions.
+The prover is still more than two orders of magnitude behind the paper,
+but its memory is now bounded by small constants times `T` bits, plus
+transients of a few field elements per committed bit at commit and open
+time. A `T = 2^22` proof fits in about 10 GiB on a laptop. The Python
+reference model stays dense throughout by design.
 
 Other paper comparisons: security is the 120-bit provable profile by default
 (no conjectured proximity gaps, no grinding), SHA-256 by default, strict

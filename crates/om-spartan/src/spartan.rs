@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use om_sumcheck::PackedBits;
 
-use crate::r1cs::{BitRow, R1CS, check_witness_bits, public_part, simd_satisfied};
+use crate::r1cs::{BitRow, R1CS, check_witness_bits, simd_satisfied};
 
 /// An evaluation claim `p~_{comp_id}(point) = value` on a component
 /// polynomial (Python `mosaic.Claim`, re-exported from `om-mosaic`;
@@ -293,17 +293,12 @@ fn setup(
 
 /// `PF = sum_u eq(r_inst, u) (1, x_u)`, a table of length `2^(nu-1)`
 /// (spec 06 §6.1).
+///
+/// Only the non-zero entries `(1, x_u)` are visited (the verifier's
+/// public inputs are short), so the cost is `O(q · (1 + |x_u|))`
+/// rather than `O(q · 2^(nu-1))`.
 fn fold_public(x: &[Vec<K>], nu: usize, r_inst: &[K]) -> Vec<K> {
-    let eqi = eq_table(r_inst);
-    let half = 1usize << (nu - 1);
-    let mut out = vec![K::ZERO; half];
-    for (u, xu) in x.iter().enumerate() {
-        let pp = public_part(xu, nu);
-        for k in 0..half {
-            out[k] += eqi[u] * pp[k];
-        }
-    }
-    out
+    fold_public_sparse(x, nu, &eq_table(r_inst))
 }
 
 // -----------------------------------------------------------------
