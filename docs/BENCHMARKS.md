@@ -69,6 +69,19 @@ and the Mosaic commitment tables are still dense in `T`, so this
 workload waits on sparse handling there, not on the prover of 07.10.
 Fourteen of the fifteen Table 1 workloads are now proved end to end.
 
+The scale of the remaining problem, from `cpu_circuit.stats`: one
+instance holds 4 cycles and 8,192 witness bits, and the relations have
+862 (GF(2)) and 123 (GF(2^128)) rows, padded to `2^10`. At
+`T = 2^22` there are `2^20` instances, so the witness alone is
+`2^20 * 8,192` bits held as bytes, and each Spartan outer table has
+`2^20 * 2^10 = 2^30` field elements (16 GiB per table in `K`).
+Constant factor reductions were made after the killed attempt
+(in-place binding of the Spartan outer tables instead of allocating
+a fresh table per round, and freeing the witness and the component
+table map as soon as their consumers are done; proof bytes unchanged,
+verified at test sizes). They lower the peak but do not change this
+scaling, and no further attempt at this size was made on a laptop.
+
 ## Test suites
 
 | Suite | Count | Wall time (debug) |

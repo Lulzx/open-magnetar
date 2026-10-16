@@ -29,7 +29,7 @@
 pub mod mle;
 pub mod sumcheck;
 
-pub use mle::{bind_low, eq_eval, eq_table, mle_eval, mle_eval_bits};
+pub use mle::{bind_low, bind_low_in_place, eq_eval, eq_table, mle_eval, mle_eval_bits};
 pub use sumcheck::{
     BoxedCombine, MAX_BATCH_CLAIMS, SumcheckProof, VerificationError, batch_claims,
     batched_combine, combine_sum, interpolate_eval, sumcheck_init, sumcheck_prove,

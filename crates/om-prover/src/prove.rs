@@ -339,6 +339,7 @@ pub fn prove_execution(
         tables.insert(di.ids[&format!("shout/bytecode/ra/{}", i + 1)], c.clone());
     }
     let g = build_g(&di.layout, &tables);
+    drop(tables);
 
     // Step 1: statement, commitment.
     let mut tr = Transcript::new(LABEL, vk.hasher());
@@ -373,6 +374,7 @@ pub fn prove_execution(
         Some(&cross),
         unchecked,
     );
+    drop(w);
     let (virt, direct, xs) = seg_claims(derived, &sp_claims)?;
 
     // Step 3: register Twist.

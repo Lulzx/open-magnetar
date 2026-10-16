@@ -1,7 +1,7 @@
 //! Port of `reference/tests/test_mle.py`.
 
 use om_field::K;
-use om_sumcheck::{bind_low, eq_eval, eq_table, mle_eval, mle_eval_bits};
+use om_sumcheck::{bind_low, bind_low_in_place, eq_eval, eq_table, mle_eval, mle_eval_bits};
 
 /// Small deterministic PRNG (xoshiro-style splitmix), test-only stand-in
 /// for Python's `random.Random`.
@@ -117,4 +117,25 @@ fn test_mle_eval_wrong_length_panics() {
 #[should_panic(expected = "table length must be even")]
 fn test_bind_low_odd_panics() {
     let _ = bind_low(&[K::ONE, K::ONE, K::ONE], K::ONE);
+}
+
+#[test]
+fn test_bind_low_in_place_matches() {
+    let mut rng = Rng(9);
+    for n in 1..=8usize {
+        let t: Vec<K> = (0..1 << n).map(|_| rng.k()).collect();
+        let r = rng.k();
+        let want = bind_low(&t, r);
+        let mut got = t.clone();
+        bind_low_in_place(&mut got, r);
+        assert_eq!(got, want, "n={n}");
+        // Repeated in-place binding agrees with repeated bind_low.
+        let (mut a, mut b) = (t.clone(), t);
+        for _ in 0..n {
+            let r = rng.k();
+            a = bind_low(&a, r);
+            bind_low_in_place(&mut b, r);
+        }
+        assert_eq!(a, b, "n={n} fully bound");
+    }
 }

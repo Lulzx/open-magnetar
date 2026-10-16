@@ -24,8 +24,8 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, bind_low, eq_eval, eq_table, interpolate_eval, mle_eval,
-    mle_eval_bits, sumcheck_prove, sumcheck_verify,
+    SumcheckProof, VerificationError, bind_low_in_place, eq_eval, eq_table, interpolate_eval,
+    mle_eval, mle_eval_bits, sumcheck_prove, sumcheck_verify,
 };
 use om_transcript::{Transcript, u64le};
 use rayon::prelude::*;
@@ -362,6 +362,7 @@ pub fn prove(
         let [ca, cb, cc] = cols;
         tabs.push([eq_table(&tau[ti]), ca, cb, cc]);
     }
+    drop(zs);
     if !unchecked {
         for tab in &tabs {
             let ev = g_evals(&tab[0], &tab[1], &tab[2], &tab[3]);
@@ -380,12 +381,9 @@ pub fn prove(
             let r = transcript.challenge_k(&lbl(p, &[b"outer", &names[ti], b"row"]));
             msgs[ti].push(msg);
             r_row[ti].push(r);
-            tabs[ti] = [
-                bind_low(&tabs[ti][0], r),
-                bind_low(&tabs[ti][1], r),
-                bind_low(&tabs[ti][2], r),
-                bind_low(&tabs[ti][3], r),
-            ];
+            for tab in &mut tabs[ti] {
+                bind_low_in_place(tab, r);
+            }
         }
     }
     for _ in 0..s {
@@ -400,12 +398,9 @@ pub fn prove(
         let r = transcript.challenge_k(&lbl(p, &[b"outer", b"inst"]));
         r_inst.push(r);
         for tab in &mut tabs {
-            *tab = [
-                bind_low(&tab[0], r),
-                bind_low(&tab[1], r),
-                bind_low(&tab[2], r),
-                bind_low(&tab[3], r),
-            ];
+            for t in tab.iter_mut() {
+                bind_low_in_place(t, r);
+            }
         }
     }
     let finals: Vec<Vec<K>> = (0..t)

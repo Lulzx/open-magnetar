@@ -70,6 +70,21 @@ pub fn eq_table(r: &[K]) -> Vec<K> {
 /// # Panics
 /// Panics if `table.len()` is odd (Python raises `ValueError`). An empty
 /// table yields an empty table, as in Python.
+/// In-place form of [`bind_low`]: replaces `table` with its binding
+/// at `r`, halving its length. Same arithmetic, no second allocation;
+/// used on the memory-bound Spartan outer tables.
+pub fn bind_low_in_place(table: &mut Vec<K>, r: K) {
+    assert!(
+        table.len().is_multiple_of(2),
+        "bind_low: table length must be even"
+    );
+    let half = table.len() / 2;
+    for i in 0..half {
+        table[i] = table[2 * i] + r * (table[2 * i] + table[2 * i + 1]);
+    }
+    table.truncate(half);
+}
+
 pub fn bind_low(table: &[K], r: K) -> Vec<K> {
     assert!(
         table.len().is_multiple_of(2),
