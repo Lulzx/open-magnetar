@@ -383,13 +383,47 @@ impl Derived {
 
     /// The Ligerito parameters for a `G` with `ell` variables (Python
     /// `Derived.ligerito_params`); delegates to
-    /// `om_format::ligerito_params`, which ports the same derivation.
+    /// `om_format::ligerito_params`, and for `provable-120` validates
+    /// the complete soundness ledger (`min_rbr_bits >= 120.0`).
     ///
     /// # Errors
-    /// Returns [`KeyError`] if `ell - 7 < 2` or the profile's shape is
-    /// impossible.
+    /// Returns [`KeyError`] if `ell - 7 < 2`, the profile's shape is
+    /// impossible, or any row of the soundness ledger falls below
+    /// 120 bits under `provable-120`.
     pub fn ligerito_params(&self, ell: usize) -> Result<LigeritoParams, KeyError> {
-        Ok(om_format::ligerito_params(&self.vk, ell)?)
+        let p = om_format::ligerito_params(&self.vk, ell)?;
+        if self.vk.pcs_profile == om_format::PcsProfile::Provable120 {
+            let log_t = ell
+                .saturating_sub(crate::params::ELL_OFFSET)
+                .clamp(2, MAX_LOG_T as usize);
+            let m = crate::params::Machine {
+                log_t,
+                c: LOG_CYCLES as usize,
+                rho: self.rho,
+                nu: self.nu,
+                lam: 8,
+                reg_a: REG_A,
+                reg_d: REG_D,
+                reg_p: REG_P,
+                ram_a: self.ram_a,
+                ram_d: self.ram_d,
+                out_m: self.vk.abi.output_log_words as usize,
+                rom_a: self.rom_a,
+                rom_d: self.rom_d,
+                rom_groups: 3,
+                mosaic_claims: 128,
+                ell_offset: ell.saturating_sub(log_t),
+            };
+            let l = crate::params::ledger(log_t, "provable-120", Some(m), Some(p.clone()));
+            if !l.provable() || l.min_rbr_bits() < f64::from(crate::params::TARGET) {
+                return Err(KeyError::Key(format!(
+                    "provable-120 soundness ledger violated: min_rbr_bits = {:.3} < {}",
+                    l.min_rbr_bits(),
+                    crate::params::TARGET
+                )));
+            }
+        }
+        Ok(p)
     }
 
     /// The `om_format::ProofShape` for `inst` (the quantities

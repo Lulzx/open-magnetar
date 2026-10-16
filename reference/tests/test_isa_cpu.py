@@ -242,7 +242,10 @@ class TestInterpreter(unittest.TestCase):
 
     def test_traps(self):
         for ins in ([("ebreak",)], [("addi", 17, 0, 1), ("ecall",)], [("lw", 1, 0, 0)],
-                    [("addi", 1, 0, 1), ("slli", 1, 1, 31), ("lw", 2, 1, 1)]):
+                    [("lw", 0, 0, 1)], [("ld", 0, 0, 0)],
+                    [("addi", 1, 0, 1), ("slli", 1, 1, 31), ("lw", 2, 1, 1)],
+                    [("addi", 1, 0, 1), ("slli", 1, 1, 31), ("lw", 0, 1, 2)],
+                    [("addi", 1, 0, 1), ("slli", 1, 1, 31), ("ld", 0, 1, 4)]):
             code, entry = program(ins + HALT)
             with self.assertRaises(Trap):
                 Machine(code, entry, {}, A).run(100)
@@ -250,7 +253,10 @@ class TestInterpreter(unittest.TestCase):
                 bc.VirtualMachine(bc.expand(code, entry), {}, A).run(100)
 
     def test_x0_and_fence(self):
-        prog = [("addi", 0, 0, 5), ("fence",), ("add", 0, 0, 0), ("addi", 10, 0, 0)] + HALT
+        prog = (prologue_ram_base(1) + [
+            ("addi", 2, 0, 0x55), ("sd", 2, 1, 0),
+            ("ld", 0, 1, 0), ("lw", 0, 1, 4), ("lh", 0, 1, 2), ("lb", 0, 1, 1),
+            ("addi", 0, 0, 5), ("fence",), ("add", 0, 0, 0), ("addi", 10, 0, 0)] + HALT)
         _, _, m, vm = run_both(prog)
         self.assertEqual(m.regs[0], 0)
         self.assertEqual(vm.regs[0], 0)
@@ -453,6 +459,14 @@ class TestCircuit(unittest.TestCase):
         self.assertEqual(s["direct_bits_per_cycle"], 1108)
         self.assertEqual(s["NW"], 8192)
 
+    def test_conformance_suite(self):
+        import run_conformance
+        results = run_conformance.run_builtin_conformance(prove=False)
+        self.assertGreaterEqual(len(results), 38)
+        for r in results:
+            self.assertEqual(r.status, "PASS", f"{r.name}: {r.reason}")
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -59,8 +59,14 @@ class VerifyingKey:
         self.abi.validate()
         if self.pcs not in ("ligerito", "transparent") or self.pcs_profile not in ("provable-120", "test"):
             raise KeyError_("unknown pcs mode or profile")
-        if self.pcs_profile == "test" and self.pcs_t < 1:
-            raise KeyError_("test profile needs pcs_t >= 1")
+        if self.pcs_profile == "provable-120":
+            if not (2 <= self.pcs_r <= 8):
+                raise KeyError_("provable-120 requires 2 <= pcs_r <= 8")
+        else:
+            if self.pcs_t < 1:
+                raise KeyError_("test profile needs pcs_t >= 1")
+            if not (1 <= self.pcs_r <= 8) or self.pcs_t > 256:
+                raise KeyError_("bad test-profile pcs fields")
         if not self.program_digest:
             self.program_digest = abi.program_digest(self.code, self.entry_pc, self.m0_program, self.abi)
         elif self.program_digest != abi.program_digest(self.code, self.entry_pc, self.m0_program, self.abi):
@@ -169,12 +175,29 @@ class Derived:
         return Instance(T, n, s, reg, ram, comps, ids, layout, layout.ell)
 
     def ligerito_params(self, ell: int) -> lg.LigeritoParams:
+        from . import params as parmod
         vk = self.vk
         n = ell - 7
         if n < 2:
             raise KeyError_("G too small for ring switching + Ligerito")
         if vk.pcs_profile == "provable-120":
-            return lg.make_params(n, "provable-120", vk.pcs_r)
+            try:
+                p = lg.make_params(n, "provable-120", vk.pcs_r)
+            except ValueError as e:
+                raise KeyError_(str(e)) from e
+            log_t = max(2, min(MAX_LOG_T, ell - parmod.ELL_OFFSET))
+            m = parmod.Machine(
+                log_t=log_t, c=LOG_CYCLES, rho=self.rho, nu=self.nu, lam=8,
+                reg_a=REG_A, reg_d=REG_D, reg_p=REG_P,
+                ram_a=self.ram_a, ram_d=self.ram_d,
+                out_m=vk.abi.output_log_words,
+                rom_a=self.rom_a, rom_d=self.rom_d, rom_groups=3,
+                mosaic_claims=128, ell_offset=max(0, ell - log_t),
+            )
+            L = parmod.ledger(log_t, "provable-120", machine=m, params=p)
+            if not L.provable or L.min_rbr_bits < parmod.TARGET:
+                raise KeyError_(f"provable-120 soundness ledger violated: {L.min_rbr_bits:.3f} < {parmod.TARGET}")
+            return p
         final = min(6, n - 1)
         ks = lg.schedule(n, final=final)
         return lg.LigeritoParams(n, tuple(ks), (vk.pcs_r,) * len(ks), (vk.pcs_t,) * len(ks))

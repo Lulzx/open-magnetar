@@ -103,12 +103,20 @@ def gap_reps(k: int, log_n_cw: int, bits: int = 120) -> int:
 def make_params(n: int, profile: str = "provable-120", r: int = 2) -> LigeritoParams:
     ks = schedule(n)
     if profile == "provable-120":
+        if not (2 <= r <= 8):
+            raise ValueError("provable-120 requires 2 <= r <= 8")
         t = queries_provable(r, 120)
         base = LigeritoParams(n, tuple(ks), (r,) * len(ks), (t,) * len(ks))
         gs = tuple(gap_reps(k, base.log_codeword(i)) for i, k in enumerate(ks))
-        return LigeritoParams(n, tuple(ks), (r,) * len(ks), (t,) * len(ks),
-                              gs if any(g > 1 for g in gs) else ())
+        p = LigeritoParams(n, tuple(ks), (r,) * len(ks), (t,) * len(ks),
+                           gs if any(g > 1 for g in gs) else ())
+        for sb in soundness_bits(p, "provable-120"):
+            if min(sb["sumcheck"], sb["batch"], sb["gap"], sb["query"]) < 120.0:
+                raise ValueError(f"provable-120 soundness bound violated: {sb}")
+        return p
     elif profile == "conjectured-100":
+        if not (1 <= r <= 8):
+            raise ValueError("conjectured-100 requires 1 <= r <= 8")
         t = queries_conjectured(r, 100)
     else:
         raise ValueError("unknown profile")

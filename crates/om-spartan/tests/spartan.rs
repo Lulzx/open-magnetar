@@ -273,7 +273,20 @@ fn vsp_completeness_and_claims() {
             .map(|c| (c.comp_id, c.point.clone(), c.value))
             .collect::<Vec<_>>()
     };
+    let out_empty = verify(
+        &v.rels,
+        2,
+        &[],
+        &proof,
+        &mut fresh(),
+        b"vsp",
+        None,
+        Some(&v.segs),
+        Some(&v.cross),
+    )
+    .unwrap();
     assert_eq!(triples(&claims), triples(&out));
+    assert_eq!(triples(&out), triples(&out_empty));
     // 7 non-pad segments + 2 cross-step claims.
     assert_eq!(out.len(), 9);
     for c in &out {

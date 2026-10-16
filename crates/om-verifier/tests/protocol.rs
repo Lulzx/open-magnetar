@@ -567,3 +567,71 @@ fn provable120_tampered_blob_rejects() {
         assert!(!verify(&f.vk, &f.inst, b.as_slice().into()), "pos {pos}");
     }
 }
+
+#[test]
+fn provable120_rejects_pcs_r_1_and_out_of_range_rates() {
+    let (code, entry) = program(&fib_program());
+    for bad_r in [0u8, 1, 9] {
+        assert!(
+            keygen(
+                code.clone(),
+                entry,
+                BTreeMap::new(),
+                ap(),
+                PcsMode::Ligerito,
+                PcsProfile::Provable120,
+                bad_r,
+                0,
+            )
+            .is_err(),
+            "pcs_r={bad_r} must be rejected under provable-120"
+        );
+    }
+    // Also reject a serialized vk blob tampered to pcs_r = 1 under provable-120.
+    let f = p120();
+    let mut vk_bytes = om_format::encode_vk(&f.vk);
+    let r_pos = vk_bytes.len() - 5; // mode (1), profile (1), pcs_r (1), pcs_t (4)
+    vk_bytes[r_pos] = 1;
+    assert!(om_format::decode_vk(&vk_bytes).is_err());
+}
+
+#[test]
+fn x0_load_invalid_or_misaligned_rejected_and_valid_accepted_in_ligerito() {
+    // 1. Misaligned / out-of-range loads into x0 must trap and never produce an accepted proof.
+    for bad_prog in [
+        {
+            let mut p = vec![lw(0, 0, 1), addi(10, 0, 7)];
+            p.extend(halt());
+            p
+        },
+        {
+            let mut p = vec![ld(0, 0, 0), addi(10, 0, 7)];
+            p.extend(halt());
+            p
+        },
+        {
+            let mut p = vec![addi(1, 0, 1), slli(1, 1, 31), lw(0, 1, 2), addi(10, 0, 7)];
+            p.extend(halt());
+            p
+        },
+    ] {
+        let (vk, _, _) = make_vk(&bad_prog, PcsMode::Ligerito);
+        assert!(prove_instance(&vk, b"", None).is_err());
+    }
+
+    // 2. Valid load into x0 (aligned, in-range) leaves x0 == 0 and verifies through Ligerito.
+    let mut good_prog = vec![
+        addi(1, 0, 1),
+        slli(1, 1, 31),
+        addi(2, 0, 0x42),
+        sd(2, 1, 0),
+        ld(0, 1, 0),
+        lw(0, 1, 4),
+        addi(10, 0, 7),
+    ];
+    good_prog.extend(halt());
+    let (vk, _, _) = make_vk(&good_prog, PcsMode::Ligerito);
+    let (inst, proof) = prove_instance(&vk, b"", None).expect("valid x0 load proves");
+    assert_eq!(inst.exit_code, 7);
+    assert!(verify(&vk, &inst, (&proof).into()));
+}

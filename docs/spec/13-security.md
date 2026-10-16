@@ -191,8 +191,8 @@ challenge (request carried from 02); otherwise a proof for one statement could b
   256-bit hash. The protocol is *plausibly post-quantum* in the sense of using only hashes, but its collision
   resistance against a quantum adversary is about 85 bits, below the 120-bit target; the FS random-oracle analysis also needs the QROM
   (Don et al. / Chiesa-Manohar-Spooner for IOP-based SNARGs), a loss we do not quantify. **Profile `sha384`** (SHA-384
-  or SHA3-384 with 48-byte digests, to be added to 01/02 as a hasher profile; not in v1 code) would give about `2^128`
-  BHT cost. Statement: v1 default = `sha256`, classical 128-bit collision resistance, ~85-bit against BHT.
+  with 48-byte digests, implemented in `reference/openmagnetar/transcript.py` and `crates/om-transcript` as `--hash sha384` / `Hasher::Sha384`) gives about `2^128`
+  BHT cost. Statement: v1 default = `sha256`, classical 128-bit collision resistance, ~85-bit against BHT; `sha384` available for ~128-bit BHT collision resistance.
 * **Query grinding.** Off in v1. With grinding of `w` bits the query term would improve by `w` bits at prover cost `2^w`;
   the ledger would then lower `t` by `w / -log2((1+rho)/2)`. Not used because the claim is `provable-120` with no prover work
   assumptions and because grinding makes proof generation non-deterministic in time.

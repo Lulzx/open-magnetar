@@ -375,8 +375,20 @@ impl VerifyingKey {
     /// `program_digest` recomputation §12.2 requires of the parser.
     pub fn validate(&self) -> Result<(), FormatError> {
         self.abi.validate()?;
-        if self.pcs_profile == PcsProfile::Test && self.pcs_t < 1 {
-            return Err(FormatError::TestProfileNeedsQueries);
+        match self.pcs_profile {
+            PcsProfile::Provable120 => {
+                if !(2..=8).contains(&self.pcs_r) {
+                    return Err(FormatError::BadPcsFields);
+                }
+            }
+            PcsProfile::Test => {
+                if self.pcs_t < 1 {
+                    return Err(FormatError::TestProfileNeedsQueries);
+                }
+                if !(1..=8).contains(&self.pcs_r) || self.pcs_t > 256 {
+                    return Err(FormatError::BadPcsFields);
+                }
+            }
         }
         if program_digest(&self.code, self.entry_pc, &self.m0_program, &self.abi)
             != self.program_digest
@@ -560,13 +572,23 @@ pub fn ligerito_params(vk: &VerifyingKey, ell: usize) -> Result<LigeritoParams, 
         ))?;
     match vk.pcs_profile {
         PcsProfile::Provable120 => {
-            if n <= 6 || vk.pcs_r < 1 {
-                return Err(FormatError::BadShape("G too small for provable-120"));
+            if n <= 6 || !(2..=8).contains(&vk.pcs_r) {
+                return Err(FormatError::BadShape(
+                    "G too small or bad rate for provable-120",
+                ));
             }
-            Ok(make_params(n, "provable-120", usize::from(vk.pcs_r)))
+            let p = make_params(n, "provable-120", usize::from(vk.pcs_r));
+            for sb in om_pcs::ligerito::soundness_bits(&p, "provable-120") {
+                if sb.sumcheck < 120.0 || sb.batch < 120.0 || sb.gap < 120.0 || sb.query < 120.0 {
+                    return Err(FormatError::BadShape(
+                        "provable-120 soundness bound violated",
+                    ));
+                }
+            }
+            Ok(p)
         }
         PcsProfile::Test => {
-            if vk.pcs_r < 1 || vk.pcs_t < 1 {
+            if !(1..=8).contains(&vk.pcs_r) || !(1..=256).contains(&vk.pcs_t) {
                 return Err(FormatError::BadShape("bad test-profile pcs fields"));
             }
             let ks = schedule_with(n, 6.min(n - 1), 5);

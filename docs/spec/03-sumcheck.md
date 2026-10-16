@@ -236,13 +236,14 @@ uses it, `k ≤ m`):
   `(L_a(r_0))_a` replaces `eq_table(r_low)` on the low `k` index bits).
 * Soundness error becomes `(d·(2^k−1) + d·(m−k)) / |K|`.
 
-The reference model does not implement skip in v1.
+Both `reference/openmagnetar/sumcheck.py` and `crates/om-sumcheck` implement the standalone univariate-skip prover and verifier (`UnivariateSkipProof`, `lagrange_subspace_weights`, `bind_low_subspace`, `sumcheck_prove_skip`, `sumcheck_verify_skip`).
 
 ### 3.10 Reference model
 
 `reference/openmagnetar/mle.py` (`eq_table`, `eq_eval`, `bind_low`, `mle_eval`)
 and `reference/openmagnetar/sumcheck.py` (`SumcheckProof`, `sumcheck_prove`,
-`sumcheck_verify`, `VerificationError`, plus `interpolate_eval`, `batch_claims`,
+`sumcheck_verify`, `UnivariateSkipProof`, `sumcheck_prove_skip`, `sumcheck_verify_skip`,
+`lagrange_subspace_weights`, `bind_low_subspace`, `VerificationError`, plus `interpolate_eval`, `batch_claims`,
 `batched_combine`) with the signatures of C8. Labels appended to the caller's
 base label: `/claim`, `/params`, `/msg`, `/chal` (3.4), `/claims`, `/gamma`
 (3.6). Tests: `reference/tests/test_mle.py` (brute-force MLE, eq table, packing

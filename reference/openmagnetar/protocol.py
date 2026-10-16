@@ -354,9 +354,8 @@ def verify_strict(vk: VerifyingKey, inst: PublicInstance, proof: Proof) -> None:
     _statement(tr, vk, inst)
     pcs = _absorb_commitment(vk, I, proof.root, tr)
 
-    X = [[] for _ in range(1 << s)]
     cross = spartan.CrossStep(D.seg_id["S_in"], D.seg_id["S_out"], cpu.init_vector(public), cpu.fin_vector(public))
-    sp_claims = spartan.verify(D.rels, s, X, proof.spartan, tr, b"vsp", None, D.spartan_segments, cross)
+    sp_claims = spartan.verify(D.rels, s, [], proof.spartan, tr, b"vsp", None, D.spartan_segments, cross)
     virt, direct, xs = _seg_claims(D, sp_claims)
 
     r_o, r_c = _same_point(virt, ["v1", "v2", "rdv"], 6)

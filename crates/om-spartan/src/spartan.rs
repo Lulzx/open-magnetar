@@ -22,7 +22,7 @@
 //!   whole-`W` claim of the no-layout mode keeps Python's sentinel
 //!   `comp_id = -1`, hence `i64` ids.
 
-use om_field::K;
+use om_field::{K, U256};
 use om_sumcheck::{
     SumcheckProof, VerificationError, bind_low_in_place, eq_eval, eq_table, interpolate_eval,
     mle_eval, mle_eval_bits, sumcheck_init, sumcheck_prove, sumcheck_round_evals, sumcheck_verify,
@@ -247,13 +247,13 @@ pub fn segment_table_packed<R: BitRow>(w: &[R], sg: &Segment) -> PackedBits {
 /// `T(t) = T[2i] + t (T[2i] + T[2i+1])`.
 fn g_evals(e: &[K], a: &[K], b: &[K], c: &[K]) -> [K; 4] {
     let half = e.len() / 2;
-    let add_i = |acc: &mut [K; 4], i: usize| {
+    let add_i = |acc: &mut [U256; 4], i: usize| {
         let (e0, e1) = (e[2 * i], e[2 * i + 1]);
         let (a0, a1) = (a[2 * i], a[2 * i + 1]);
         let (b0, b1) = (b[2 * i], b[2 * i + 1]);
         let (c0, c1) = (c[2 * i], c[2 * i + 1]);
-        let p0 = a0 * b0 + c0;
-        let p1 = a1 * b1 + c1;
+        let p0 = (a0.clmul(b0) + U256::from_k(c0)).reduce();
+        let p1 = (a1.clmul(b1) + U256::from_k(c1)).reduce();
         let p2 = (a0 + a1) * (b0 + b1);
         let p_mid = p0 + p1 + p2;
         let px = p0 + p_mid.mul_x() + p2.mul_x().mul_x();
@@ -261,24 +261,24 @@ fn g_evals(e: &[K], a: &[K], b: &[K], c: &[K]) -> [K; 4] {
         let de = e0 + e1;
         let ex = e0 + de.mul_x();
         let ex1 = ex + de;
-        acc[0] += e0 * p0;
-        acc[1] += e1 * p1;
-        acc[2] += ex * px;
-        acc[3] += ex1 * px1;
+        acc[0] += e0.clmul(p0);
+        acc[1] += e1.clmul(p1);
+        acc[2] += ex.clmul(px);
+        acc[3] += ex1.clmul(px1);
     };
     // Each slot is a XOR-sum over `i`, so a parallel reduction is exact.
-    if e.len() >= 1 << 14 {
+    let acc_u = if e.len() >= 1 << 14 {
         (0..half)
             .into_par_iter()
             .fold(
-                || [K::ZERO; 4],
+                || [U256::ZERO; 4],
                 |mut acc, i| {
                     add_i(&mut acc, i);
                     acc
                 },
             )
             .reduce(
-                || [K::ZERO; 4],
+                || [U256::ZERO; 4],
                 |mut x, y| {
                     for (s, v) in x.iter_mut().zip(y) {
                         *s += v;
@@ -287,12 +287,18 @@ fn g_evals(e: &[K], a: &[K], b: &[K], c: &[K]) -> [K; 4] {
                 },
             )
     } else {
-        let mut acc = [K::ZERO; 4];
+        let mut acc = [U256::ZERO; 4];
         for i in 0..half {
             add_i(&mut acc, i);
         }
         acc
-    }
+    };
+    [
+        acc_u[0].reduce(),
+        acc_u[1].reduce(),
+        acc_u[2].reduce(),
+        acc_u[3].reduce(),
+    ]
 }
 
 fn default_names(t: usize) -> Vec<Vec<u8>> {
@@ -465,10 +471,15 @@ fn fold_witness<R: BitRow>(w: &[R], eqi: &[K], half: usize) -> Vec<K> {
 
 /// [`fold_public`] from the instance `eq` table, touching only the
 /// non-zero entries `(1, x_u)` of each public part. Same values: the
-/// skipped terms are `eq * 0`.
+/// skipped terms are `eq * 0`. When `nx == 0`, `sum_u eq(r_inst, u) = 1`
+/// identically over `GF(2^128)`, so `out[0] = 1` without traversing `eqi`.
 fn fold_public_sparse(x: &[Vec<K>], nu: usize, eqi: &[K]) -> Vec<K> {
     let half = 1usize << (nu - 1);
     let mut out = vec![K::ZERO; half];
+    if x.is_empty() || x[0].is_empty() {
+        out[0] = K::ONE;
+        return out;
+    }
     for (u, xu) in x.iter().enumerate() {
         assert!(xu.len() < half, "public input too long");
         out[0] += eqi[u];
@@ -483,22 +494,31 @@ fn fold_public_sparse(x: &[Vec<K>], nu: usize, eqi: &[K]) -> Vec<K> {
 struct CompiledRow {
     /// `(word_idx, bit_mask)` for `col < half` where `coef == K::ONE`.
     ones_masks: Vec<(usize, u64)>,
+    /// `(word_idx, shift, mask)` for consecutive columns in one word where
+    /// `coef[j] == X^j` (`base_coef == K::ONE`).
+    unit_geom_runs: Vec<(usize, u32, u64)>,
     /// `(word_idx, shift, mask, base_coef)` for consecutive columns in one word
-    /// where `coef[j] == base_coef * X^j`.
-    geom_runs: Vec<(usize, u32, u64, K)>,
-    /// Remaining `(word_idx, bit_mask, coef)` with `col < half` and `coef != K::ONE`.
-    other_w: Vec<(usize, u64, K)>,
+    /// where `coef[j] == base_coef * X^j` and `base_coef != K::ONE`.
+    scaled_geom_runs: Vec<(usize, u32, u64, K)>,
+    /// Remaining columns `< half` with `coef != K::ONE`, grouped by distinct `coef`
+    /// so parity is XORed across all `(word_idx, bit_mask)` before adding `coef` once.
+    coef_groups: Vec<(K, Vec<(usize, u64)>)>,
     /// Coefficient at `col == half` (where `z[half] == 1`).
     const_term: K,
     /// Entries `(col - half - 1, coef)` for `col > half`.
     pub_terms: Vec<(usize, K)>,
+    /// True when the row only has `0/1` coefficients and no public terms.
+    is_gf2_only: bool,
+    /// `1` if `const_term == K::ONE`, else `0` (used when `is_gf2_only`).
+    const_bit: u32,
 }
 
 impl CompiledRow {
     fn from_entries(entries: &[(usize, K)], half: usize) -> Self {
         let mut ones_masks: Vec<(usize, u64)> = Vec::new();
-        let mut geom_runs: Vec<(usize, u32, u64, K)> = Vec::new();
-        let mut other_w: Vec<(usize, u64, K)> = Vec::new();
+        let mut unit_geom_runs: Vec<(usize, u32, u64)> = Vec::new();
+        let mut scaled_geom_runs: Vec<(usize, u32, u64, K)> = Vec::new();
+        let mut coef_groups: Vec<(K, Vec<(usize, u64)>)> = Vec::new();
         let mut const_term = K::ZERO;
         let mut pub_terms: Vec<(usize, K)> = Vec::new();
 
@@ -537,7 +557,11 @@ impl CompiledRow {
                 } else {
                     (1u64 << len) - 1
                 };
-                geom_runs.push((wi, shift, mask, coef));
+                if coef.is_one() {
+                    unit_geom_runs.push((wi, shift, mask));
+                } else {
+                    scaled_geom_runs.push((wi, shift, mask, coef));
+                }
                 idx += len;
             } else {
                 let bit = 1u64 << shift;
@@ -547,24 +571,43 @@ impl CompiledRow {
                     } else {
                         ones_masks.push((wi, bit));
                     }
-                } else if let Some(last) = other_w
-                    .last_mut()
-                    .filter(|(w, _, c)| *w == wi && *c == coef)
-                {
-                    last.1 |= bit;
+                } else if let Some((_, masks)) = coef_groups.iter_mut().find(|(c, _)| *c == coef) {
+                    if let Some(last) = masks.last_mut().filter(|(w, _)| *w == wi) {
+                        last.1 |= bit;
+                    } else {
+                        masks.push((wi, bit));
+                    }
                 } else {
-                    other_w.push((wi, bit, coef));
+                    coef_groups.push((coef, vec![(wi, bit)]));
                 }
                 idx += 1;
             }
         }
+        let is_gf2_only = unit_geom_runs.is_empty()
+            && scaled_geom_runs.is_empty()
+            && coef_groups.is_empty()
+            && pub_terms.is_empty()
+            && (const_term.is_zero() || const_term.is_one());
+        let const_bit = u32::from(const_term.is_one());
         CompiledRow {
             ones_masks,
-            geom_runs,
-            other_w,
+            unit_geom_runs,
+            scaled_geom_runs,
+            coef_groups,
             const_term,
             pub_terms,
+            is_gf2_only,
+            const_bit,
         }
+    }
+
+    #[inline(always)]
+    fn eval_bit(&self, words: &[u64]) -> u32 {
+        let mut parity = self.const_bit;
+        for &(wi, mask) in &self.ones_masks {
+            parity ^= (words[wi] & mask).count_ones();
+        }
+        parity & 1
     }
 
     #[inline(always)]
@@ -577,20 +620,30 @@ impl CompiledRow {
         if parity & 1 != 0 {
             v += K::ONE;
         }
-        for &(wi, shift, mask, base_coef) in &self.geom_runs {
-            let bits = (words[wi] >> shift) & mask;
-            if bits != 0 {
-                let kb = K::from_u128(u128::from(bits));
-                v += if base_coef.is_one() {
-                    kb
-                } else {
-                    kb * base_coef
-                };
-            }
+        let mut unit_bits = 0u64;
+        for &(wi, shift, mask) in &self.unit_geom_runs {
+            unit_bits ^= (words[wi] >> shift) & mask;
         }
-        for &(wi, mask, coef) in &self.other_w {
-            if (words[wi] & mask).count_ones() & 1 != 0 {
-                v += coef;
+        if unit_bits != 0 {
+            v += K::from_u128(u128::from(unit_bits));
+        }
+        if !self.scaled_geom_runs.is_empty() {
+            let mut acc_u = U256::ZERO;
+            for &(wi, shift, mask, base_coef) in &self.scaled_geom_runs {
+                let bits = (words[wi] >> shift) & mask;
+                if bits != 0 {
+                    acc_u += K::from_u128(u128::from(bits)).clmul(base_coef);
+                }
+            }
+            v += acc_u.reduce();
+        }
+        for (coef, masks) in &self.coef_groups {
+            let mut p = 0u32;
+            for &(wi, mask) in masks {
+                p ^= (words[wi] & mask).count_ones();
+            }
+            if p & 1 != 0 {
+                v += *coef;
             }
         }
         for &(xi, coef) in &self.pub_terms {
@@ -684,7 +737,10 @@ pub fn prove<R: BitRow>(
         "number of instances must be a power of two"
     );
     let s = q.trailing_zeros() as usize;
-    assert_eq!(x.len(), q, "W and X must have one row per instance");
+    assert!(
+        x.is_empty() || x.len() == q,
+        "W and X must have one row per instance"
+    );
     check_witness_bits(w, nu);
     // With row rounds, the satisfiability check rides along the first
     // row round (which computes every instance's `Az`, `Bz`, `Cz` rows
@@ -695,11 +751,16 @@ pub fn prove<R: BitRow>(
             "witness does not satisfy the SIMD R1CS"
         );
     }
-    let nx = x[0].len();
-    assert!(
-        x.iter().all(|xi| xi.len() == nx),
-        "public inputs must have equal length"
-    );
+    let nx = if x.is_empty() {
+        0
+    } else {
+        let nx = x[0].len();
+        assert!(
+            x.iter().all(|xi| xi.len() == nx),
+            "public inputs must have equal length"
+        );
+        nx
+    };
     if let Some(segs) = segments {
         check_layout(segs, nu);
     }
@@ -732,7 +793,8 @@ pub fn prove<R: BitRow>(
         // matrices has a non-empty row at `2i` or `2i+1` and compile
         // only those active pairs in parallel.
         let check = round == 0 && !unchecked;
-        let compiled: Vec<(Vec<usize>, Vec<[CompiledRow; 6]>)> = orels
+        type CompiledRelPairs = (Vec<usize>, Vec<([CompiledRow; 6], bool)>);
+        let compiled: Vec<CompiledRelPairs> = orels
             .iter()
             .map(|orel| {
                 let half_rows = orel.eq_row.len() / 2;
@@ -749,18 +811,20 @@ pub fn prove<R: BitRow>(
                 } else {
                     (0..half_rows).filter(is_active).collect()
                 };
-                let compile_pair = |&i: &usize| -> [CompiledRow; 6] {
+                let compile_pair = |&i: &usize| -> ([CompiledRow; 6], bool) {
                     let (r0, r1) = (2 * i, 2 * i + 1);
-                    [
+                    let arr = [
                         CompiledRow::from_entries(&orel.mats[0][r0], half),
                         CompiledRow::from_entries(&orel.mats[0][r1], half),
                         CompiledRow::from_entries(&orel.mats[1][r0], half),
                         CompiledRow::from_entries(&orel.mats[1][r1], half),
                         CompiledRow::from_entries(&orel.mats[2][r0], half),
                         CompiledRow::from_entries(&orel.mats[2][r1], half),
-                    ]
+                    ];
+                    let gf2 = arr.iter().all(|c| c.is_gf2_only);
+                    (arr, gf2)
                 };
-                let cmats: Vec<[CompiledRow; 6]> = if active.len() >= PAR_THRESHOLD {
+                let cmats: Vec<([CompiledRow; 6], bool)> = if active.len() >= PAR_THRESHOLD {
                     active.par_iter().map(compile_pair).collect()
                 } else {
                     active.iter().map(compile_pair).collect()
@@ -770,49 +834,117 @@ pub fn prove<R: BitRow>(
             .collect();
 
         // Stream each instance `u` across the active row pairs so `w[u]`
-        // stays hot in L1/L2 cache; multiply by `eq_row` once after the
-        // instance reduction.
-        let init_sums = || -> Vec<Vec<[K; 3]>> {
+        // stays hot in L1/L2 cache; accumulate in unreduced `U256` and
+        // multiply by `eq_row` once after the instance reduction.
+        let init_sums = || -> Vec<Vec<[U256; 3]>> {
             compiled
                 .iter()
-                .map(|(active, _)| vec![[K::ZERO; 3]; active.len()])
+                .map(|(active, _)| vec![[U256::ZERO; 3]; active.len()])
                 .collect()
         };
         let chunk = q.div_ceil(4 * rayon::current_num_threads()).max(1);
-        let pair_sums: Vec<Vec<[K; 3]>> = (0..q)
+        let pair_sums: Vec<Vec<[U256; 3]>> = (0..q)
             .into_par_iter()
             .chunks(chunk)
             .map(|us| {
                 let mut acc = init_sums();
                 for u in us {
                     let wu = &w[u];
-                    let xu = &x[u];
+                    let words_opt = wu.packed_words();
+                    let xu: &[K] = if nx == 0 { &[] } else { &x[u] };
                     for (ti, (orel, (active, cmats))) in orels.iter().zip(&compiled).enumerate() {
                         let equ = orel.eq_inst[u];
                         let rel_acc = &mut acc[ti];
-                        for (k_idx, (&i, cm)) in active.iter().zip(cmats).enumerate() {
-                            let (r0, r1) = (2 * i, 2 * i + 1);
-                            let a0 = eval_sparse_row(&orel.mats[0][r0], &cm[0], wu, xu, half);
-                            let a1 = eval_sparse_row(&orel.mats[0][r1], &cm[1], wu, xu, half);
-                            let b0 = eval_sparse_row(&orel.mats[1][r0], &cm[2], wu, xu, half);
-                            let b1 = eval_sparse_row(&orel.mats[1][r1], &cm[3], wu, xu, half);
-                            let c0 = eval_sparse_row(&orel.mats[2][r0], &cm[4], wu, xu, half);
-                            let c1 = eval_sparse_row(&orel.mats[2][r1], &cm[5], wu, xu, half);
-                            let p0 = a0 * b0 + c0;
-                            let p1 = a1 * b1 + c1;
-                            if check && (!p0.is_zero() || !p1.is_zero()) {
-                                unsatisfied.store(true, Ordering::Relaxed);
+                        if let Some(words) = words_opt {
+                            for (k_idx, (cm, is_gf2)) in cmats.iter().enumerate() {
+                                if *is_gf2 {
+                                    let a0 = cm[0].eval_bit(words);
+                                    let a1 = cm[1].eval_bit(words);
+                                    let b0 = cm[2].eval_bit(words);
+                                    let b1 = cm[3].eval_bit(words);
+                                    let c0 = cm[4].eval_bit(words);
+                                    let c1 = cm[5].eval_bit(words);
+                                    let p0 = (a0 & b0) ^ c0;
+                                    let p1 = (a1 & b1) ^ c1;
+                                    let p2 = (a0 ^ a1) & (b0 ^ b1);
+                                    let slot = &mut rel_acc[k_idx];
+                                    if p0 != 0 {
+                                        if check {
+                                            unsatisfied.store(true, Ordering::Relaxed);
+                                        }
+                                        slot[0] += U256::from_k(equ);
+                                    }
+                                    if p1 != 0 {
+                                        if check {
+                                            unsatisfied.store(true, Ordering::Relaxed);
+                                        }
+                                        slot[1] += U256::from_k(equ);
+                                    }
+                                    if p2 != 0 {
+                                        slot[2] += U256::from_k(equ);
+                                    }
+                                } else {
+                                    let a0 = cm[0].eval_words(words, xu);
+                                    let a1 = cm[1].eval_words(words, xu);
+                                    let b0 = cm[2].eval_words(words, xu);
+                                    let b1 = cm[3].eval_words(words, xu);
+                                    let c0 = cm[4].eval_words(words, xu);
+                                    let c1 = cm[5].eval_words(words, xu);
+                                    let p0 = (a0.clmul(b0) + U256::from_k(c0)).reduce();
+                                    let p1 = (a1.clmul(b1) + U256::from_k(c1)).reduce();
+                                    if check && (!p0.is_zero() || !p1.is_zero()) {
+                                        unsatisfied.store(true, Ordering::Relaxed);
+                                    }
+                                    let p2 = (a0 + a1) * (b0 + b1);
+                                    let slot = &mut rel_acc[k_idx];
+                                    if !p0.is_zero() {
+                                        slot[0] += if p0.is_one() {
+                                            U256::from_k(equ)
+                                        } else {
+                                            equ.clmul(p0)
+                                        };
+                                    }
+                                    if !p1.is_zero() {
+                                        slot[1] += if p1.is_one() {
+                                            U256::from_k(equ)
+                                        } else {
+                                            equ.clmul(p1)
+                                        };
+                                    }
+                                    if !p2.is_zero() {
+                                        slot[2] += if p2.is_one() {
+                                            U256::from_k(equ)
+                                        } else {
+                                            equ.clmul(p2)
+                                        };
+                                    }
+                                }
                             }
-                            let p2 = (a0 + a1) * (b0 + b1);
-                            let slot = &mut rel_acc[k_idx];
-                            if !p0.is_zero() {
-                                slot[0] += if p0.is_one() { equ } else { equ * p0 };
-                            }
-                            if !p1.is_zero() {
-                                slot[1] += if p1.is_one() { equ } else { equ * p1 };
-                            }
-                            if !p2.is_zero() {
-                                slot[2] += if p2.is_one() { equ } else { equ * p2 };
+                        } else {
+                            for (k_idx, (&i, (cm, _))) in active.iter().zip(cmats).enumerate() {
+                                let (r0, r1) = (2 * i, 2 * i + 1);
+                                let a0 = eval_sparse_row(&orel.mats[0][r0], &cm[0], wu, xu, half);
+                                let a1 = eval_sparse_row(&orel.mats[0][r1], &cm[1], wu, xu, half);
+                                let b0 = eval_sparse_row(&orel.mats[1][r0], &cm[2], wu, xu, half);
+                                let b1 = eval_sparse_row(&orel.mats[1][r1], &cm[3], wu, xu, half);
+                                let c0 = eval_sparse_row(&orel.mats[2][r0], &cm[4], wu, xu, half);
+                                let c1 = eval_sparse_row(&orel.mats[2][r1], &cm[5], wu, xu, half);
+                                let p0 = (a0.clmul(b0) + U256::from_k(c0)).reduce();
+                                let p1 = (a1.clmul(b1) + U256::from_k(c1)).reduce();
+                                if check && (!p0.is_zero() || !p1.is_zero()) {
+                                    unsatisfied.store(true, Ordering::Relaxed);
+                                }
+                                let p2 = (a0 + a1) * (b0 + b1);
+                                let slot = &mut rel_acc[k_idx];
+                                if !p0.is_zero() {
+                                    slot[0] += equ.clmul(p0);
+                                }
+                                if !p1.is_zero() {
+                                    slot[1] += equ.clmul(p1);
+                                }
+                                if !p2.is_zero() {
+                                    slot[2] += equ.clmul(p2);
+                                }
                             }
                         }
                     }
@@ -833,7 +965,8 @@ pub fn prove<R: BitRow>(
         let mut evs = vec![[K::ZERO; 4]; t];
         for (ti, (orel, (active, _))) in orels.iter().zip(&compiled).enumerate() {
             for (k_idx, &i) in active.iter().enumerate() {
-                let [s0, s1, s2] = pair_sums[ti][k_idx];
+                let [u0, u1, u2] = pair_sums[ti][k_idx];
+                let (s0, s1, s2) = (u0.reduce(), u1.reduce(), u2.reduce());
                 let (e0, e1) = (orel.eq_row[2 * i], orel.eq_row[2 * i + 1]);
                 let s_mid = s0 + s1 + s2;
                 let px = s0 + s_mid.mul_x() + s2.mul_x().mul_x();
@@ -878,11 +1011,17 @@ pub fn prove<R: BitRow>(
             if q >= 1 << 12 {
                 (0..q)
                     .into_par_iter()
-                    .map(|u| eval_sparse_row(entries, comp, &w[u], &x[u], half))
+                    .map(|u| {
+                        let xu: &[K] = if nx == 0 { &[] } else { &x[u] };
+                        eval_sparse_row(entries, comp, &w[u], xu, half)
+                    })
                     .collect()
             } else {
                 (0..q)
-                    .map(|u| eval_sparse_row(entries, comp, &w[u], &x[u], half))
+                    .map(|u| {
+                        let xu: &[K] = if nx == 0 { &[] } else { &x[u] };
+                        eval_sparse_row(entries, comp, &w[u], xu, half)
+                    })
                     .collect()
             }
         };
@@ -1327,16 +1466,23 @@ pub fn verify(
         let first = rels.first().expect("no relations");
         (first.rho, first.nu)
     };
-    let q = 1usize << s;
-    if x.len() != q {
-        return Err(VerificationError::new("wrong number of public inputs"));
-    }
-    let nx = x[0].len();
-    if x.iter().any(|xi| xi.len() != nx) {
-        return Err(VerificationError::new(
-            "public inputs must have equal length",
-        ));
-    }
+    let nx = if x.is_empty() {
+        0
+    } else {
+        let Some(q) = 1usize.checked_shl(s as u32) else {
+            return Err(VerificationError::new("wrong number of public inputs"));
+        };
+        if x.len() != q {
+            return Err(VerificationError::new("wrong number of public inputs"));
+        }
+        let nx = x[0].len();
+        if x.iter().any(|xi| xi.len() != nx) {
+            return Err(VerificationError::new(
+                "public inputs must have equal length",
+            ));
+        }
+        nx
+    };
     if let Some(segs) = segments {
         check_layout(segs, nu);
     }
@@ -1417,7 +1563,13 @@ pub fn verify(
     }
     let r_col: Vec<K> = r_y[..nu - 1].to_vec();
     let top = r_y[nu - 1];
-    let pub_eval = mle_eval(&fold_public(x, nu, &r_inst), &r_col);
+    // When `nx == 0`, `PF = (1, 0, ..., 0)` because `sum_u eq(r_inst, u) = 1`,
+    // so `PF~(r_col) = prod_j (1 + r_col[j])` in O(nu) without allocating `2^s`.
+    let pub_eval = if nx == 0 {
+        r_col.iter().fold(K::ONE, |acc, &r| acc * (K::ONE + r))
+    } else {
+        mle_eval(&fold_public(x, nu, &r_inst), &r_col)
+    };
     let v_z = (K::ONE + top) * proof.v_w + top * pub_eval;
     if e != mf * v_z {
         return Err(VerificationError::new("inner sum-check final check failed"));

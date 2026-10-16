@@ -45,11 +45,11 @@ target that is not 4-aligned or not in the code, and falling off the end of the 
 
 **[OM-choice] `FENCE.I` is illegal.** It belongs to Zifencei, not RV64I; the guest toolchain never emits it.
 
-**[OM-choice] one deviation of the proof system from the plain interpreter.** A load whose destination is
-`x0` is expanded to a NOP (9.4), so a misaligned or out-of-range load into `x0` is not detected by the proof
-system, whereas `riscv.Machine` traps. This costs nothing (the access has no architectural effect) and keeps the
-invariant of 9.3 that every row with `rd = 0` has all result gates zero. Programs from the guest toolchain
-never do this. The cross-check tests do not generate such programs.
+**[OM-choice] Loads into `x0` preserve memory access checks.** A load whose destination is `x0` still sets
+`mem = 1`, `b_imm = 1`, `imm`, `rs1`, and the width alignment flags `a_h, a_w, a_d` ( enforcing full address
+range and alignment checks identical to `riscv.Machine`), while setting `ln = fill = 0` and clearing
+`ldsb, ldsh, ldsw` so the datapath produces `L = 0` and `rd_val = 0`, preserving the invariant of 9.3 that
+every row with `rd = 0` has all result gates zero.
 
 ## 9.2 Machine model recap
 
@@ -129,7 +129,7 @@ Every row with `mem = 0` has `ln = fill = st_w = a_* = 0`; every row with `mem =
 | `JAL` | `JUMP`, `kc = pc+4` (0 if rd = x0), `seq =` head upc of `pc+off` (TRAP row if absent/misaligned) | 1 |
 | `JALR` | `JUMPI` | 1 |
 | `BEQ … BGEU` | `BRANCH`, `seq =` head of `pc+4`, `tgt =` head of `pc+off` | 1 |
-| `LB LH LW LD LBU LHU LWU` | 1 `LOAD` (rd = x0 → NOP) | 1 |
+| `LB LH LW LD LBU LHU LWU` | 1 `LOAD` (rd = x0 → `ln = fill = 0`, `mem = 1`, `a_*` preserved) | 1 |
 | `SB SH SW SD` | 1 `STORE` | 1 |
 | `SLLI SRLI SRAI SLLIW SRLIW SRAIW` | 1 `SHIFT` (kinds SLL, SRL, SRA, SLLW, SRLW, SRAW; amount = shamt) | 1 |
 | `SLL SRL SRA` | 6 `SHSTAGE`, k = 0..5 | 6 |
@@ -264,8 +264,7 @@ the image. The verifier evaluates `Val~` of the ROM in time linear in its size (
 
 * **14:** the loader MUST give `code` keyed by byte address (4-aligned) and an `entry_pc` in `code`; no
   compressed instructions. The initial register file is all zero (registers are `M_0` for register Twist).
-  HALT exposes `a0` as the public `exit_code` through the `HALTED` row (10.9). The guest runtime must not
-  load into `x0` expecting a fault.
+  HALT exposes `a0` as the public `exit_code` through the `HALTED` row (10.9).
 * **07:** the register Twist takes the ROM columns `rs1, rs2, rd` (6 bits each) as its index claims; the
   bytecode Shout reads the whole row (430 bits) per cycle; register `32` is used as a scratch register
   (`rd_val` written there is a normal write).

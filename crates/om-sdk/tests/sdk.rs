@@ -178,3 +178,18 @@ fn provable120_prove_verify() {
     let (instance, proof_blob) = prove_input(&vk, b"").expect("prove");
     verify(&vk, &instance, &proof_blob).expect("verify accepts");
 }
+
+#[test]
+fn hash_profiles_sha384_and_sha3_256_prove_verify() {
+    let (code, entry) = program(&fib_program());
+    for hash_profile in [Hasher::Sha384, Hasher::Sha3_256] {
+        let mut abi = ap();
+        abi.hash_profile = hash_profile;
+        let params = SdkParams::test_profile().with_abi(abi);
+        let vk = keygen_from_code(&code, entry, &BTreeMap::new(), &params).expect("keygen");
+        let (instance, proof_blob) = prove_input(&vk, b"").expect("prove");
+        verify(&vk, &instance, &proof_blob).expect("verify accepts");
+        verify_bytes(&encode_vk(&vk), &encode_instance(&instance), &proof_blob)
+            .expect("verify_bytes accepts");
+    }
+}

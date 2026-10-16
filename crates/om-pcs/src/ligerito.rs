@@ -12,7 +12,7 @@ use rayon::prelude::*;
 /// Tables at least this large use rayon (exact elementwise maps / XOR sums).
 const PAR_THRESHOLD: usize = 1 << 14;
 
-use crate::merkle::{Digest, MerkleTree, hash_leaf, verify_multi};
+use crate::merkle::{Digest, MerkleTree, verify_multi};
 use crate::ntt;
 
 // ---------------------------------------------------------------- parameters
@@ -192,6 +192,10 @@ pub fn make_params(n: usize, profile: &str, r: usize) -> LigeritoParams {
     let levels = ks.len();
     match profile {
         "provable-120" => {
+            assert!(
+                (2..=8).contains(&r),
+                "provable-120 requires 2 <= r <= 8 (r=1 gives t=290 > 2^8, violating 120-bit beta-batching)"
+            );
             let t = queries_provable(r, 120);
             let base = LigeritoParams::new(n, ks.clone(), vec![r; levels], vec![t; levels]);
             let gs: Vec<usize> = ks
@@ -204,9 +208,21 @@ pub fn make_params(n: usize, profile: &str, r: usize) -> LigeritoParams {
             } else {
                 Vec::new()
             };
-            LigeritoParams::with_gs(n, ks, vec![r; levels], vec![t; levels], gs)
+            let p = LigeritoParams::with_gs(n, ks, vec![r; levels], vec![t; levels], gs);
+            for sb in soundness_bits(&p, "provable-120") {
+                assert!(
+                    sb.sumcheck >= 120.0
+                        && sb.batch >= 120.0
+                        && sb.gap >= 120.0
+                        && sb.query >= 120.0,
+                    "provable-120 soundness bound violated at level {}: {sb:?}",
+                    sb.level
+                );
+            }
+            p
         }
         "conjectured-100" => {
+            assert!((1..=8).contains(&r), "conjectured-100 requires 1 <= r <= 8");
             let t = queries_conjectured(r, 100);
             LigeritoParams::new(n, ks, vec![r; levels], vec![t; levels])
         }
@@ -452,15 +468,15 @@ pub fn column_bytes(col: &[K]) -> Vec<u8> {
 }
 
 #[inline]
-fn hash_col_slice(h: Hasher, col: &[K]) -> Digest {
+fn hash_col_slice_into(h: Hasher, col: &[K], out: &mut [u8]) {
     if col.len() <= 64 {
         let mut buf = [0u8; 64 * 16];
         for (i, x) in col.iter().enumerate() {
             buf[16 * i..16 * (i + 1)].copy_from_slice(&x.to_bytes());
         }
-        hash_leaf(h, &buf[..16 * col.len()])
+        crate::merkle::hash_leaf_into(h, &buf[..16 * col.len()], out);
     } else {
-        hash_leaf(h, &column_bytes(col))
+        crate::merkle::hash_leaf_into(h, &column_bytes(col), out);
     }
 }
 
@@ -476,19 +492,29 @@ pub fn commit_level(h: Hasher, f: Vec<K>, k: usize, r: usize) -> LevelData {
         (0..rows).map(encode_row).collect()
     };
     let n_cw = cw[0].len();
-    // Hash each column as it is serialized: no leaf bytes are kept.
-    let leaf = |q: usize| {
-        hash_leaf(
-            h,
-            &column_bytes(&(0..rows).map(|i| cw[i][q]).collect::<Vec<_>>()),
-        )
+    let dsz = h.digest_size();
+    let mut flat_leaves = vec![0u8; n_cw * dsz];
+    let hash_q = |(q, out): (usize, &mut [u8])| {
+        if rows <= 64 {
+            let mut buf = [0u8; 64 * 16];
+            for (i, row) in cw.iter().enumerate() {
+                buf[16 * i..16 * (i + 1)].copy_from_slice(&row[q].to_bytes());
+            }
+            crate::merkle::hash_leaf_into(h, &buf[..16 * rows], out);
+        } else {
+            crate::merkle::hash_leaf_into(
+                h,
+                &column_bytes(&(0..rows).map(|i| cw[i][q]).collect::<Vec<_>>()),
+                out,
+            );
+        }
     };
-    let leaves: Vec<Digest> = if n_cw * rows >= PAR_THRESHOLD {
-        (0..n_cw).into_par_iter().map(leaf).collect()
+    if n_cw * rows >= PAR_THRESHOLD {
+        flat_leaves.par_chunks_mut(dsz).enumerate().for_each(hash_q);
     } else {
-        (0..n_cw).map(leaf).collect()
-    };
-    let tree = MerkleTree::from_leaf_hashes(h, leaves);
+        flat_leaves.chunks_mut(dsz).enumerate().for_each(hash_q);
+    }
+    let tree = MerkleTree::from_flat_leaf_hashes(h, n_cw, flat_leaves);
     LevelData { f, k, r, cw, tree }
 }
 
@@ -524,7 +550,8 @@ pub fn commit_stripped(p: &LigeritoParams, h: Hasher, mut table: Vec<K>) -> (Dig
     let cols = table.len() / rows;
     let num_cosets = 1usize << r;
     let n_cw = cols << r;
-    let mut leaves: Vec<Digest> = Vec::with_capacity(n_cw);
+    let dsz = h.digest_size();
+    let mut flat_leaves = vec![0u8; n_cw * dsz];
     let mut buf = if num_cosets > 1 {
         vec![K::ZERO; table.len()]
     } else {
@@ -539,23 +566,20 @@ pub fn commit_stripped(p: &LigeritoParams, h: Hasher, mut table: Vec<K>) -> (Dig
             &mut table
         };
         ntt::encode_coset_col_major(slice, rows, cols, r, coset);
+        let coset_out = &mut flat_leaves[coset * cols * dsz..(coset + 1) * cols * dsz];
         if cols * rows >= PAR_THRESHOLD {
-            let chunk_leaves: Vec<Digest> = (0..cols)
-                .into_par_iter()
-                .map(|q_local| hash_col_slice(h, &slice[q_local * rows..(q_local + 1) * rows]))
-                .collect();
-            leaves.extend(chunk_leaves);
+            coset_out
+                .par_chunks_mut(dsz)
+                .zip(slice.par_chunks(rows))
+                .for_each(|(out, col)| hash_col_slice_into(h, col, out));
         } else {
-            for q_local in 0..cols {
-                leaves.push(hash_col_slice(
-                    h,
-                    &slice[q_local * rows..(q_local + 1) * rows],
-                ));
+            for (out, col) in coset_out.chunks_mut(dsz).zip(slice.chunks(rows)) {
+                hash_col_slice_into(h, col, out);
             }
         }
     }
     drop(table);
-    let tree = MerkleTree::from_leaf_hashes(h, leaves);
+    let tree = MerkleTree::from_flat_leaf_hashes(h, n_cw, flat_leaves);
     let root = tree.root();
     (
         root,

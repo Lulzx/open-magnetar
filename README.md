@@ -15,9 +15,10 @@
 Requires Rust 1.90+, Python 3.12+ (for reference tests), and LLVM + `lld` (to build RV64I guests).
 
 ```sh
-# Run Rust and Python test suites (346 Rust tests, 223 Python tests, 27 vector files)
+# Run Rust, Python, and RV64I conformance + fuzz suites (362 Rust, 227 Python, 46 ISA tests)
 cargo test --workspace --release
 python3 -m unittest discover -s reference/tests -t reference
+PYTHONPATH=reference python3 reference/run_conformance.py --prove
 
 # Build C guest examples (A = log2(RAM words), I = log2(input words), O = log2(output words))
 export PATH=/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/lld/bin:$PATH
@@ -46,10 +47,10 @@ Apple M4 Pro (14-core, 24 GiB), `rustc` release build, `A = 16` unless noted. Fu
 | `sha256("abc")` | `2^13` | test | 0.15 s | 41 MiB | 10 ms | 34,526 B |
 | `keccak-f1600` | `2^15` | test | 0.27 s | 112 MiB | 10 ms | 39,806 B |
 | `keccak-f1600` | `2^15` | provable-120 | 0.27 s | 121 MiB | 30 ms | 289,406 B |
-| `radix-sort-u64` (`A = 17`) | `2^22` | test | 20.8 s | 7.7 GiB | 20 ms | 60,806 B |
-| `radix-sort-u64` (`A = 17`) | `2^22` | provable-120 | 21.6 s | 8.2 GiB | 60 ms | 603,942 B (589.8 KiB) |
+| `radix-sort-u64` (`A = 17`) | `2^22` | test | 19.9 s | 8.4 GiB | 10 ms (27 MiB) | 60,806 B |
+| `radix-sort-u64` (`A = 17`) | `2^22` | provable-120 | 20.7 s | 8.4 GiB | 50 ms (47 MiB) | 603,942 B (589.8 KiB) |
 
-At `T = 2^22`, throughput is ~202k cycles/s (`test`) and ~194k cycles/s (`provable-120`), using hardware `PMULL`/`PCLMULQDQ` field arithmetic, ARMv8 SHA-256 intrinsics, column-major coset NTTs, compiled word-mask Spartan evaluation, and packed bit witnesses.
+At `T = 2^22`, throughput is ~211k cycles/s (`test`) and ~203k cycles/s (`provable-120`), using hardware `PMULL`/`PCLMULQDQ` field arithmetic with unreduced 256-bit carryless accumulators, ARMv8 SHA-256 intrinsics, flat zero-allocation Merkle trees, column-major coset NTTs, compiled word-mask Spartan evaluation with round-0 `GF(2)` fast paths, and packed bit witnesses.
 
 ## Directory Layout
 

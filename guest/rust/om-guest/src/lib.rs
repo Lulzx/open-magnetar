@@ -66,10 +66,26 @@ pub fn input() -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(input_base().add(8), len) }
 }
 
+/// Read a little endian `u32` at byte offset `off` in the input.
+pub fn read_u32(off: usize) -> u32 {
+    let b = &input()[off..off + 4];
+    u32::from_le_bytes(b.try_into().unwrap())
+}
+
 /// Read a little endian `u64` at byte offset `off` in the input.
 pub fn read_u64(off: usize) -> u64 {
     let b = &input()[off..off + 8];
     u64::from_le_bytes(b.try_into().unwrap())
+}
+
+/// Read an exact byte slice `[off .. off + len]` from the input.
+pub fn read_bytes(off: usize, len: usize) -> &'static [u8] {
+    &input()[off..off + len]
+}
+
+/// Current byte length of the public output written so far.
+pub fn output_len() -> u64 {
+    unsafe { ptr::read_volatile(output_base() as *const u64) }
 }
 
 /// Append bytes to the public output.
@@ -82,9 +98,21 @@ pub fn write(bytes: &[u8]) {
     }
 }
 
+/// Append one little endian `u32` to the public output.
+pub fn write_u32(v: u32) {
+    write(&v.to_le_bytes());
+}
+
 /// Append one little endian `u64` to the public output.
 pub fn write_u64(v: u64) {
     write(&v.to_le_bytes());
+}
+
+/// Append a slice of `u64` values in little-endian byte order to the public output.
+pub fn write_u64_slice(vals: &[u64]) {
+    for &v in vals {
+        write_u64(v);
+    }
 }
 
 /// Panic handler body for guests: halt with exit code 1.
@@ -92,6 +120,24 @@ pub fn halt_panic() -> ! {
     unsafe {
         core::arch::asm!("li a0, 1", "li a7, 0", "ecall", options(noreturn));
     }
+}
+
+/// Declare the guest entrypoint and default panic handler in one line:
+/// `om_guest::entry!(main);` where `fn main() -> u64`.
+#[macro_export]
+macro_rules! entry {
+    ($main:path) => {
+        #[no_mangle]
+        pub extern "C" fn om_main() -> u64 {
+            let f: fn() -> u64 = $main;
+            f()
+        }
+
+        #[panic_handler]
+        fn _om_panic(_: &core::panic::PanicInfo) -> ! {
+            $crate::halt_panic()
+        }
+    };
 }
 
 // Bump allocator over the linker heap region. It never frees, as spec 14

@@ -3,9 +3,11 @@ import unittest
 
 from openmagnetar.field import K, random_k
 from openmagnetar.mle import eq_table, mle_eval
-from openmagnetar.sumcheck import (SumcheckProof, VerificationError, batch_claims,
-                                   batched_combine, interpolate_eval, sumcheck_prove,
-                                   sumcheck_verify)
+from openmagnetar.sumcheck import (SumcheckProof, UnivariateSkipProof, VerificationError,
+                                   batch_claims, batched_combine, bind_low_subspace,
+                                   interpolate_eval, lagrange_subspace_weights,
+                                   sumcheck_prove, sumcheck_prove_skip,
+                                   sumcheck_verify, sumcheck_verify_skip)
 from openmagnetar.transcript import Transcript
 
 COMBINES = {
@@ -113,3 +115,26 @@ class SumcheckTest(unittest.TestCase):
         self.assertEqual(comb, comb_v)
         r, exp = sumcheck_verify(comb_v, m, 3, proof, vt, b"s")
         self.assertEqual(exp, batched_combine(coeffs_v, [f1, f2], [2, 3])(ev))
+
+    def test_univariate_skip(self):
+        for d in (1, 2, 3):
+            for k in (1, 2, 3):
+                for m in (k, k + 1, k + 2):
+                    tables, f, claim = setup(d, m, d * 100 + k * 10 + m)
+                    pt = Transcript(b"om/sc/skip")
+                    proof, rs, evals = sumcheck_prove_skip(claim, tables, f, d, k, pt, b"sc")
+                    vt = Transcript(b"om/sc/skip")
+                    vrs, exp = sumcheck_verify_skip(claim, m, d, k, proof, vt, b"sc")
+                    self.assertEqual(rs, vrs)
+                    self.assertEqual(exp, f(evals))
+                    w = lagrange_subspace_weights(k, rs[0])
+                    for T, ev in zip(tables, evals):
+                        self.assertEqual(ev, mle_eval(bind_low_subspace(T, w), rs[1:]))
+        tables, f, claim = setup(2, 4, 77)
+        proof, rs, evals = sumcheck_prove_skip(claim, tables, f, 2, 2, Transcript(b"x"), b"s")
+        bad = UnivariateSkipProof([proof.skip_msg[0] + K.ONE] + proof.skip_msg[1:], proof.round_msgs)
+        _, exp2 = sumcheck_verify_skip(claim, 4, 2, 2, bad, Transcript(b"x"), b"s")
+        self.assertNotEqual(exp2, f(evals))
+        with self.assertRaises(VerificationError):
+            sumcheck_verify_skip(claim, 4, 2, 2, UnivariateSkipProof(proof.skip_msg[:-1], proof.round_msgs), Transcript(b"x"), b"s")
+

@@ -87,4 +87,29 @@ impl Hasher {
             Self::Sha384 => crate::sha512::sha384_slices(slices).to_vec(),
         }
     }
+
+    /// Hash the concatenation of `slices` directly into `out` (`digest_size()` bytes)
+    /// without any heap allocation.
+    #[inline]
+    pub fn digest_slices_into(&self, slices: &[&[u8]], out: &mut [u8]) {
+        match self {
+            Self::Sha256 => out.copy_from_slice(&crate::sha256::digest_slices(slices)),
+            Self::Sha3_256 => out.copy_from_slice(&crate::keccak::sha3_256_slices(slices)),
+            Self::Sha384 => out.copy_from_slice(&crate::sha512::sha384_slices(slices)),
+        }
+    }
+
+    /// Hash a Merkle internal node `H(0x01 || left || right)` directly into `out`.
+    #[inline]
+    pub fn hash_merkle_node_into(&self, left: &[u8], right: &[u8], out: &mut [u8]) {
+        match self {
+            Self::Sha256 => crate::sha256::hash_node_64(left, right, out),
+            Self::Sha3_256 => {
+                out.copy_from_slice(&crate::keccak::sha3_256_slices(&[&[0x01], left, right]));
+            }
+            Self::Sha384 => {
+                out.copy_from_slice(&crate::sha512::sha384_slices(&[&[0x01], left, right]));
+            }
+        }
+    }
 }

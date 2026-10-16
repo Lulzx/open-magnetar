@@ -115,11 +115,17 @@ fn params_and_queries() {
     assert_eq!(lg::schedule(24), vec![5, 5, 4, 4]);
     assert_eq!(lg::schedule(20), vec![5, 5, 4]);
     assert_eq!(lg::schedule(22), vec![4, 4, 4, 4]);
-    for d in lg::soundness_bits(&lg::make_params(24, "provable-120", 2), "provable-120") {
-        assert!(d.query >= 120.0, "{d:?}");
-        assert!(d.sumcheck >= 120.0, "{d:?}");
-        assert!(d.batch >= 120.0, "{d:?}");
+    for r in 2..=8 {
+        for d in lg::soundness_bits(&lg::make_params(24, "provable-120", r), "provable-120") {
+            assert!(d.query >= 120.0, "{d:?}");
+            assert!(d.sumcheck >= 120.0, "{d:?}");
+            assert!(d.batch >= 120.0, "{d:?}");
+            assert!(d.gap >= 120.0, "{d:?}");
+        }
     }
+    // r = 1 gives t = 290 > 256 (batching bits 119.82 < 120), so provable-120 must reject it.
+    assert!(std::panic::catch_unwind(|| lg::make_params(24, "provable-120", 1)).is_err());
+    assert!(std::panic::catch_unwind(|| lg::make_params(24, "provable-120", 9)).is_err());
 }
 
 #[test]

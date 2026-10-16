@@ -123,7 +123,7 @@ Grouped by section; each item points at the section that justifies it. Cross-cut
 * **[07 twist-shout](07-twist-shout.md).** Frobenius one-hot check with the resampling rule; several claim groups in one Shout instance; one read/write sum-check for all accesses with the row-sum folded in by `α_0`,
   cycle variables first; final-memory claim for the output (ours); `d` by the `a_c ≤ 4` rule (registers `d = 2`); `M_0` evaluated by the verifier.
 * **[08 router](08-router.md).** `h = (amount, kind)` split; invalid routings have no entries; `R̃` by an `O(|supp|)` algorithm; uniform degree per instance; SEXT32/ZEXT32 as shift kinds; the XOR-feed trick for stores.
-* **[09 isa](09-isa.md).** `FENCE.I` illegal; a load into `x0` is a NOP (the one deviation from the plain interpreter); register-amount shifts cost 6 or 5 cycles; `FENCE` is a one-cycle NOP; `ECALL` is HALT only;
+* **[09 isa](09-isa.md).** `FENCE.I` illegal; loads into `x0` preserve memory range/alignment checks while setting `ln = fill = 0` so `rd_val = 0`; register-amount shifts cost 6 or 5 cycles; `FENCE` is a one-cycle NOP; `ECALL` is HALT only;
   micro-PC convention with `HALTED = 0`, `TRAP = 1`.
 * **[10 cpu-circuit](10-cpu-circuit.md).** `c = 2` cycles per instance; the B/K split of constraints; the zero-detect chain; `rd = 0` handled by a ROM invariant; load path in the R1CS (no third router); `A ≤ 28`; PC
   tracked as the ROM column `rpc`; `ridx` 64 bits wide (11).
@@ -141,7 +141,7 @@ Grouped by section; each item points at the section that justifies it. Cross-cut
    Shout claims; the **final-memory claim** for the output, which the paper does not specify (07).
 5. **Ligerito over `K` only** (no separate extension field), with an explicit level schedule and parameter profiles; the proximity-gap accounting needs `gs = 2` repetitions to reach 120 provable bits (04, 13).
 6. **Routers:** `h = (amount, kind)` instead of a `√H` split; shift kinds include SEXT32/ZEXT32; loads are handled by the R1CS, not a third router (08, 10).
-7. **ISA:** a load into `x0` is a NOP; `FENCE` costs a cycle; only HALT is a syscall; misaligned access is unprovable (09, C5, C6).
+7. **ISA:** `FENCE` costs a cycle; only HALT is a syscall; misaligned access is unprovable (09, C5, C6).
 8. **Circuit:** 4 cycles per instance, concrete constraint families for both relations; the PC is a ROM column, not a witness word (10).
 9. **Protocol composition** (11): the claim graph above, derived Shout columns instead of packed bytecode claims, `T` per proof, a program-carrying verifying key and a ROM evaluated by the verifier in linear time (a committed
    ROM would need more of 04/05 and is future work).

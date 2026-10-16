@@ -2,8 +2,10 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, batch_claims, batched_combine, bind_low, combine_sum, eq_eval, eq_table,
-    interpolate_eval, mle_eval, sumcheck_prove, sumcheck_round_evals, sumcheck_verify,
+    SumcheckProof, UnivariateSkipProof, batch_claims, batched_combine, bind_low, bind_low_subspace,
+    combine_sum, eq_eval, eq_table, interpolate_eval, lagrange_subspace_weights, mle_eval,
+    sumcheck_prove, sumcheck_prove_skip, sumcheck_round_evals, sumcheck_verify,
+    sumcheck_verify_skip,
 };
 use om_transcript::Transcript;
 
@@ -385,4 +387,52 @@ fn test_parallel_large_tables_match_sequential() {
     assert_eq!(pv.exp, combine(d)(&pv.evals));
     let direct: Vec<K> = pv.tables.iter().map(|t| mle_eval(t, &pv.r)).collect();
     assert_eq!(pv.evals, direct);
+}
+
+#[test]
+fn test_univariate_skip_completeness_and_tamper() {
+    for d in [1usize, 2, 3] {
+        for k in [1usize, 2, 3] {
+            for m in [k, k + 1, k + 3] {
+                let (tables, claim) = setup(d, m, (d * 100 + k * 10 + m) as u64);
+                let f = combine(d);
+                let mut pt = Transcript::new_default(b"om/sc/skip");
+                let (proof, rs, evals) =
+                    sumcheck_prove_skip(claim, tables.clone(), &f, d, k, &mut pt, b"sc");
+                let mut vt = Transcript::new_default(b"om/sc/skip");
+                let (vrs, exp) =
+                    sumcheck_verify_skip(claim, m, d, k, &proof, &mut vt, b"sc").unwrap();
+                assert_eq!(rs, vrs, "d={d} k={k} m={m}");
+                assert_eq!(exp, f(&evals), "d={d} k={k} m={m}");
+                assert_eq!(proof.skip_msg.len(), d * ((1 << k) - 1));
+                assert_eq!(proof.round_msgs.len(), m - k);
+
+                // Cross-check final claims against direct L_a(r_0) + MLE evaluation.
+                let w = lagrange_subspace_weights(k, rs[0]);
+                assert_eq!(w.iter().copied().fold(K::ZERO, |a, x| a + x), K::ONE);
+                for (tab, &ev) in tables.iter().zip(&evals) {
+                    let bound = bind_low_subspace(tab, &w);
+                    assert_eq!(ev, mle_eval(&bound, &rs[1..]), "d={d} k={k} m={m}");
+                }
+            }
+        }
+    }
+
+    // Tampered skip message causes verification mismatch or error.
+    let (tables, claim) = setup(2, 5, 99);
+    let f = combine(2);
+    let mut pt = Transcript::new_default(b"om/sc/skip");
+    let (proof, _rs, evals) = sumcheck_prove_skip(claim, tables, &f, 2, 2, &mut pt, b"sc");
+    let mut bad = proof.clone();
+    bad.skip_msg[0] += K::ONE;
+    let mut vt = Transcript::new_default(b"om/sc/skip");
+    let (_vrs, exp2) = sumcheck_verify_skip(claim, 5, 2, 2, &bad, &mut vt, b"sc").unwrap();
+    assert_ne!(exp2, f(&evals));
+
+    let bad_len = UnivariateSkipProof {
+        skip_msg: proof.skip_msg[..2].to_vec(),
+        round_msgs: proof.round_msgs,
+    };
+    let mut vt = Transcript::new_default(b"om/sc/skip");
+    assert!(sumcheck_verify_skip(claim, 5, 2, 2, &bad_len, &mut vt, b"sc").is_err());
 }

@@ -800,36 +800,33 @@ fn expand_instr_inner(i: &Instr, pc: u64, tgt_upc: &dyn Fn(u64) -> u32) -> Vec<(
         }
         op if op.load_info().is_some() => {
             let (nb, sg) = op.load_info().expect("load");
-            if i.rd == 0 {
-                // Spec 9.1 deviation: a load into x0 expands to a NOP, so
-                // the proof system does not detect it being misaligned or
-                // out of range (the plain Machine traps).
-                push!(Row::default());
+            let ln = if i.rd == 0 {
+                0
             } else {
-                let ln = ((1u16 << nb) - 1) as u8;
-                let mut r = Row {
-                    rs1: i.rs1,
-                    rd: i.rd,
-                    b_imm: true,
-                    imm: i.imm as u64,
-                    mem: true,
-                    ln,
-                    fill: if sg { !ln } else { 0 },
-                    a_h: nb >= 2,
-                    a_w: nb >= 4,
-                    a_d: nb == 8,
-                    ..Row::default()
-                };
-                if sg {
-                    match nb {
-                        1 => r.ldsb = true,
-                        2 => r.ldsh = true,
-                        4 => r.ldsw = true,
-                        _ => {}
-                    }
+                ((1u16 << nb) - 1) as u8
+            };
+            let mut r = Row {
+                rs1: i.rs1,
+                rd: i.rd,
+                b_imm: true,
+                imm: i.imm as u64,
+                mem: true,
+                ln,
+                fill: if i.rd != 0 && sg { !ln } else { 0 },
+                a_h: nb >= 2,
+                a_w: nb >= 4,
+                a_d: nb == 8,
+                ..Row::default()
+            };
+            if i.rd != 0 && sg {
+                match nb {
+                    1 => r.ldsb = true,
+                    2 => r.ldsh = true,
+                    4 => r.ldsw = true,
+                    _ => {}
                 }
-                push!(r);
             }
+            push!(r);
         }
         op if op.store_info().is_some() => {
             let nb = op.store_info().expect("store");

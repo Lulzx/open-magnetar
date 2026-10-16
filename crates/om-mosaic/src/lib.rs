@@ -36,5 +36,5 @@ pub mod mosaic;
 pub use mosaic::{
     BIT_ROUNDS, BatchProof, Claim, LABEL, Layout, MAX_CLAIMS, Placement, batch_prove,
     batch_prove_packed, batch_prove_packed_with, batch_verify, build_g, build_g_packed,
-    compute_layout, direct_g_eval, eq_sum_table, lift_point,
+    compute_layout, direct_g_eval, eq_sum_table, lift_point, place_in_g_packed,
 };

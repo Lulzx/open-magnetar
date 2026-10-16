@@ -120,10 +120,16 @@ class TestLigerito(unittest.TestCase):
         self.assertEqual(lg.schedule(24), [5, 5, 4, 4])
         self.assertEqual(lg.schedule(20), [5, 5, 4])
         self.assertEqual(lg.schedule(22), [4, 4, 4, 4])
-        for d in lg.soundness_bits(lg.make_params(24)):
-            self.assertGreaterEqual(d["query"], 120)
-            self.assertGreaterEqual(d["sumcheck"], 120)
-            self.assertGreaterEqual(d["batch"], 120)
+        for r in range(2, 9):
+            for d in lg.soundness_bits(lg.make_params(24, "provable-120", r)):
+                self.assertGreaterEqual(d["query"], 120)
+                self.assertGreaterEqual(d["sumcheck"], 120)
+                self.assertGreaterEqual(d["batch"], 120)
+                self.assertGreaterEqual(d["gap"], 120)
+        with self.assertRaises(ValueError):
+            lg.make_params(24, "provable-120", 1)
+        with self.assertRaises(ValueError):
+            lg.make_params(24, "provable-120", 9)
 
     def test_bitpcs_end_to_end_and_negative(self):
         ell = 11  # packed n = 4 variables

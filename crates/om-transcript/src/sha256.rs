@@ -70,6 +70,32 @@ pub fn digest_slices(slices: &[&[u8]]) -> [u8; 32] {
     out
 }
 
+/// Fast path for `SHA256(0x01 || left_32 || right_32)` (65 bytes = two 64-byte blocks).
+#[inline]
+pub fn hash_node_64(left: &[u8], right: &[u8], out: &mut [u8]) {
+    debug_assert_eq!(left.len(), 32);
+    debug_assert_eq!(right.len(), 32);
+    debug_assert_eq!(out.len(), 32);
+    let mut b0 = [0u8; 64];
+    b0[0] = 0x01;
+    b0[1..33].copy_from_slice(left);
+    b0[33..64].copy_from_slice(&right[..31]);
+
+    let mut b1 = [0u8; 64];
+    b1[0] = right[31];
+    b1[1] = 0x80;
+    // 65 bytes = 520 bits = 0x0208 in big-endian u64 at b1[56..64].
+    b1[62] = 0x02;
+    b1[63] = 0x08;
+
+    let mut h = IV256;
+    compress_block(&mut h, &b0);
+    compress_block(&mut h, &b1);
+    for (i, word) in h.iter().enumerate() {
+        out[4 * i..4 * i + 4].copy_from_slice(&word.to_be_bytes());
+    }
+}
+
 #[inline(always)]
 fn compress_block(h: &mut [u32; 8], block: &[u8; 64]) {
     #[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]

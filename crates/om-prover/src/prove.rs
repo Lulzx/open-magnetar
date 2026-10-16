@@ -16,7 +16,7 @@ use om_isa::riscv::Trap;
 use om_memcheck::onehot::AddrComps;
 use om_memcheck::shout::shout_prove;
 use om_memcheck::twist::{self as tw, FinalMem, TwistClaims};
-use om_mosaic::{batch_prove_packed, build_g_packed};
+use om_mosaic::{batch_prove_packed, place_in_g_packed};
 use om_pcs::pcs::BitPCS;
 use om_router as rt;
 use om_spartan::SegmentKind;
@@ -245,7 +245,7 @@ pub fn prove_execution(
     let vk = &derived.vk;
     let inst = ex.instance.clone();
     let di = derived.instance(inst.t)?;
-    let (n, s) = (di.n, di.s);
+    let n = di.n;
     let unchecked = hook.is_some();
     if let Some(h) = hook.as_deref_mut() {
         h(&mut ex.trace);
@@ -321,10 +321,11 @@ pub fn prove_execution(
     drop(std::mem::take(&mut ex.trace));
     crate::memtrace::mark("component witnesses");
 
-    let mut tables: BTreeMap<i64, PackedBits> = BTreeMap::new();
+    let mut g = PackedBits::zero(1usize << di.layout.ell);
     for (i, sg) in derived.spartan_segments.iter().enumerate() {
         if sg.kind == SegmentKind::Direct {
-            tables.insert(i as i64, segment_table_packed(&w, sg));
+            let seg_tab = segment_table_packed(&w, sg);
+            place_in_g_packed(&mut g, &di.layout, i as i64, &seg_tab);
         }
     }
     for (x, comps) in [
@@ -333,25 +334,41 @@ pub fn prove_execution(
         ("wa", &reg_wit.wa),
     ] {
         for i in 0..comps.d() {
-            tables.insert(di.ids[&format!("twist/reg/{x}/{}", i + 1)], comps.packed(i));
+            let tab = comps.packed(i);
+            place_in_g_packed(
+                &mut g,
+                &di.layout,
+                di.ids[&format!("twist/reg/{x}/{}", i + 1)],
+                &tab,
+            );
         }
     }
-    tables.insert(di.ids["twist/reg/inc"], reg_wit.inc_packed(di.reg.ell));
+    {
+        let tab = reg_wit.inc_packed(di.reg.ell);
+        place_in_g_packed(&mut g, &di.layout, di.ids["twist/reg/inc"], &tab);
+    }
     for i in 0..ram_wit.ra[0].d() {
-        tables.insert(
+        let tab = ram_wit.ra[0].packed(i);
+        place_in_g_packed(
+            &mut g,
+            &di.layout,
             di.ids[&format!("twist/ram/ra0/{}", i + 1)],
-            ram_wit.ra[0].packed(i),
+            &tab,
         );
     }
-    tables.insert(di.ids["twist/ram/inc"], ram_wit.inc_packed(di.ram.ell));
+    {
+        let tab = ram_wit.inc_packed(di.ram.ell);
+        place_in_g_packed(&mut g, &di.layout, di.ids["twist/ram/inc"], &tab);
+    }
     for i in 0..sh_comps.d() {
-        tables.insert(
+        let tab = sh_comps.packed(i);
+        place_in_g_packed(
+            &mut g,
+            &di.layout,
             di.ids[&format!("shout/bytecode/ra/{}", i + 1)],
-            sh_comps.packed(i),
+            &tab,
         );
     }
-    let g = build_g_packed(&di.layout, &tables);
-    drop(tables);
     crate::memtrace::mark("build G");
 
     // Step 1: statement, commitment.
@@ -370,7 +387,6 @@ pub fn prove_execution(
     crate::memtrace::mark("commit");
 
     // Step 2: Virtual Spartan.
-    let x: Vec<Vec<om_field::K>> = vec![Vec::new(); 1usize << s];
     let cross = CrossStep {
         in_id: derived.seg_id["S_in"],
         out_id: derived.seg_id["S_out"],
@@ -380,7 +396,7 @@ pub fn prove_execution(
     let (sp_proof, sp_claims) = om_spartan::spartan::prove(
         &derived.rels,
         &w,
-        &x,
+        &[],
         &mut tr,
         b"vsp",
         None,

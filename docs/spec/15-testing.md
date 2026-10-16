@@ -26,7 +26,7 @@ is in 13; the calculator `reference/openmagnetar/params.py` is tested by `refere
 | L1 sub-protocol | one reduction, honest prover accepted, tampered/malicious prover rejected | `test_sumcheck, test_ligerito, test_ring_switch, test_mosaic, test_spartan, test_onehot, test_shout, test_twist, test_router` | every PR |
 | L2 arithmetization | emulator vs. virtual machine vs. circuit | `test_isa_cpu, test_abi, test_elf` | every PR |
 | L3 end-to-end | composed prover/verifier on toy programs (11) | `test_protocol` (when present) | every PR |
-| L4 conformance | riscv-tests / riscv-arch-test (15.5), vector replay by the Rust crates | `reference/run_conformance.py` (not yet written), Rust CI | nightly / every PR for vectors |
+| L4 conformance | riscv-tests / riscv-arch-test (15.5), vector replay by the Rust crates | `reference/run_conformance.py`, Rust CI | nightly / every PR for vectors |
 | L5 accounting | soundness ledger, parameter profiles | `test_params` | every PR |
 
 Rule: a spec section is not `stable` until its L1 tests contain, for each of its soundness-ledger rows in 13, a test that
@@ -98,10 +98,10 @@ agree with the sections' lemmas.
   compared to the reference signatures. This also exercises the final-memory claim.
 
 Execution targets: `riscv.Machine` (L2, Python), then the Rust emulator (same ELFs), then the proof path, where each test
-ELF must produce a **verifying proof** with `T` padded to a power of two (the small tests make this cheap). A
-`reference/run_conformance.py` that downloads nothing, takes a directory of prebuilt ELFs and reports pass/skip/fail per test is
-planned but **not written yet**; until then conformance rests on the hand-written program tests in `test_isa_cpu.py` and
-`test_elf.py`. Instructions covered by hand tests must be tracked in a table against the RV64I list of 09.
+ELF must produce a **verifying proof** with `T` padded to a power of two (the small tests make this cheap).
+`reference/run_conformance.py` downloads nothing, takes either `--elf-dir <dir>` of prebuilt ELFs (with optional `--skip-file`
+and `--prove`) or runs its built-in 40-instruction RV64I conformance suite across `Machine`, `VirtualMachine`, `cpu_circuit`,
+and `protocol`, reporting pass/skip/fail per test.
 
 ## 15.6 Differential testing
 
@@ -121,12 +121,12 @@ The Rust emulator joins as a fourth executor, and the Rust and Python traces are
 
 ## 15.7 Fuzzing
 
-Targets (Rust, `cargo-fuzz` / `libfuzzer`; Python mirror with `random` byte flips for the reference):
+Targets (`crates/om-verifier/tests/fuzz.rs` in Rust; Python mirror in `reference/tests/`):
 
-1. **Proof parser** (12): arbitrary bytes into `Proof::from_bytes`: must never panic, allocate more than a bound derived
+1. **Proof parser** (12): arbitrary bytes into `decode_proof`: must never panic, allocate more than a bound derived
    from the vk, or loop; structured fuzzing by mutating a valid proof (bit flips, truncation, duplication, length-field
    edits). Valid-proof mutations must be rejected by `verify`, never accepted.
-2. **vk parser** and **ELF loader** (14): arbitrary bytes.
+2. **vk parser** and **ELF loader** (14): arbitrary bytes into `decode_vk`, `decode_instance`, and `om_elf::load`.
 3. **Verifier, whole**: random vk-compatible proofs; invariant: reject.
 4. **Merkle multi-opening** (04 4.2): random index sets and `auth` lists, including non-ascending and duplicated indices.
 5. **Transcript**: encoding round trips and domain-separation (no two distinct operation lists give the same state).

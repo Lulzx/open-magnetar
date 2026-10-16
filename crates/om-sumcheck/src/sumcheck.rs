@@ -423,3 +423,257 @@ pub fn batched_combine(
         out
     })
 }
+
+// ---- Spec 03 §3.9: Univariate skip (version-2 extension) ----
+
+/// A sum-check proof with a `k`-variable univariate skip in round 0 (spec 03 §3.9):
+/// `skip_msg` holds the `d · (2^k - 1)` evaluations `s(t_j)` for `j = 0..=d_s`
+/// omitting `j = 2^k - 1`, and `round_msgs` holds the `m - k` standard round messages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnivariateSkipProof {
+    pub skip_msg: Vec<K>,
+    pub round_msgs: Vec<Vec<K>>,
+}
+
+/// Lagrange basis weights `[L_0(z), …, L_{2^k - 1}(z)]` on the `B`-subspace
+/// `D = {t_0, …, t_{2^k - 1}}` (spec 03 §3.9). For `a < 2^k` and `z = t_b` (`b < 2^k`),
+/// `L_a(t_b) = [a == b]`.
+///
+/// # Panics
+/// Panics if `k == 0` or `k > 16`.
+pub fn lagrange_subspace_weights(k: usize, z: K) -> Vec<K> {
+    assert!((1..=16).contains(&k), "skip parameter k must be in 1..=16");
+    let dom = 1usize << k;
+    let ts: Vec<K> = (0..dom).map(|a| K::t(a as u128)).collect();
+    // If z is one of the subspace points t_b, return the unit vector e_b directly.
+    for (b, &tb) in ts.iter().enumerate() {
+        if z == tb {
+            let mut out = vec![K::ZERO; dom];
+            out[b] = K::ONE;
+            return out;
+        }
+    }
+    // Common product P(z) = Π_{b < 2^k} (z + t_b), and on an F_2-linear subspace
+    // Π_{b != a} (t_a + t_b) = Π_{u != 0} t_u is a non-zero constant C independent of a!
+    let mut prod_num = K::ONE;
+    let mut den_const = K::ONE;
+    for (u, &tu) in ts.iter().enumerate() {
+        prod_num *= z + tu;
+        if u != 0 {
+            den_const *= tu;
+        }
+    }
+    let factor = prod_num / den_const;
+    ts.iter().map(|&ta| factor / (z + ta)).collect()
+}
+
+/// Bind the low `k` variables of `table` against the Lagrange subspace weights
+/// `weights = lagrange_subspace_weights(k, z)`:
+/// `out[b'] = Σ_{a < 2^k} weights[a] · table[a + 2^k · b']`.
+pub fn bind_low_subspace(table: &[K], weights: &[K]) -> Vec<K> {
+    let dom = weights.len();
+    assert!(
+        dom.is_power_of_two() && table.len().is_multiple_of(dom),
+        "bind_low_subspace: table length must be a multiple of weights.len()"
+    );
+    let out_len = table.len() / dom;
+    let eval_chunk = |chunk: &[K]| -> K {
+        let mut acc = om_field::U256::ZERO;
+        for (&w, &v) in weights.iter().zip(chunk) {
+            acc += w.clmul(v);
+        }
+        acc.reduce()
+    };
+    if table.len() >= PAR_THRESHOLD && out_len >= 64 {
+        table.par_chunks(dom).map(eval_chunk).collect()
+    } else {
+        table.chunks(dom).map(eval_chunk).collect()
+    }
+}
+
+/// Prove a sum-check with a `k`-variable univariate skip on round 0 (spec 03 §3.9).
+///
+/// Replaces the first `k` variables (`1 <= k <= m`) with a single univariate round
+/// of degree `d_s = degree * (2^k - 1)` over `D = {t_0, …, t_{2^k - 1}}`, followed
+/// by `m - k` ordinary sum-check rounds.
+///
+/// Returns `(proof, point [r_0, r_1, …, r_{m-k}], [T̂(r_0, r') for T in tables])`.
+///
+/// # Panics
+/// Panics if `degree < 1`, `k < 1`, `k > m`, tables do not share a power-of-two
+/// length, or the claim is inconsistent with the tables.
+pub fn sumcheck_prove_skip(
+    claim: K,
+    tables: Vec<Vec<K>>,
+    combine: &(dyn Fn(&[K]) -> K + Sync),
+    degree: usize,
+    k: usize,
+    transcript: &mut Transcript,
+    label: &[u8],
+) -> (UnivariateSkipProof, Vec<K>, Vec<K>) {
+    assert!(degree >= 1, "degree must be >= 1");
+    assert!(!tables.is_empty(), "sumcheck_prove_skip: no tables");
+    let size = tables[0].len();
+    assert!(
+        size != 0 && size.is_power_of_two() && tables.iter().all(|t| t.len() == size),
+        "tables must share a power-of-two length"
+    );
+    let m = size.trailing_zeros() as usize;
+    assert!(
+        k >= 1 && k <= m,
+        "skip parameter k must satisfy 1 <= k <= m"
+    );
+
+    sumcheck_init(transcript, label, claim, m, degree);
+    let dom = 1usize << k;
+    let ds = degree * (dom - 1);
+    let blocks = size / dom;
+    let n_tabs = tables.len();
+
+    // Evaluate s(t_j) for j = 0..=ds.
+    // For j < dom, T̂(t_j, b') = T[j + dom * b'] directly.
+    // For j >= dom, T̂(t_j, b') = Σ_{a < dom} L_a(t_j) * T[a + dom * b'].
+    let mut s_evals = vec![K::ZERO; ds + 1];
+    for (j, slot) in s_evals.iter_mut().enumerate() {
+        if j < dom {
+            let mut acc = K::ZERO;
+            let mut vals = vec![K::ZERO; n_tabs];
+            for b in 0..blocks {
+                let idx = j + dom * b;
+                for (ti, tab) in tables.iter().enumerate() {
+                    vals[ti] = tab[idx];
+                }
+                acc += combine(&vals);
+            }
+            *slot = acc;
+        } else {
+            let w = lagrange_subspace_weights(k, K::t(j as u128));
+            let bound: Vec<Vec<K>> = tables.iter().map(|t| bind_low_subspace(t, &w)).collect();
+            *slot = combine_sum(&bound, combine);
+        }
+    }
+
+    let sub_sum = s_evals[..dom].iter().fold(K::ZERO, |acc, &x| acc + x);
+    assert_eq!(
+        sub_sum, claim,
+        "claim inconsistent with tables on skipped subspace"
+    );
+
+    // Send s(t_j) for j = 0..=ds, omitting j = dom - 1.
+    let mut skip_msg = Vec::with_capacity(ds);
+    for (j, &v) in s_evals.iter().enumerate() {
+        if j != dom - 1 {
+            skip_msg.push(v);
+        }
+    }
+    transcript.absorb_ks(&sublabel(label, b"/skip/msg"), &skip_msg);
+    let r0 = transcript.challenge_k(&sublabel(label, b"/skip/chal"));
+
+    let mut cur = interpolate_eval(&s_evals, r0);
+    let w_r0 = lagrange_subspace_weights(k, r0);
+    let mut bound_tables: Vec<Vec<K>> =
+        tables.iter().map(|t| bind_low_subspace(t, &w_r0)).collect();
+
+    let msg_label = sublabel(label, b"/msg");
+    let chal_label = sublabel(label, b"/chal");
+    let rem = m - k;
+    let mut msgs = Vec::with_capacity(rem);
+    let mut rs = Vec::with_capacity(1 + rem);
+    rs.push(r0);
+
+    for _ in 0..rem {
+        let ev = sumcheck_round_evals(&bound_tables, combine, degree);
+        assert_eq!(
+            ev[0] + ev[1],
+            cur,
+            "claim inconsistent with tables (g(0)+g(1) != claim)"
+        );
+        let mut msg = Vec::with_capacity(degree);
+        msg.push(ev[0]);
+        msg.extend_from_slice(&ev[2..]);
+        transcript.absorb_ks(&msg_label, &msg);
+        let r = transcript.challenge_k(&chal_label);
+        msgs.push(msg);
+        rs.push(r);
+        cur = interpolate_eval(&ev, r);
+        for t in &mut bound_tables {
+            bind_low_in_place(t, r);
+        }
+    }
+
+    let final_evals = bound_tables.iter().map(|t| t[0]).collect();
+    (
+        UnivariateSkipProof {
+            skip_msg,
+            round_msgs: msgs,
+        },
+        rs,
+        final_evals,
+    )
+}
+
+/// Verify a univariate-skip sum-check proof (spec 03 §3.9), returning
+/// `(point [r_0, r_1, …, r_{m-k}], expected final value)`.
+///
+/// # Errors
+/// Returns [`VerificationError`] if `k < 1`, `k > num_vars`, `skip_msg` does
+/// not have `degree * (2^k - 1)` elements, or `round_msgs` does not have
+/// `num_vars - k` messages of length `degree`.
+pub fn sumcheck_verify_skip(
+    claim: K,
+    num_vars: usize,
+    degree: usize,
+    k: usize,
+    proof: &UnivariateSkipProof,
+    transcript: &mut Transcript,
+    label: &[u8],
+) -> Result<(Vec<K>, K), VerificationError> {
+    assert!(degree >= 1, "degree must be >= 1");
+    if k < 1 || k > num_vars || k > 16 {
+        return Err(VerificationError::new("invalid skip parameter k"));
+    }
+    let dom = 1usize << k;
+    let ds = degree * (dom - 1);
+    let rem = num_vars - k;
+    if proof.skip_msg.len() != ds {
+        return Err(VerificationError::new("malformed skip round message"));
+    }
+    if proof.round_msgs.len() != rem {
+        return Err(VerificationError::new("wrong number of rounds"));
+    }
+
+    sumcheck_init(transcript, label, claim, num_vars, degree);
+    transcript.absorb_ks(&sublabel(label, b"/skip/msg"), &proof.skip_msg);
+    let r0 = transcript.challenge_k(&sublabel(label, b"/skip/chal"));
+
+    // Reconstruct s(t_0)..s(t_{ds}) with s(t_{dom - 1}) = claim + Σ_{a < dom - 1} s(t_a).
+    let mut derived = claim;
+    for &v in &proof.skip_msg[..dom - 1] {
+        derived += v;
+    }
+    let mut s_evals = Vec::with_capacity(ds + 1);
+    s_evals.extend_from_slice(&proof.skip_msg[..dom - 1]);
+    s_evals.push(derived);
+    s_evals.extend_from_slice(&proof.skip_msg[dom - 1..]);
+
+    let mut cur = interpolate_eval(&s_evals, r0);
+    let mut rs = Vec::with_capacity(1 + rem);
+    rs.push(r0);
+
+    let msg_label = sublabel(label, b"/msg");
+    let chal_label = sublabel(label, b"/chal");
+    for msg in &proof.round_msgs {
+        if msg.len() != degree {
+            return Err(VerificationError::new("malformed round message"));
+        }
+        transcript.absorb_ks(&msg_label, msg);
+        let r = transcript.challenge_k(&chal_label);
+        let mut ys = Vec::with_capacity(degree + 1);
+        ys.push(msg[0]);
+        ys.push(cur + msg[0]);
+        ys.extend_from_slice(&msg[1..]);
+        cur = interpolate_eval(&ys, r);
+        rs.push(r);
+    }
+    Ok((rs, cur))
+}

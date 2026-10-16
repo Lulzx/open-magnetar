@@ -134,9 +134,12 @@ def _setup(transcript, P, T, rho, nu, s, nx, X, names):
 
 
 def _fold_public(X, nu, r_inst):
-    eqi = eq_table(r_inst)
     half = 1 << (nu - 1)
     out = [K.ZERO] * half
+    if not X or not X[0]:
+        out[0] = K.ONE
+        return out
+    eqi = eq_table(r_inst)
     for u, x in enumerate(X):
         pp = public_part(list(x), nu)
         for k in range(half):
@@ -309,12 +312,15 @@ def verify(rels: list[R1CS], s: int, X: list[list], proof: SpartanProof, transcr
     T = len(rels)
     names = names or ([b"bin", b"fld"][:T] if T <= 2 else [b"r%d" % i for i in range(T)])
     rho, nu = rels[0].rho, rels[0].nu
-    q = 1 << s
-    if len(X) != q:
-        raise VerificationError("wrong number of public inputs")
-    nx = len(X[0])
-    if any(len(x) != nx for x in X):
-        raise VerificationError("public inputs must have equal length")
+    if not X:
+        nx = 0
+    else:
+        q = 1 << s
+        if len(X) != q:
+            raise VerificationError("wrong number of public inputs")
+        nx = len(X[0])
+        if any(len(x) != nx for x in X):
+            raise VerificationError("public inputs must have equal length")
     if segments is not None:
         check_layout(segments, nu)
     if len(proof.outer_msgs) != T or len(proof.outer_finals) != T:
@@ -365,7 +371,12 @@ def verify(rels: list[R1CS], s: int, X: list[list], proof: SpartanProof, transcr
             mf = mf + alpha[3 * t + m] * M.mle(r_row[t], r_y)
     r_col = r_y[:nu - 1]
     top = r_y[nu - 1]
-    pub = mle_eval(_fold_public(X, nu, r_inst), r_col)
+    if nx == 0:
+        pub = K.ONE
+        for rc in r_col:
+            pub = pub * (K.ONE + rc)
+    else:
+        pub = mle_eval(_fold_public(X, nu, r_inst), r_col)
     v_z = (K.ONE + top) * proof.v_W + top * pub
     if e != mf * v_z:
         raise VerificationError("inner sum-check final check failed")

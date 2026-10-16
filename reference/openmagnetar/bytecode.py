@@ -306,17 +306,14 @@ def expand_instr(i: Instr, pc: int, tgt_upc) -> list[dict[str, int]]:
         row(rs1=i.rs1, rs2=i.rs2, sub=1, br=1, tgt=tgt_upc(u64(pc + i.imm)), **f)
     elif n in LOAD_INFO:
         nb, sg = LOAD_INFO[n]
-        if i.rd == 0:
-            row()
-        else:
-            ln = (1 << nb) - 1
-            fill = (0xFF & ~ln) if sg else 0
-            sflag = {1: "ldsb", 2: "ldsh", 4: "ldsw"}.get(nb) if sg else None
-            kw = dict(rs1=i.rs1, rd=i.rd, b_imm=1, imm=u64(i.imm), mem=1, ln=ln, fill=fill,
-                      a_h=int(nb >= 2), a_w=int(nb >= 4), a_d=int(nb == 8))
-            if sflag:
-                kw[sflag] = 1
-            row(**kw)
+        ln = 0 if i.rd == 0 else (1 << nb) - 1
+        fill = (0xFF & ~ln) if (i.rd != 0 and sg) else 0
+        sflag = {1: "ldsb", 2: "ldsh", 4: "ldsw"}.get(nb) if (i.rd != 0 and sg) else None
+        kw = dict(rs1=i.rs1, rd=i.rd, b_imm=1, imm=u64(i.imm), mem=1, ln=ln, fill=fill,
+                  a_h=int(nb >= 2), a_w=int(nb >= 4), a_d=int(nb == 8))
+        if sflag:
+            kw[sflag] = 1
+        row(**kw)
     elif n in STORE_INFO:
         nb = STORE_INFO[n]
         row(rs1=i.rs1, rs2=i.rs2, b_imm=1, imm=u64(i.imm), mem=1, st_w=1 << (nb.bit_length() - 1),

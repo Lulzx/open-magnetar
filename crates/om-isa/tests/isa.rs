@@ -504,21 +504,60 @@ fn traps() {
 }
 
 #[test]
-fn load_into_x0_is_nop_in_vm_but_traps_in_machine() {
-    // Spec 9.1's one deviation: rd=x0 loads expand to NOP.
-    let prog = with_halt(vec![lw(0, 0, 1), addi(10, 0, 7)]);
-    let (code, entry) = program(&prog);
-    assert!(
-        Machine::new(code.clone(), entry, &BTreeMap::new(), A)
-            .run(100)
-            .is_err()
-    );
-    let mut vm = VirtualMachine::new(expand(&code, entry), &BTreeMap::new(), A);
-    assert_eq!(vm.run(100).unwrap().exit_code, 7);
+fn load_into_x0_preserves_access_checks_and_discards_value() {
+    // Invalid/misaligned loads into x0 must trap in both Machine and VirtualMachine.
+    for bad in [
+        with_halt(vec![lw(0, 0, 1), addi(10, 0, 7)]),
+        with_halt(vec![ld(0, 0, 0), addi(10, 0, 7)]),
+        with_halt(
+            prologue_ram_base(1)
+                .into_iter()
+                .chain([lw(0, 1, 2), addi(10, 0, 7)])
+                .collect(),
+        ),
+        with_halt(
+            prologue_ram_base(1)
+                .into_iter()
+                .chain([ld(0, 1, 4), addi(10, 0, 7)])
+                .collect(),
+        ),
+    ] {
+        let (code, entry) = program(&bad);
+        assert!(
+            Machine::new(code.clone(), entry, &BTreeMap::new(), A)
+                .run(100)
+                .is_err()
+        );
+        let mut vm = VirtualMachine::new(expand(&code, entry), &BTreeMap::new(), A);
+        assert!(vm.run(100).is_err());
+    }
+
+    // Valid loads into x0 execute the memory read, enforce alignment/range, and leave x0 == 0.
+    let mut valid = prologue_ram_base(1);
+    valid.extend([
+        addi(2, 0, 0x55),
+        sd(2, 1, 0),
+        ld(0, 1, 0),
+        lw(0, 1, 4),
+        lh(0, 1, 2),
+        lb(0, 1, 1),
+        addi(10, 0, 7),
+    ]);
+    let prog = with_halt(valid);
+    let (code, entry, m, vm) = run_both(&prog, &BTreeMap::new());
+    assert_eq!(m.exit_code, 7);
+    assert_eq!(vm.exit_code, 7);
+    assert_eq!(m.regs[0], 0);
+    assert_eq!(vm.regs[0], 0);
     let p = expand(&code, entry);
-    let row = p.rom[p.upc_of_pc[&entry] as usize];
+    // Check that the ld x0, 0(x1) row has mem=true, alignment flags set, and ln=fill=0.
+    let ld_pc = entry + 4 * 4;
+    let row = p.rom[p.upc_of_pc[&ld_pc] as usize];
     assert_eq!(row.rd, 0);
-    assert!(!row.mem);
+    assert!(row.mem);
+    assert!(row.a_h && row.a_w && row.a_d);
+    assert_eq!(row.ln, 0);
+    assert_eq!(row.fill, 0);
 }
 
 #[test]

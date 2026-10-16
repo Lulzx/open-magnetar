@@ -226,8 +226,18 @@ pub fn verify_detailed_with_derived(
         return Err(VerificationError::new("bad commitment root length"));
     }
     match (vk.pcs, &proof.pcs_proof) {
-        (PcsMode::Transparent, PcsProof::Transparent(_))
-        | (PcsMode::Ligerito, PcsProof::Ligerito(..)) => {}
+        (PcsMode::Transparent, PcsProof::Transparent(g)) => {
+            let max_bits = om_format::MAX_BYTES * 8;
+            let Some(expected_len) = 1usize.checked_shl(di.ell as u32) else {
+                return Err(VerificationError::new("ell too large"));
+            };
+            if expected_len > max_bits || g.len() != expected_len {
+                return Err(VerificationError::new(
+                    "transparent opening does not match the commitment",
+                ));
+            }
+        }
+        (PcsMode::Ligerito, PcsProof::Ligerito(..)) => {}
         _ => {
             return Err(VerificationError::new(
                 "pcs proof does not match the vk pcs mode",
@@ -245,12 +255,8 @@ pub fn verify_detailed_with_derived(
     absorb_statement(&mut tr, vk, inst);
     let pcs = absorb_commitment(vk, derived, &di, &proof.root, &mut tr)?;
 
-    // Step 2: Virtual Spartan. The `2^s` empty public inputs are
-    // allocated fallibly (§13.8: bound before allocating).
-    let mut x: Vec<Vec<K>> = Vec::new();
-    x.try_reserve_exact(1usize << s)
-        .map_err(|_| VerificationError::new("T too large to verify"))?;
-    x.resize_with(1usize << s, Vec::new);
+    // Step 2: Virtual Spartan. Public inputs per SIMD instance are empty (`n_x = 0`),
+    // evaluated algebraically in O(nu) without allocating `2^s` vectors.
     let cross = CrossStep {
         in_id: derived.seg_id["S_in"],
         out_id: derived.seg_id["S_out"],
@@ -260,7 +266,7 @@ pub fn verify_detailed_with_derived(
     let sp_claims = om_spartan::spartan::verify(
         &derived.rels,
         s,
-        &x,
+        &[],
         &proof.spartan,
         &mut tr,
         b"vsp",

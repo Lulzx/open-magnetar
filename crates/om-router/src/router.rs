@@ -6,7 +6,7 @@
 //! `wbits = 6` (`W = 64`); smaller values exist only to keep tests fast.
 //! For stores the offset has `wbits - 3` bits (3 for `W = 64`).
 
-use om_field::K;
+use om_field::{K, U256};
 use om_memcheck::onehot::EvalClaim;
 use om_sumcheck::{
     SumcheckProof, VerificationError, bind_low_in_place, combine_sum, eq_eval, eq_table,
@@ -1018,18 +1018,32 @@ fn materialize<I: CycleInstance>(inst: &I, wt: &[K], k: usize, n: usize) -> Vec<
 /// layout, `nf` features per position).
 fn bind_positions(feats: &mut Vec<K>, nf: usize, r: K) {
     let half = feats.len() / nf / 2;
-    for q in 0..half {
-        for f in 0..nf {
-            feats[q * nf + f] = tpt(feats[2 * q * nf + f], feats[(2 * q + 1) * nf + f], r);
+    if half * nf >= 4096 {
+        feats.par_chunks_mut(2 * nf).for_each(|pair| {
+            let (f0, f1) = pair.split_at_mut(nf);
+            for (a, &b) in f0.iter_mut().zip(f1.iter()) {
+                *a = tpt(*a, b, r);
+            }
+        });
+        for q in 1..half {
+            feats.copy_within(2 * q * nf..(2 * q + 1) * nf, q * nf);
+        }
+    } else {
+        for q in 0..half {
+            for f in 0..nf {
+                feats[q * nf + f] = tpt(feats[2 * q * nf + f], feats[(2 * q + 1) * nf + f], r);
+            }
         }
     }
     feats.truncate(half * nf);
 }
 
-/// Linear-in-`t` evaluations of `(a, b)` at the points `ts`.
+/// Linear-in-`t` evaluations of `(a, b)` at the points `ts = [t_0, t_1, ...]`.
+#[inline(always)]
 fn lin(a: K, b: K, ts: &[K], out: &mut [K]) {
-    for (o, &t) in out.iter_mut().zip(ts) {
-        *o = tpt(a, b, t);
+    let d = a + b;
+    for (k, o) in out.iter_mut().enumerate().take(ts.len()) {
+        *o = a + d.mul_t(k as u128);
     }
 }
 
@@ -1046,8 +1060,11 @@ fn nonzero_idx(s0: &[K], s1: &[K], buf: &mut [usize]) -> usize {
     c
 }
 
+#[inline(always)]
 fn dot(x: &[K], cols: &[(usize, K)]) -> K {
-    cols.iter().fold(K::ZERO, |acc, &(u, c)| acc + x[u] * c)
+    cols.iter()
+        .fold(U256::ZERO, |acc, &(u, c)| acc + x[u].clmul(c))
+        .reduce()
 }
 
 /// Upper bound on the number of evaluation points (`degree + 1 ≤ 7`).
@@ -1108,8 +1125,9 @@ impl CycleInstance for ShiftInst<'_> {
                     continue;
                 }
                 let (b0, b1) = (dot(x0, cols), dot(x1, cols));
+                let db = b0 + b1;
                 for k in 0..np {
-                    inner[k] += qlt[hl][k] * tpt(b0, b1, ts[k]);
+                    inner[k] += qlt[hl][k] * (b0 + db.mul_t(k as u128));
                 }
             }
             for k in 0..np {
@@ -1305,8 +1323,9 @@ impl CycleInstance for StoreInst<'_> {
                     continue;
                 }
                 let (b0, b1) = (dot(x0, cols), dot(x1, cols));
+                let db = b0 + b1;
                 for k in 0..np {
-                    inner[k] += la_a[k] * tpt(b0, b1, ts[k]);
+                    inner[k] += la_a[k] * (b0 + db.mul_t(k as u128));
                 }
             }
             for k in 0..np {

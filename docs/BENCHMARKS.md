@@ -125,27 +125,27 @@ which matches an independent sort of the input.
 | Quantity | `provable-120` (`t = 177, gs = 2`) | `test` (`t = 8`) | Previous `test` baseline |
 |---|---|---|---|
 | T (cycles, padded) | 4,194,304 | 4,194,304 | 4,194,304 |
-| Prove (wall) | 21.6 s (≈ 194 k cycles/s; 187 s CPU) | 20.8 s (≈ 202 k cycles/s; 173 s CPU) | 107 s (≈ 39 k cycles/s; 794 s CPU) |
-| Peak resident memory | 8.2 GiB (`/usr/bin/time -l`), 6.3 GiB heap peak | 7.7 GiB (`/usr/bin/time -l`), 6.1 GiB heap peak | 10.1 GiB (`/usr/bin/time -l`), 8.5 GiB heap peak |
-| Verify | 60 ms wall, 60 ms CPU, 88 MiB resident | 20 ms wall, 30 ms CPU, 66 MiB resident | 0.42 s wall, 30 ms CPU, 67 MiB resident |
+| Prove (wall) | 20.7 s (≈ 203 k cycles/s; 189 s CPU) | 19.9 s (≈ 211 k cycles/s; 186 s CPU) | 107 s (≈ 39 k cycles/s; 794 s CPU) |
+| Peak resident memory | 8.4 GiB (`/usr/bin/time -l`), 6.0 GiB heap peak | 8.4 GiB (`/usr/bin/time -l`), 5.8 GiB heap peak | 10.1 GiB (`/usr/bin/time -l`), 8.5 GiB heap peak |
+| Verify | 50 ms wall, 50 ms CPU, 47.5 MiB resident | 10 ms wall, 20 ms CPU, 26.8 MiB resident | 0.42 s wall, 30 ms CPU, 67 MiB resident |
 | Proof size | 603,942 B (589.8 KiB) | 60,806 B | 61,446 B |
 
 Per phase at `T = 2^22` (`provable-120` profile, from `OM_TRACE`):
 
 | Phase | Ends at | Phase duration | Heap peak | Previous ends at (`test`) |
 |---|---|---|---|---|
-| execute | 0.76 s | 0.76 s | 1.5 GiB (the trace) | 0.8 s |
-| packed witness | 0.88 s | 0.12 s | 2.5 GiB | 17.7 s (16.9 s) |
-| component witnesses | 1.18 s | 0.30 s | 2.8 GiB | 18.1 s (0.4 s) |
-| build G | 1.29 s | 0.11 s | 3.1 GiB | 25.3 s (7.2 s) |
-| commit | 3.96 s | 2.67 s | 4.7 GiB | 36.8 s (11.5 s, 8.5 GiB) |
-| Virtual Spartan | 11.61 s | 7.65 s | 3.4 GiB | 88.4 s (51.6 s) |
-| register Twist | 13.14 s | 1.53 s | 2.9 GiB | 91.8 s (3.4 s) |
-| RAM Twist (A = 17) | 15.12 s | 1.98 s | 2.7 GiB | 96.0 s (4.2 s) |
-| routers | 15.69 s | 0.57 s | 2.1 GiB | 96.7 s (0.7 s) |
-| bytecode Shout | 16.00 s | 0.31 s | 2.0 GiB | 97.0 s (0.3 s) |
-| Mosaic batch | 18.51 s | 2.51 s | 2.2 GiB | 99.8 s (2.8 s) |
-| ring switching + Ligerito open | 21.60 s | 3.09 s | 6.3 GiB | 107.0 s (7.2 s, 7.9 GiB) |
+| execute | 0.75 s | 0.75 s | 1.5 GiB (the trace) | 0.8 s |
+| packed witness | 0.87 s | 0.12 s | 2.5 GiB | 17.7 s (16.9 s) |
+| component witnesses | 1.16 s | 0.29 s | 2.8 GiB | 18.1 s (0.4 s) |
+| build G | 1.24 s | 0.08 s | 2.4 GiB | 25.3 s (7.2 s) |
+| commit | 2.73 s | 1.49 s | 4.6 GiB | 36.8 s (11.5 s, 8.5 GiB) |
+| Virtual Spartan | 12.06 s | 9.33 s | 3.0 GiB | 88.4 s (51.6 s) |
+| register Twist | 13.52 s | 1.46 s | 2.5 GiB | 91.8 s (3.4 s) |
+| RAM Twist (A = 17) | 15.44 s | 1.92 s | 2.3 GiB | 96.0 s (4.2 s) |
+| routers | 15.83 s | 0.39 s | 1.7 GiB | 96.7 s (0.7 s) |
+| bytecode Shout | 16.13 s | 0.30 s | 1.6 GiB | 97.0 s (0.3 s) |
+| Mosaic batch | 18.34 s | 2.21 s | 1.8 GiB | 99.8 s (2.8 s) |
+| ring switching + Ligerito open | 20.62 s | 2.28 s | 5.9 GiB | 107.0 s (7.2 s, 7.9 GiB) |
 
 The same build on smaller workloads (`A = 16`):
 
@@ -158,10 +158,15 @@ The same build on smaller workloads (`A = 16`):
 
 ## Test suites
 
+For published SHA-256 values checked through guest execution, proving, and
+verification, see [Public-vector validation](VALIDATION.md). That report
+also records rejection checks and reproduction commands.
+
 | Suite | Count | Wall time |
 |---|---|---|
-| Rust workspace (`cargo test --workspace --release`) | 346 tests, 0 failures | ~15 s |
-| Python reference (`unittest discover`) | 223 tests, 0 failures | 114 s |
+| Rust workspace (`cargo test --workspace --release`, incl. fuzzing & 4-way differential tests) | 362 tests, 0 failures | ~15 s |
+| Python reference (`unittest discover`) | 227 tests, 0 failures | ~120 s |
+| RV64I conformance runner (`reference/run_conformance.py --prove`) | 46 programs (all 40 RV64I instructions), 0 failures | ~6 s |
 | Guest oracle executions (Python harness) | 47 cases, all pass | ~1 min |
 
 Every `reference/vectors/**/*.json` file (27 files) is reproduced
@@ -188,15 +193,17 @@ queries, and below the paper's ≤ 599 KiB figure.
 
 | Quantity | Paper (Magnetar) | This implementation |
 |---|---|---|
-| Proving throughput | ~1.45 M fib steps/s (≈ 7 M cycles/s class) | ≈ 202 k cycles/s (`test`) / ≈ 194 k cycles/s (`provable-120`) at T = 2^22 |
+| Proving throughput | ~1.45 M fib steps/s (≈ 7 M cycles/s class) | ≈ 211 k cycles/s (`test`) / ≈ 203 k cycles/s (`provable-120`) at T = 2^22 |
 | Proof size | ≤ 599 KiB | **589.8 KiB (603,942 B)** measured at T = 2^22 (`provable-120`); 59.4 KiB at `test` |
-| Verifier time | ~13 ms | 10–30 ms at small T; 20 ms (`test`) / 60 ms (`provable-120`) at T = 2^22 |
+| Verifier time | ~13 ms | 10–30 ms at small T; 10 ms (`test`, 27 MiB RSS) / 50 ms (`provable-120`, 47.5 MiB RSS) at T = 2^22 |
 
-The prover is now ~5.1× faster than the initial bounded-memory baseline
-(20.8 s vs 107 s at `T = 2^22`), though still roughly 35× behind the
+The prover is now ~5.4× faster than the initial bounded-memory baseline
+(19.9 s vs 107 s at `T = 2^22`), though still roughly 34× behind the
 paper's reported throughput. A `T = 2^22` full-security `provable-120`
-proof runs in 21.6 s and fits in 8.2 GiB RSS (6.3 GiB heap peak) on a
-laptop. The Python reference model stays dense throughout by design.
+proof runs in 20.7 s and fits in 8.4 GiB RSS (6.0 GiB heap peak) on a
+laptop, and verifies in 50 ms with 47.5 MiB RSS (with $O(1)$ algebraic
+public-input folding and zero $O(T)$ verifier allocations). The Python
+reference model stays dense throughout by design.
 
 Other paper comparisons: security is the 120-bit provable profile by default
 (no conjectured proximity gaps, no grinding), SHA-256 by default, strict

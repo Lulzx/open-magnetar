@@ -23,8 +23,10 @@
 //! - Python's private `sumcheck._init` is exported as [`sumcheck_init`]
 //!   because `router.py` calls it directly.
 //!
-//! Univariate skip (spec 03 §3.9) is OFF in v1 and is not implemented; the
-//! Python reference does not implement it either.
+//! Univariate skip (spec 03 §3.9) is OFF in the v1 wire protocol
+//! (`sumcheck_version = 1`), and is provided via [`UnivariateSkipProof`],
+//! [`lagrange_subspace_weights`], [`bind_low_subspace`], [`sumcheck_prove_skip`],
+//! and [`sumcheck_verify_skip`] for `sumcheck_version = 2` callers.
 
 pub mod mle;
 pub mod sumcheck;
@@ -34,7 +36,8 @@ pub use mle::{
     mle_eval_packed,
 };
 pub use sumcheck::{
-    BoxedCombine, MAX_BATCH_CLAIMS, SumcheckProof, VerificationError, batch_claims,
-    batched_combine, combine_sum, interpolate_eval, sumcheck_init, sumcheck_prove,
-    sumcheck_prove_rounds, sumcheck_round_evals, sumcheck_verify,
+    BoxedCombine, MAX_BATCH_CLAIMS, SumcheckProof, UnivariateSkipProof, VerificationError,
+    batch_claims, batched_combine, bind_low_subspace, combine_sum, interpolate_eval,
+    lagrange_subspace_weights, sumcheck_init, sumcheck_prove, sumcheck_prove_rounds,
+    sumcheck_prove_skip, sumcheck_round_evals, sumcheck_verify, sumcheck_verify_skip,
 };

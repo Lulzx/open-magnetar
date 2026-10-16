@@ -264,6 +264,25 @@ class TestKeygen(unittest.TestCase):
         self.assertEqual(keygen.choose_ad(5), (8, 2))
         self.assertEqual(keygen.choose_ad(4), (4, 1))
 
+    def test_pcs_r_bounds(self):
+        code, entry = program(fib_program())
+        for bad_r in (0, 1, 9):
+            with self.assertRaises(keygen.KeyError_):
+                keygen.keygen(code, entry, {}, AP, pcs="ligerito", pcs_profile="provable-120", pcs_r=bad_r)
+
+    def test_x0_load_in_protocol(self):
+        for bad in ([("lw", 0, 0, 1), ("addi", 10, 0, 7)] + HALT,
+                    [("addi", 1, 0, 1), ("slli", 1, 1, 31), ("lw", 0, 1, 2), ("addi", 10, 0, 7)] + HALT):
+            vk, _, _ = make_vk(bad, "ligerito")
+            with self.assertRaises(Exception):
+                protocol.prove_instance(vk, b"")
+        good = [("addi", 1, 0, 1), ("slli", 1, 1, 31), ("addi", 2, 0, 0x42),
+                ("sd", 2, 1, 0), ("ld", 0, 1, 0), ("lw", 0, 1, 4), ("addi", 10, 0, 7)] + HALT
+        vk, _, _ = make_vk(good, "ligerito")
+        inst, proof = protocol.prove_instance(vk, b"")
+        self.assertEqual(inst.exit_code, 7)
+        self.assertTrue(protocol.verify(vk, inst, proof))
+
 
 if __name__ == "__main__":
     unittest.main()

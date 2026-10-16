@@ -266,6 +266,54 @@ impl K {
             _ => self * K::t(k),
         }
     }
+
+    /// Unreduced 128×128 → 256-bit carry-less product `self · rhs` in `GF(2)[X]`.
+    /// By linearity of modular reduction over `GF(2)`, a sum of products
+    /// `Σ_i a_i * b_i` can be accumulated as `U256` via XOR (`+` / `+=`) and
+    /// reduced once with [`U256::reduce`].
+    #[inline(always)]
+    pub fn clmul(self, rhs: K) -> U256 {
+        let (lo, hi) = clmul128(self.0, rhs.0);
+        U256(lo, hi)
+    }
+}
+
+/// An unreduced 256-bit polynomial in `GF(2)[X]` (`lo + hi · X^128`), used to
+/// accumulate sums of products before a single modular reduction via [`U256::reduce`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct U256(pub u128, pub u128);
+
+impl U256 {
+    /// The zero polynomial.
+    pub const ZERO: U256 = U256(0, 0);
+
+    /// Embed a reduced field element `k` as `k + 0 · X^128`.
+    #[inline(always)]
+    pub const fn from_k(k: K) -> U256 {
+        U256(k.0, 0)
+    }
+
+    /// Reduce modulo `m(X) = X^128 + X^7 + X^2 + X + 1` into [`K`].
+    #[inline(always)]
+    pub fn reduce(self) -> K {
+        K(reduce(self.0, self.1))
+    }
+}
+
+impl Add for U256 {
+    type Output = U256;
+    #[inline(always)]
+    fn add(self, rhs: U256) -> U256 {
+        U256(self.0 ^ rhs.0, self.1 ^ rhs.1)
+    }
+}
+
+impl AddAssign for U256 {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: U256) {
+        self.0 ^= rhs.0;
+        self.1 ^= rhs.1;
+    }
 }
 
 fn hex_val(c: u8) -> Option<u8> {
@@ -395,40 +443,47 @@ impl FromStr for K {
 // ---- multiplication: carry-less multiply + reduction (spec 01 §1.6) ----
 
 #[inline(always)]
-fn mul(a: K, b: K) -> K {
+fn clmul128(a: u128, b: u128) -> (u128, u128) {
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     {
         // SAFETY: `aes` (FEAT_PMULL) is enabled at compile time.
-        return unsafe { mul_aarch64(a.0, b.0) };
+        return unsafe { clmul128_aarch64(a, b) };
     }
     #[cfg(all(target_arch = "aarch64", not(target_feature = "aes")))]
     {
         if std::arch::is_aarch64_feature_detected!("aes") {
             // SAFETY: the `aes` target feature (which includes PMULL) was
             // just detected at runtime on this CPU.
-            return unsafe { mul_aarch64(a.0, b.0) };
+            return unsafe { clmul128_aarch64(a, b) };
         }
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
     {
         // SAFETY: PCLMULQDQ is enabled at compile time; SSE2 is part of the
         // x86-64 baseline.
-        return unsafe { mul_x86_64(a.0, b.0) };
+        return unsafe { clmul128_x86_64(a, b) };
     }
     #[cfg(all(target_arch = "x86_64", not(target_feature = "pclmulqdq")))]
     {
         if std::arch::is_x86_feature_detected!("pclmulqdq") {
             // SAFETY: PCLMULQDQ was just detected at runtime on this CPU;
             // SSE2 is part of the x86-64 baseline.
-            return unsafe { mul_x86_64(a.0, b.0) };
+            return unsafe { clmul128_x86_64(a, b) };
         }
     }
     #[allow(unreachable_code)]
-    mul_portable(a, b)
+    clmul128_portable(a, b)
+}
+
+#[inline(always)]
+fn mul(a: K, b: K) -> K {
+    let (lo, hi) = clmul128(a.0, b.0);
+    K(reduce(lo, hi))
 }
 
 /// Portable multiplication, always compiled; the reference that the
 /// accelerated paths are tested against.
+#[cfg(test)]
 pub(crate) fn mul_portable(a: K, b: K) -> K {
     let (lo, hi) = clmul128_portable(a.0, b.0);
     K(reduce(lo, hi))
@@ -477,50 +532,37 @@ fn reduce(lo: u128, hi: u128) -> u128 {
     lo ^ low ^ overflow ^ (overflow << 1) ^ (overflow << 2) ^ (overflow << 7)
 }
 
-/// AArch64 multiplication using `PMULL` (`vmull_p64`, 64×64→128
-/// carry-less).
+/// AArch64 128×128 → 256 carry-less product using `PMULL` (`vmull_p64`).
 ///
 /// # Safety
-/// The caller must ensure the CPU supports the `aes` target feature
-/// (FEAT_PMULL), e.g. via `std::arch::is_aarch64_feature_detected!("aes")`.
+/// The caller must ensure the CPU supports the `aes` target feature (FEAT_PMULL).
 #[cfg(target_arch = "aarch64")]
 #[inline]
 #[target_feature(enable = "aes")]
-unsafe fn mul_aarch64(a: u128, b: u128) -> K {
+unsafe fn clmul128_aarch64(a: u128, b: u128) -> (u128, u128) {
     use core::arch::aarch64::vmull_p64;
-    // `vmull_p64` needs exactly the `aes` feature this function is gated
-    // on, which its caller checked at runtime.
-    let (lo, hi) = clmul128_with(a, b, |x, y| vmull_p64(x, y));
-    K(reduce(lo, hi))
+    clmul128_with(a, b, |x, y| vmull_p64(x, y))
 }
 
-/// x86-64 multiplication using `PCLMULQDQ` (64×64→128 carry-less).
+/// x86-64 128×128 → 256 carry-less product using `PCLMULQDQ`.
 ///
 /// # Safety
-/// The caller must ensure the CPU supports PCLMULQDQ, e.g. via
-/// `std::arch::is_x86_feature_detected!("pclmulqdq")`. SSE2 (used to move
-/// values in and out of XMM registers) is part of the x86-64 baseline.
+/// The caller must ensure the CPU supports PCLMULQDQ and SSE2.
 #[cfg(target_arch = "x86_64")]
 #[inline]
 #[target_feature(enable = "pclmulqdq,sse2")]
-unsafe fn mul_x86_64(a: u128, b: u128) -> K {
+unsafe fn clmul128_x86_64(a: u128, b: u128) -> (u128, u128) {
     use core::arch::x86_64::{__m128i, _mm_clmulepi64_si128, _mm_set_epi64x, _mm_storeu_si128};
 
-    // The register intrinsics need at most the PCLMULQDQ + SSE2 features
-    // this function is gated on, which its caller checked at runtime.
     let clmul64 = |x: u64, y: u64| {
         let px = _mm_set_epi64x(0, x as i64);
         let py = _mm_set_epi64x(0, y as i64);
-        // Immediate 0x00 multiplies the low 64-bit halves.
         let prod = _mm_clmulepi64_si128::<0x00>(px, py);
         let mut out = [0u64; 2];
-        // SAFETY: `out` is a live 16-byte buffer; the unaligned store
-        // writes exactly 16 bytes into it.
         unsafe { _mm_storeu_si128(out.as_mut_ptr().cast::<__m128i>(), prod) };
         u128::from(out[0]) | (u128::from(out[1]) << 64)
     };
-    let (lo, hi) = clmul128_with(a, b, clmul64);
-    K(reduce(lo, hi))
+    clmul128_with(a, b, clmul64)
 }
 
 #[cfg(test)]
@@ -568,14 +610,14 @@ mod tests {
         for _ in 0..1024 {
             let (a, b) = (rng.next_k(), rng.next_k());
             // SAFETY: `aes` was detected just above.
-            let fast = unsafe { mul_aarch64(a.0, b.0) };
-            assert_eq!(fast, mul_portable(a, b), "a={a:?} b={b:?}");
+            let (lo, hi) = unsafe { clmul128_aarch64(a.0, b.0) };
+            assert_eq!(K(reduce(lo, hi)), mul_portable(a, b), "a={a:?} b={b:?}");
         }
         for &v in &[0u128, 1, u128::MAX, 1 << 127, 1 << 64, (1 << 64) - 1] {
             for &w in &[0u128, 1, u128::MAX, 1 << 127, 1 << 64] {
                 // SAFETY: `aes` was detected just above.
-                let fast = unsafe { mul_aarch64(v, w) };
-                assert_eq!(fast, mul_portable(K(v), K(w)));
+                let (lo, hi) = unsafe { clmul128_aarch64(v, w) };
+                assert_eq!(K(reduce(lo, hi)), mul_portable(K(v), K(w)));
             }
         }
     }
@@ -590,8 +632,8 @@ mod tests {
         for _ in 0..1024 {
             let (a, b) = (rng.next_k(), rng.next_k());
             // SAFETY: PCLMULQDQ was detected just above.
-            let fast = unsafe { mul_x86_64(a.0, b.0) };
-            assert_eq!(fast, mul_portable(a, b), "a={a:?} b={b:?}");
+            let (lo, hi) = unsafe { clmul128_x86_64(a.0, b.0) };
+            assert_eq!(K(reduce(lo, hi)), mul_portable(a, b), "a={a:?} b={b:?}");
         }
     }
 
@@ -633,5 +675,18 @@ mod tests {
                 assert_eq!(a.mul_t(k), a * K::t(k));
             }
         }
+    }
+
+    #[test]
+    fn clmul_unreduced_sum_matches_reduced() {
+        let mut rng = Rng(0x9999);
+        let mut sum_k = K::ZERO;
+        let mut sum_u256 = U256::ZERO;
+        for _ in 0..512 {
+            let (a, b) = (rng.next_k(), rng.next_k());
+            sum_k += a * b;
+            sum_u256 += a.clmul(b);
+        }
+        assert_eq!(sum_u256.reduce(), sum_k);
     }
 }

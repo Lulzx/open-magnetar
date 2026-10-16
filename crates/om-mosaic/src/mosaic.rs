@@ -170,6 +170,35 @@ pub struct BatchProof {
     pub v_g: K,
 }
 
+/// Write one component's packed bit table directly into its placement in `g`
+/// (`g.len() == 2^layout.ell`). Avoids holding all component tables in memory
+/// simultaneously before assembling `G`.
+///
+/// # Panics
+/// Panics if `comp_id` is not in `layout` or `table.len() != 2^pl.log_size`.
+pub fn place_in_g_packed(g: &mut PackedBits, layout: &Layout, comp_id: i64, table: &PackedBits) {
+    assert_eq!(g.len(), 1usize << layout.ell);
+    let pl = layout
+        .placement(comp_id)
+        .unwrap_or_else(|| panic!("unknown component {comp_id}"));
+    assert_eq!(
+        table.len(),
+        1usize << pl.log_size,
+        "component must be a bit table of 2^log_size entries"
+    );
+    let g_words = g.words_mut();
+    if pl.offset.is_multiple_of(64) && table.len() >= 64 {
+        let dst = pl.offset / 64;
+        let src = table.words();
+        g_words[dst..dst + src.len()].copy_from_slice(src);
+    } else {
+        for idx in table.iter_ones() {
+            let bit = pl.offset + idx;
+            g_words[bit / 64] |= 1u64 << (bit % 64);
+        }
+    }
+}
+
 /// [`build_g`] in packed form: component tables are packed bit
 /// tables and the assembled `G` is returned packed, so neither is
 /// ever expanded to a byte per bit. The bits are identical.
@@ -178,26 +207,11 @@ pub struct BatchProof {
 /// As [`build_g`].
 pub fn build_g_packed(layout: &Layout, tables: &BTreeMap<i64, PackedBits>) -> PackedBits {
     let mut g = PackedBits::zero(1usize << layout.ell);
-    let g_words = g.words_mut();
     for pl in &layout.placements {
         let table = tables
             .get(&pl.comp_id)
             .unwrap_or_else(|| panic!("missing table for component {}", pl.comp_id));
-        assert_eq!(
-            table.len(),
-            1usize << pl.log_size,
-            "component must be a bit table of 2^log_size entries"
-        );
-        if pl.offset.is_multiple_of(64) && table.len() >= 64 {
-            let dst = pl.offset / 64;
-            let src = table.words();
-            g_words[dst..dst + src.len()].copy_from_slice(src);
-        } else {
-            for idx in table.iter_ones() {
-                let bit = pl.offset + idx;
-                g_words[bit / 64] |= 1u64 << (bit % 64);
-            }
-        }
+        place_in_g_packed(&mut g, layout, pl.comp_id, table);
     }
     g
 }

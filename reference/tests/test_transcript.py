@@ -86,6 +86,8 @@ class TranscriptTest(unittest.TestCase):
         p = os.path.join(os.path.dirname(__file__), "..", "vectors", "02-transcript", "transcript.json")
         if not os.path.exists(p):
             self.skipTest("vectors not generated")
-        for v in json.load(open(p))["vectors"]:
+        with open(p, encoding="utf-8") as f:
+            vectors = json.load(f)["vectors"]
+        for v in vectors:
             h = Hasher(v["profile"])
             self.assertEqual(script(Transcript(v["protocol_label"].encode(), h)), v["outputs"])

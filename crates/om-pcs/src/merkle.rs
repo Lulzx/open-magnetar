@@ -30,10 +30,24 @@ pub fn hash_leaf(h: Hasher, data: &[u8]) -> Digest {
     h.digest_slices(&[&[LEAF], data])
 }
 
+/// `H(0x00 || data)` written directly into `out` (`h.digest_size()` bytes).
+#[inline]
+pub fn hash_leaf_into(h: Hasher, data: &[u8], out: &mut [u8]) {
+    h.digest_slices_into(&[&[LEAF], data], out);
+}
+
 /// `H(0x01 || left || right)`.
 #[inline]
 pub fn hash_node(h: Hasher, left: &[u8], right: &[u8]) -> Digest {
-    h.digest_slices(&[&[NODE], left, right])
+    let mut out = vec![0u8; h.digest_size()];
+    hash_node_into(h, left, right, &mut out);
+    out
+}
+
+/// `H(0x01 || left || right)` written directly into `out` (`h.digest_size()` bytes).
+#[inline]
+pub fn hash_node_into(h: Hasher, left: &[u8], right: &[u8], out: &mut [u8]) {
+    h.hash_merkle_node_into(left, right, out);
 }
 
 /// `H(0x02)`, the padding entry.
@@ -51,14 +65,17 @@ pub fn tree_depth(num_leaves: usize) -> usize {
 }
 
 /// A binary Merkle tree over byte-string leaves (spec 04 §4.2).
+/// Each layer is stored as a contiguous `Vec<u8>` of `num_nodes * h.digest_size()`
+/// bytes to avoid millions of small heap allocations on large trees.
 #[derive(Clone, Debug)]
 pub struct MerkleTree {
     /// The hash profile.
     pub h: Hasher,
     /// Number of real (unpadded) leaves.
     pub num_leaves: usize,
-    /// Hash layers, leaves first; the last layer holds the root.
-    pub layers: Vec<Vec<Digest>>,
+    /// Contiguous hash layers (`count * h.digest_size()` bytes per layer),
+    /// leaves first; the last layer holds the single root digest.
+    flat_layers: Vec<Vec<u8>>,
 }
 
 impl MerkleTree {
@@ -67,12 +84,19 @@ impl MerkleTree {
     /// # Panics
     /// Panics if `leaves` is empty.
     pub fn new(h: Hasher, leaves: &[Vec<u8>]) -> Self {
-        let layer: Vec<Digest> = if leaves.len() >= PAR_HASHES {
-            leaves.par_iter().map(|x| hash_leaf(h, x)).collect()
+        assert!(!leaves.is_empty(), "a Merkle tree needs at least one leaf");
+        let dsz = h.digest_size();
+        let mut flat = vec![0u8; leaves.len() * dsz];
+        if leaves.len() >= PAR_HASHES {
+            flat.par_chunks_mut(dsz)
+                .zip(leaves.par_iter())
+                .for_each(|(out, x)| hash_leaf_into(h, x, out));
         } else {
-            leaves.iter().map(|x| hash_leaf(h, x)).collect()
-        };
-        Self::from_leaf_hashes(h, layer)
+            for (out, x) in flat.chunks_mut(dsz).zip(leaves.iter()) {
+                hash_leaf_into(h, x, out);
+            }
+        }
+        Self::from_flat_leaf_hashes(h, leaves.len(), flat)
     }
 
     /// Build a tree from already hashed leaves (`hash_leaf` of each
@@ -81,34 +105,65 @@ impl MerkleTree {
     ///
     /// # Panics
     /// Panics if `layer` is empty.
-    pub fn from_leaf_hashes(h: Hasher, mut layer: Vec<Digest>) -> Self {
+    pub fn from_leaf_hashes(h: Hasher, layer: Vec<Digest>) -> Self {
+        assert!(!layer.is_empty(), "a Merkle tree needs at least one leaf");
         let num_leaves = layer.len();
+        let dsz = h.digest_size();
+        let mut flat = Vec::with_capacity(num_leaves * dsz);
+        for d in layer {
+            debug_assert_eq!(d.len(), dsz);
+            flat.extend_from_slice(&d);
+        }
+        Self::from_flat_leaf_hashes(h, num_leaves, flat)
+    }
+
+    /// Build a tree from a contiguous byte buffer `flat_layer` of
+    /// `num_leaves * h.digest_size()` leaf hash bytes.
+    ///
+    /// # Panics
+    /// Panics if `num_leaves == 0` or `flat_layer.len() != num_leaves * h.digest_size()`.
+    pub fn from_flat_leaf_hashes(h: Hasher, num_leaves: usize, mut flat_layer: Vec<u8>) -> Self {
+        let dsz = h.digest_size();
+        assert!(num_leaves >= 1, "a Merkle tree needs at least one leaf");
+        assert_eq!(flat_layer.len(), num_leaves * dsz);
         let depth = tree_depth(num_leaves);
-        layer.resize(1 << depth, empty_hash(h));
-        let mut layers = vec![layer];
-        while layers.last().expect("layers").len() > 1 {
-            let prev = layers.last().expect("layers");
-            let next: Vec<Digest> = if prev.len() / 2 >= PAR_HASHES {
-                prev.par_chunks(2)
-                    .map(|pair| hash_node(h, &pair[0], &pair[1]))
-                    .collect()
+        let padded = 1usize << depth;
+        if padded > num_leaves {
+            let empty = empty_hash(h);
+            flat_layer.reserve((padded - num_leaves) * dsz);
+            for _ in num_leaves..padded {
+                flat_layer.extend_from_slice(&empty);
+            }
+        }
+        let mut flat_layers = Vec::with_capacity(depth + 1);
+        flat_layers.push(flat_layer);
+        while flat_layers.last().expect("layers").len() > dsz {
+            let prev = flat_layers.last().expect("layers");
+            let next_nodes = prev.len() / (2 * dsz);
+            let mut next = vec![0u8; next_nodes * dsz];
+            if next_nodes >= PAR_HASHES {
+                next.par_chunks_mut(dsz)
+                    .zip(prev.par_chunks(2 * dsz))
+                    .for_each(|(out, pair)| {
+                        hash_node_into(h, &pair[..dsz], &pair[dsz..], out);
+                    });
             } else {
-                prev.chunks(2)
-                    .map(|pair| hash_node(h, &pair[0], &pair[1]))
-                    .collect()
-            };
-            layers.push(next);
+                for (out, pair) in next.chunks_mut(dsz).zip(prev.chunks(2 * dsz)) {
+                    hash_node_into(h, &pair[..dsz], &pair[dsz..], out);
+                }
+            }
+            flat_layers.push(next);
         }
         MerkleTree {
             h,
             num_leaves,
-            layers,
+            flat_layers,
         }
     }
 
     /// The root digest.
     pub fn root(&self) -> Digest {
-        self.layers.last().expect("layers")[0].clone()
+        self.flat_layers.last().expect("layers").clone()
     }
 
     /// Deduplicated multi-path for strictly ascending `indices` (§4.2).
@@ -118,13 +173,16 @@ impl MerkleTree {
     /// out-of-range index set (as Python `MerkleTree.open` raises).
     pub fn open(&self, indices: &[usize]) -> Result<Vec<Digest>, VerificationError> {
         check_indices(indices, self.num_leaves)?;
+        let dsz = self.h.digest_size();
         let mut auth = Vec::new();
         let mut cur: Vec<usize> = indices.to_vec();
-        for lvl in 0..self.layers.len() - 1 {
+        for lvl in 0..self.flat_layers.len() - 1 {
+            let layer = &self.flat_layers[lvl];
             let s: BTreeSet<usize> = cur.iter().copied().collect();
             for &i in &cur {
-                if !s.contains(&(i ^ 1)) {
-                    auth.push(self.layers[lvl][i ^ 1].clone());
+                let sib = i ^ 1;
+                if !s.contains(&sib) {
+                    auth.push(layer[sib * dsz..(sib + 1) * dsz].to_vec());
                 }
             }
             let next: BTreeSet<usize> = cur.iter().map(|&i| i >> 1).collect();

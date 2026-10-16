@@ -277,9 +277,12 @@ fn check_table_len(len: usize, num_vars: usize) {
 /// Panics if `table.len() != 2^r.len()` (Python raises `ValueError`).
 pub fn mle_eval(table: &[K], r: &[K]) -> K {
     check_table_len(table.len(), r.len());
-    let mut t = table.to_vec();
-    for &ri in r {
-        t = bind_low(&t, ri);
+    let Some((&r0, rest)) = r.split_first() else {
+        return table[0];
+    };
+    let mut t = bind_low(table, r0);
+    for &ri in rest {
+        bind_low_in_place(&mut t, ri);
     }
     t[0]
 }
@@ -295,13 +298,20 @@ pub fn mle_eval(table: &[K], r: &[K]) -> K {
 /// Panics if `table.len() != 2^r.len()`.
 pub fn mle_eval_bits(table: &[bool], r: &[K]) -> K {
     check_table_len(table.len(), r.len());
-    let mut t: Vec<K> = if table.len() >= PAR_THRESHOLD {
-        table.par_iter().map(|&b| K::from_bit(b)).collect()
+    let e = eq_table(r);
+    if table.len() >= PAR_THRESHOLD {
+        table
+            .par_iter()
+            .zip(e.par_iter())
+            .filter_map(|(&b, &ei)| if b { Some(ei) } else { None })
+            .reduce(|| K::ZERO, |a, b| a + b)
     } else {
-        table.iter().map(|&b| K::from_bit(b)).collect()
-    };
-    for &ri in r {
-        t = bind_low(&t, ri);
+        let mut acc = K::ZERO;
+        for (&b, &ei) in table.iter().zip(&e) {
+            if b {
+                acc += ei;
+            }
+        }
+        acc
     }
-    t[0]
 }

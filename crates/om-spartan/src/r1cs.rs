@@ -337,14 +337,24 @@ pub fn check_witness_bits<R: BitRow>(w: &[R], nu: usize) {
 /// counts, or if a witness row is malformed (Python raises
 /// `ValueError` / `IndexError`).
 pub fn simd_satisfied<R: BitRow>(structs: &[R1CS], w: &[R], x: &[Vec<K>]) -> bool {
-    assert_eq!(w.len(), x.len(), "W and X must have one row per instance");
+    assert!(
+        x.is_empty() || w.len() == x.len(),
+        "W and X must have one row per instance"
+    );
     let nu = structs.first().expect("no relations").nu;
     check_witness_bits(w, nu);
-    structs.iter().all(|s| {
-        w.par_iter()
-            .zip(x)
-            .all(|(wi, xi)| s.check_instance(&build_z_row(wi, xi, nu)))
-    })
+    if x.is_empty() {
+        structs.iter().all(|s| {
+            w.par_iter()
+                .all(|wi| s.check_instance(&build_z_row(wi, &[], nu)))
+        })
+    } else {
+        structs.iter().all(|s| {
+            w.par_iter()
+                .zip(x)
+                .all(|(wi, xi)| s.check_instance(&build_z_row(wi, xi, nu)))
+        })
+    }
 }
 
 /// Row-major flattening of `W`: index = column + `2^(nu-1)` * instance
