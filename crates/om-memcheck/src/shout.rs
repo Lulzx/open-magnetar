@@ -3,16 +3,15 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, combine_sum, eq_table, mle_eval, sumcheck_prove,
-    sumcheck_verify,
+    SumcheckProof, VerificationError, combine_sum, mle_eval, sumcheck_prove, sumcheck_verify,
 };
 use om_transcript::{Transcript, u64le};
 use rayon::prelude::*;
 
 use crate::onehot::PAR_THRESHOLD;
 use crate::onehot::{
-    EvalClaim, OneHotProof, VirtGroup, VirtProof, VirtTerm, full_table, onehot_prove,
-    onehot_verify, virt_prove, virt_verify,
+    AddrComps, EvalClaim, OneHotProof, VirtGroup, VirtProof, VirtTerm, onehot_prove, onehot_verify,
+    virt_prove, virt_verify,
 };
 use crate::sublabel;
 
@@ -57,26 +56,10 @@ pub fn comp_names(params: &ShoutParams) -> Vec<String> {
         .collect()
 }
 
-/// `ra~(k, r_c)` for all Boolean `k` (length `2^a`).
-fn ra_at(params: &ShoutParams, comps: &[Vec<bool>], r_c: &[K]) -> Vec<K> {
-    let (a, n) = (params.a, params.n);
-    let (nk, t) = (1usize << a, 1usize << n);
-    let full = full_table(comps, a, params.d, t);
-    let e = eq_table(r_c);
-    let at_k = |k: usize| {
-        let mut acc = K::ZERO;
-        for j in 0..t {
-            if full[k + nk * j] {
-                acc += e[j];
-            }
-        }
-        acc
-    };
-    if full.len() >= PAR_THRESHOLD {
-        (0..nk).into_par_iter().map(at_k).collect()
-    } else {
-        (0..nk).map(at_k).collect()
-    }
+/// `ra~(k, r_c)` for all Boolean `k` (length `2^a`): a histogram of
+/// the addresses weighted by `eq(r_c, j)` (§7.10), `O(T + 2^a)`.
+fn ra_at(params: &ShoutParams, comps: &AddrComps, r_c: &[K]) -> Vec<K> {
+    comps.ra_at(params.a, r_c)
 }
 
 /// The honest claim group at cycle point `r_c` for the given table and
@@ -84,7 +67,7 @@ fn ra_at(params: &ShoutParams, comps: &[Vec<bool>], r_c: &[K]) -> Vec<K> {
 pub fn shout_honest_claims(
     params: &ShoutParams,
     table: &[Vec<K>],
-    comps: &[Vec<bool>],
+    comps: &AddrComps,
     r_c: &[K],
     cols: Option<&[usize]>,
     with_bits: bool,
@@ -226,7 +209,7 @@ fn group_claim(g: &ShoutClaims, co: &GroupCoeffs) -> K {
 pub fn shout_prove(
     params: &ShoutParams,
     table: &[Vec<K>],
-    comps: &[Vec<bool>],
+    comps: &AddrComps,
     groups: &[ShoutClaims],
     transcript: &mut Transcript,
     label: &[u8],
@@ -283,7 +266,7 @@ pub fn shout_prove(
     };
     let (vproof, mut claims) = virt_prove(
         &[grp],
-        &[comps.to_vec()],
+        &[comps],
         a,
         d,
         n,
@@ -291,7 +274,7 @@ pub fn shout_prove(
         &sublabel(label, b"/virt"),
     );
     let (oproof, oclaims) = onehot_prove(
-        comps,
+        &[comps],
         &names,
         a / d,
         n,

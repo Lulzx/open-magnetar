@@ -138,21 +138,43 @@ fn run_case(
         inc_extra,
     );
     let vout = verify(&s, &s.claims, &proof, fin.as_ref(), inc_extra).unwrap();
+    // The same witness as dense bit tables proves the same bytes.
+    let mut dense = s.wit.clone();
+    for c in dense.ra.iter_mut().chain(std::iter::once(&mut dense.wa)) {
+        c.bits_mut();
+    }
+    let (proof2, out2) = twist_prove(
+        &s.params,
+        &s.m0,
+        &dense,
+        &s.claims,
+        &mut tr(),
+        b"T",
+        fin.as_ref(),
+        inc_extra,
+    );
+    assert_eq!(proof2, proof);
+    assert_eq!(out2, out);
     assert_eq!(out.claims, vout.claims);
     assert_eq!(out.inc_extra, vout.inc_extra);
     // Every output claim is a true evaluation of a committed polynomial.
     for x in &vout.claims {
         if x.poly.ends_with("/inc") {
-            assert_eq!(mle_eval_bits(&s.wit.inc, &x.point), x.value, "{}", x.poly);
+            assert_eq!(
+                mle_eval_bits(&s.wit.inc_table(s.params.ell), &x.point),
+                x.value,
+                "{}",
+                x.poly
+            );
         } else {
             let parts: Vec<&str> = x.poly.split('/').collect();
             let (kind, i) = (parts[1], parts[2].parse::<usize>().unwrap() - 1);
             let comp = if kind == "wa" {
-                &s.wit.wa[i]
+                s.wit.wa.table(i)
             } else {
-                &s.wit.ra[kind[2..].parse::<usize>().unwrap()][i]
+                s.wit.ra[kind[2..].parse::<usize>().unwrap()].table(i)
             };
-            assert_eq!(mle_eval_bits(comp, &x.point), x.value, "{}", x.poly);
+            assert_eq!(mle_eval_bits(&comp, &x.point), x.value, "{}", x.poly);
         }
     }
     (s, fin, proof)
@@ -275,8 +297,8 @@ fn wrong_address_bit() {
 #[test]
 fn hamming_two_read() {
     let mut s = setup(4, 2, 2, 3, 6, 25);
-    s.wit.ra[1][0][1 + 4 * 2] = true;
-    s.wit.ra[1][0][2 + 4 * 2] = true;
+    s.wit.ra[1].bits_mut()[0][1 + 4 * 2] = true;
+    s.wit.ra[1].bits_mut()[0][2 + 4 * 2] = true;
     let (proof, _) = twist_prove(
         &s.params,
         &s.m0,
@@ -296,7 +318,7 @@ fn hamming_zero_write() {
         let mut s = setup(4, d, 1, 3, 6, 26);
         let ac = 4 / d;
         for u in 0..1 << ac {
-            s.wit.wa[0][u + (1 << ac) * 4] = false;
+            s.wit.wa.bits_mut()[0][u + (1 << ac) * 4] = false;
         }
         let (proof, _) = twist_prove(
             &s.params,
@@ -316,7 +338,7 @@ fn hamming_zero_write() {
 fn hamming_zero_read() {
     let mut s = setup(4, 2, 1, 3, 6, 27);
     for u in 0..4 {
-        s.wit.ra[0][1][u + 4 * 6] = false;
+        s.wit.ra[0].bits_mut()[1][u + 4 * 6] = false;
     }
     let (proof, _) = twist_prove(
         &s.params,
@@ -335,7 +357,7 @@ fn hamming_zero_read() {
 fn wrong_increment() {
     // Increment table inconsistent with the claimed written value.
     let mut s = setup(3, 1, 1, 3, 6, 28);
-    s.wit.inc[5 + 64 * 2] ^= true;
+    s.wit.inc[2] ^= 1 << 5;
     let (proof, _) = twist_prove(
         &s.params,
         &s.m0,
@@ -419,4 +441,14 @@ fn final_untouched_region_equals_m0() {
 #[test]
 fn parallel_threshold_case() {
     run_case(8, 2, 1, 7, 6, 99, Some((2, 3)), true);
+}
+
+/// `T = 2^14` crosses the rayon threshold of the per-cycle provers
+/// (rw cycle rounds and binding, the row-evaluated Val, final-memory,
+/// virtualization and one-hot sum-checks); register and RAM shapes,
+/// each also proven from dense bit tables with identical bytes.
+#[test]
+fn parallel_cycles_case() {
+    run_case(6, 2, 2, 14, 6, 101, None, true);
+    run_case(8, 4, 1, 14, 6, 102, Some((3, 5)), false);
 }

@@ -10,8 +10,13 @@
 //!
 //! Judgment calls where Rust idiom differs from the Python model:
 //!
-//! - Bit tables (`A_i`, `ra`, `Inc`, `M_0`) are `Vec<bool>` (Python
-//!   `list[int]` of 0/1); words are `u64` and addresses `usize`.
+//! - Bit tables (`ra`, `M_0`) are `Vec<bool>` (Python `list[int]` of
+//!   0/1); words are `u64` and addresses `usize`. The prover's address
+//!   components are [`onehot::AddrComps`] (one address per cycle, or
+//!   arbitrary bit tables for cheating-prover tests) and its `Inc`
+//!   table is one `u64` word per cycle (spec 07 §7.10): no prover
+//!   phase holds a `2^ac · T` or `2^ell · T` table of bools or field
+//!   elements.
 //! - Python `VerificationError` is returned as `Err` from every
 //!   `*_verify`; Python `assert`/`ValueError` programmer errors
 //!   (e.g. `d ∤ a` in [`onehot::comp_tables`]) **panic**, matching
@@ -32,6 +37,7 @@
 //!   positional parameters `final_mem: Option<&FinalMem>` and
 //!   `inc_extra_flag: bool`.
 
+mod lazy;
 pub mod onehot;
 pub mod shout;
 pub mod twist;

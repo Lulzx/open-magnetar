@@ -11,12 +11,12 @@
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, combine_sum, eq_eval, eq_table, sumcheck_prove,
-    sumcheck_verify,
+    PackedBits, SumcheckProof, VerificationError, eq_eval, eq_table, sumcheck_verify,
 };
 use om_transcript::Transcript;
 use rayon::prelude::*;
 
+use crate::lazy::{SplitEq, sumcheck_prove_rows};
 use crate::sublabel;
 
 /// Tables at least this large use rayon (exact elementwise maps / XOR sums).
@@ -85,6 +85,240 @@ pub fn comp_tables(addrs: &[usize], a: usize, d: usize) -> Vec<Vec<bool>> {
         }
     }
     out
+}
+
+/// The `d` address component tables of one access stream (spec 07
+/// §7.10: "one-hot components are stored as the index
+/// `chunk_i(addr[j])` per cycle").
+///
+/// The honest prover holds [`AddrComps::Addrs`]: one address per cycle,
+/// so the tables are `O(T)` integers instead of `d · 2^ac · T` bits.
+/// [`AddrComps::Bits`] holds arbitrary bit tables (rows of Hamming
+/// weight other than one), used by tests of cheating provers; every
+/// prover accepts both and produces the same bytes for equal tables.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AddrComps {
+    /// Component `i` of cycle `j` is one-hot at `chunk_i(addrs[j])`.
+    Addrs {
+        addrs: Vec<u32>,
+        /// Address bits.
+        a: usize,
+        /// Components, `d | a`.
+        d: usize,
+    },
+    /// `d` flat bit tables, index `u + 2^ac * j` (as [`comp_tables`]).
+    Bits { tables: Vec<Vec<bool>>, ac: usize },
+}
+
+impl AddrComps {
+    /// Components of the given per-cycle addresses.
+    ///
+    /// # Panics
+    /// Panics unless `d | a`, `a >= d`, `a <= 32` and every address is
+    /// below `2^a`.
+    pub fn from_addrs(addrs: Vec<u32>, a: usize, d: usize) -> Self {
+        assert!(
+            a.is_multiple_of(d) && a >= d && a <= 32,
+            "AddrComps: need d | a, a >= d and a <= 32"
+        );
+        assert!(
+            addrs.iter().all(|&x| (u64::from(x)) < 1u64 << a),
+            "AddrComps: address out of range"
+        );
+        AddrComps::Addrs { addrs, a, d }
+    }
+
+    /// [`AddrComps::from_addrs`] from `usize` addresses.
+    pub fn from_usizes(addrs: &[usize], a: usize, d: usize) -> Self {
+        let v = addrs
+            .iter()
+            .map(|&x| u32::try_from(x).expect("address fits in u32"))
+            .collect();
+        Self::from_addrs(v, a, d)
+    }
+
+    /// Number of components `d`.
+    pub fn d(&self) -> usize {
+        match self {
+            AddrComps::Addrs { d, .. } => *d,
+            AddrComps::Bits { tables, .. } => tables.len(),
+        }
+    }
+
+    /// Bits per component `ac = a/d`.
+    pub fn ac(&self) -> usize {
+        match self {
+            AddrComps::Addrs { a, d, .. } => a / d,
+            AddrComps::Bits { ac, .. } => *ac,
+        }
+    }
+
+    /// Number of cycles `T`.
+    pub fn cycles(&self) -> usize {
+        match self {
+            AddrComps::Addrs { addrs, .. } => addrs.len(),
+            AddrComps::Bits { tables, ac } => tables[0].len() >> ac,
+        }
+    }
+
+    /// The bit tables, converting to [`AddrComps::Bits`] first (for
+    /// tests that corrupt a witness).
+    pub fn bits_mut(&mut self) -> &mut Vec<Vec<bool>> {
+        if let AddrComps::Addrs { .. } = self {
+            let ac = self.ac();
+            let tables = (0..self.d()).map(|i| self.table(i)).collect();
+            *self = AddrComps::Bits { tables, ac };
+        }
+        match self {
+            AddrComps::Bits { tables, .. } => tables,
+            AddrComps::Addrs { .. } => unreachable!(),
+        }
+    }
+
+    /// Component `i` as a dense bit table (index `u + 2^ac * j`).
+    pub fn table(&self, i: usize) -> Vec<bool> {
+        match self {
+            AddrComps::Bits { tables, .. } => tables[i].clone(),
+            AddrComps::Addrs { .. } => self.packed(i).to_bools(),
+        }
+    }
+
+    /// Component `i` as a packed bit table (index `u + 2^ac * j`).
+    pub fn packed(&self, i: usize) -> PackedBits {
+        match self {
+            AddrComps::Bits { tables, .. } => PackedBits::from_bools(&tables[i]),
+            AddrComps::Addrs { addrs, .. } => {
+                let ac = self.ac();
+                let mut out = PackedBits::zero(addrs.len() << ac);
+                for (j, &ad) in addrs.iter().enumerate() {
+                    out.set(chunk(ad as usize, ac, i) + (j << ac));
+                }
+                out
+            }
+        }
+    }
+
+    /// The address accessed in cycle `j`. For non-one-hot rows this is
+    /// the OR of the set chunks (a cheating witness; any value is fine).
+    #[inline]
+    pub fn addr(&self, j: usize) -> usize {
+        match self {
+            AddrComps::Addrs { addrs, .. } => addrs[j] as usize,
+            AddrComps::Bits { tables, ac } => {
+                let nu = 1usize << ac;
+                let mut ad = 0usize;
+                for (i, tb) in tables.iter().enumerate() {
+                    for u in 0..nu {
+                        if tb[u + nu * j] {
+                            ad |= u << (i * ac);
+                        }
+                    }
+                }
+                ad
+            }
+        }
+    }
+
+    /// All per-cycle addresses (see [`AddrComps::addr`]).
+    pub fn addrs(&self) -> std::borrow::Cow<'_, [u32]> {
+        match self {
+            AddrComps::Addrs { addrs, .. } => std::borrow::Cow::Borrowed(addrs),
+            AddrComps::Bits { .. } => (0..self.cycles())
+                .map(|j| self.addr(j) as u32)
+                .collect::<Vec<_>>()
+                .into(),
+        }
+    }
+
+    /// `Σ_u e[u] · A_i[u + 2^ac j]` for `e = eq_table(r)`, `|r| = ac`:
+    /// row `j` of [`partial_eval_rows`].
+    #[inline]
+    pub(crate) fn row_eval(&self, i: usize, j: usize, e: &[K]) -> K {
+        match self {
+            AddrComps::Addrs { addrs, .. } => e[chunk(addrs[j] as usize, self.ac(), i)],
+            AddrComps::Bits { tables, ac } => {
+                let nu = 1usize << ac;
+                let mut acc = K::ZERO;
+                for (u, &ev) in e.iter().enumerate().take(nu) {
+                    if tables[i][u + nu * j] {
+                        acc += ev;
+                    }
+                }
+                acc
+            }
+        }
+    }
+
+    /// `f_t~(r_c) = Σ_j eq(r_c, j) · bit_t(addr_j)` for `t < a`: the
+    /// address-bit claims of spec 07 §7.4/§7.5 (MLE over cycles).
+    pub fn bit_evals(&self, a: usize, r_c: &[K]) -> Vec<K> {
+        assert_eq!(
+            self.cycles(),
+            1 << r_c.len(),
+            "bit_evals: wrong cycle count"
+        );
+        crate::lazy::addr_bit_evals(a, r_c, &|j| self.addr(j))
+    }
+
+    /// `ra~(k, r_c) = Σ_j eq(r_c, j) · Π_i A_i(k^(i), j)` for all `k`
+    /// (length `2^a`; spec 07 §7.10: a histogram of the addresses).
+    pub fn ra_at(&self, a: usize, r_c: &[K]) -> Vec<K> {
+        let nk = 1usize << a;
+        let t = self.cycles();
+        match self {
+            AddrComps::Addrs { addrs, .. } => {
+                let se = SplitEq::new(r_c);
+                let chunks = rayon::current_num_threads().max(1);
+                if t >= PAR_THRESHOLD && nk * chunks <= 4 * t {
+                    let per = t.div_ceil(chunks);
+                    (0..chunks)
+                        .into_par_iter()
+                        .map(|c| {
+                            let mut h = vec![K::ZERO; nk];
+                            for j in c * per..((c + 1) * per).min(t) {
+                                h[addrs[j] as usize] += se.at(j);
+                            }
+                            h
+                        })
+                        .reduce(
+                            || vec![K::ZERO; nk],
+                            |mut x, y| {
+                                for (p, q) in x.iter_mut().zip(&y) {
+                                    *p += *q;
+                                }
+                                x
+                            },
+                        )
+                } else {
+                    let mut h = vec![K::ZERO; nk];
+                    for (j, &ad) in addrs.iter().enumerate() {
+                        h[ad as usize] += se.at(j);
+                    }
+                    h
+                }
+            }
+            AddrComps::Bits { tables, .. } => {
+                let full = full_table(tables, a, tables.len(), t);
+                let e = eq_table(r_c);
+                (0..nk)
+                    .map(|k| {
+                        let mut acc = K::ZERO;
+                        for (j, &ej) in e.iter().enumerate() {
+                            if full[k + nk * j] {
+                                acc += ej;
+                            }
+                        }
+                        acc
+                    })
+                    .collect()
+            }
+        }
+    }
+}
+
+#[inline]
+fn chunk(addr: usize, ac: usize, i: usize) -> usize {
+    (addr >> (i * ac)) & ((1usize << ac) - 1)
 }
 
 /// The virtual full-address table `ra(k, j) = prod_i A_i(k^(i), j)`,
@@ -191,40 +425,57 @@ fn onehot_combine(lam: &[K], c: K, v: &[K]) -> K {
 /// one (spec 07 §7.2, degree-4 sum-check over the `n` cycle variables).
 /// Returns the proof and, per component in order, the claims
 /// `(name, r ∥ s, e)`, `(name, r' ∥ s, e')`.
+///
+/// `comps` lists the address streams; their components, in order,
+/// are the checked components (`names` has one name per component).
+/// The sum-check tables (`eq(ρ, j)` and `Ã(r, j)`, `Ã(r', j)` per
+/// component) are evaluated per cycle from the addresses and never
+/// materialised at full length (§7.10).
 pub fn onehot_prove(
-    comps: &[Vec<bool>],
+    comps: &[&AddrComps],
     names: &[String],
     ac: usize,
     n: usize,
     transcript: &mut Transcript,
     label: &[u8],
 ) -> (OneHotProof, Vec<EvalClaim>) {
-    let t = 1usize << n;
+    let flat: Vec<(&AddrComps, usize)> = comps
+        .iter()
+        .flat_map(|c| (0..c.d()).map(move |i| (*c, i)))
+        .collect();
+    assert!(
+        flat.iter()
+            .all(|(c, _)| c.ac() == ac && c.cycles() == 1 << n),
+        "onehot_prove: component shape mismatch"
+    );
     let (r, rp, c) = sample_onehot_point(transcript, label, ac);
     let rho = transcript.challenge_ks(&sublabel(label, b"/rho"), n);
-    let lam = transcript.challenge_ks(&sublabel(label, b"/lambda"), comps.len());
-    let mut tables = vec![eq_table(&rho)];
-    for a in comps {
-        tables.push(partial_eval_rows(a, ac, t, &r));
-        tables.push(partial_eval_rows(a, ac, t, &rp));
-    }
+    let lam = transcript.challenge_ks(&sublabel(label, b"/lambda"), flat.len());
+    let (er, erp, se) = (eq_table(&r), eq_table(&rp), SplitEq::new(&rho));
+    let row = |j: usize, out: &mut [K]| {
+        out[0] = se.at(j);
+        for (x, &(cm, i)) in flat.iter().enumerate() {
+            out[1 + 2 * x] = cm.row_eval(i, j, &er);
+            out[2 + 2 * x] = cm.row_eval(i, j, &erp);
+        }
+    };
     let lam_c = lam.clone();
     let combine = move |v: &[K]| onehot_combine(&lam_c, c, v);
     // The honest prover sums its actual tables (0 for valid rows).
-    let claim = combine_sum(&tables, &combine);
-    let (sc, s, mles) = sumcheck_prove(
-        claim,
-        tables,
+    let (_, sc, s, mles) = sumcheck_prove_rows(
+        n,
+        1 + 2 * flat.len(),
+        &row,
         &combine,
         4,
         transcript,
         &sublabel(label, b"/sc"),
     );
-    let evals: Vec<Vec<K>> = (0..comps.len())
+    let evals: Vec<Vec<K>> = (0..flat.len())
         .map(|x| vec![mles[1 + 2 * x], mles[2 + 2 * x]])
         .collect();
-    let flat: Vec<K> = evals.iter().flatten().copied().collect();
-    transcript.absorb_ks(&sublabel(label, b"/evals"), &flat);
+    let ev_flat: Vec<K> = evals.iter().flatten().copied().collect();
+    transcript.absorb_ks(&sublabel(label, b"/evals"), &ev_flat);
     let claims = onehot_claims(names, &r, &rp, &s, &evals);
     (OneHotProof { sc, evals }, claims)
 }
@@ -359,9 +610,17 @@ fn virt_claims(groups: &[VirtGroup], d: usize, s: &[K], evals: &[K], a: usize) -
 /// (spec 07 §7.3). For `d = 1` nothing is proven and the proof is
 /// `None`: each term already is a component claim. `comps_per_group[g]`
 /// holds the `d` component tables of group `g`.
+///
+/// The dense prover's tables are one `eq(c_t, ·)` per term and the
+/// `d` contracted components per group. Since the summand is linear in
+/// the term tables, this prover folds each group's terms into one
+/// table `Σ_t ν_t eq(c_t, ·)` (its binding is the same combination of
+/// the bound term tables, so every round message is unchanged) and
+/// evaluates all tables per cycle from split `eq` tables and the
+/// addresses (§7.10).
 pub fn virt_prove(
     groups: &[VirtGroup],
-    comps_per_group: &[Vec<Vec<bool>>],
+    comps_per_group: &[&AddrComps],
     a: usize,
     d: usize,
     n: usize,
@@ -371,52 +630,70 @@ pub fn virt_prove(
     if d == 1 {
         return (None, virt_direct(groups));
     }
-    let (t, ac) = (1usize << n, a / d);
+    assert_eq!(groups.len(), comps_per_group.len(), "virt_prove: groups");
+    assert!(
+        comps_per_group
+            .iter()
+            .all(|c| c.d() == d && c.ac() == a / d && c.cycles() == 1 << n),
+        "virt_prove: component shape mismatch"
+    );
     let nterms: usize = groups.iter().map(|g| g.terms.len()).sum();
     let nu = transcript.challenge_ks(&sublabel(label, b"/nu"), nterms);
-    let mut tables: Vec<Vec<K>> = groups
-        .iter()
-        .flat_map(|g| g.terms.iter().map(|term| eq_table(&term.cyc)))
-        .collect();
-    let base = tables.len();
-    for (gi, g) in groups.iter().enumerate() {
-        for (i, rc) in split_point(&g.r_k, a, d).into_iter().enumerate() {
-            tables.push(partial_eval_rows(&comps_per_group[gi][i], ac, t, &rc));
+    // Per group: its terms' (ν_t, split eq(c_t, ·)), and eq_table of
+    // each chunk point.
+    let mut tpos = 0usize;
+    let mut terms: Vec<Vec<(K, SplitEq)>> = Vec::with_capacity(groups.len());
+    let mut chunk_eqs: Vec<Vec<Vec<K>>> = Vec::with_capacity(groups.len());
+    for g in groups {
+        let mut ts = Vec::with_capacity(g.terms.len());
+        for term in &g.terms {
+            ts.push((nu[tpos], SplitEq::new(&term.cyc)));
+            tpos += 1;
         }
+        terms.push(ts);
+        chunk_eqs.push(
+            split_point(&g.r_k, a, d)
+                .iter()
+                .map(|rc| eq_table(rc))
+                .collect(),
+        );
     }
-    // Table layout: one eq table per term (group-major), then d per group.
-    let term_counts: Vec<usize> = groups.iter().map(|g| g.terms.len()).collect();
-    let combine = {
-        let nu = nu.clone();
-        let term_counts = term_counts.clone();
-        move |v: &[K]| {
-            let (mut acc, mut tpos) = (K::ZERO, 0usize);
-            for (gi, &cnt) in term_counts.iter().enumerate() {
-                let mut coef = K::ZERO;
-                for _ in 0..cnt {
-                    coef += nu[tpos] * v[tpos];
-                    tpos += 1;
-                }
-                let mut prod = coef;
-                for i in 0..d {
-                    prod *= v[nterms + gi * d + i];
-                }
-                acc += prod;
+    let ng = groups.len();
+    // Table layout: one coefficient table per group, then d per group.
+    let row = |j: usize, out: &mut [K]| {
+        for gi in 0..ng {
+            let mut coef = K::ZERO;
+            for (nv, se) in &terms[gi] {
+                coef += *nv * se.at(j);
             }
-            acc
+            out[gi] = coef;
+            for (i, e) in chunk_eqs[gi].iter().enumerate() {
+                out[ng + gi * d + i] = comps_per_group[gi].row_eval(i, j, e);
+            }
         }
     };
+    let combine = move |v: &[K]| {
+        let mut acc = K::ZERO;
+        for gi in 0..ng {
+            let mut prod = v[gi];
+            for i in 0..d {
+                prod *= v[ng + gi * d + i];
+            }
+            acc += prod;
+        }
+        acc
+    };
     // The honest prover sums the actual tables (not the claimed value).
-    let claim = combine_sum(&tables, &combine);
-    let (sc, s, mles) = sumcheck_prove(
-        claim,
-        tables,
+    let (_, sc, s, mles) = sumcheck_prove_rows(
+        n,
+        ng * (1 + d),
+        &row,
         &combine,
         d + 1,
         transcript,
         &sublabel(label, b"/sc"),
     );
-    let evals = mles[base..].to_vec();
+    let evals = mles[ng..].to_vec();
     transcript.absorb_ks(&sublabel(label, b"/evals"), &evals);
     let claims = virt_claims(groups, d, &s, &evals, a);
     (Some(VirtProof { sc, evals }), claims)
