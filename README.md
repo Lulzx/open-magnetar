@@ -3,7 +3,6 @@
 [![CI](https://github.com/Lulzx/open-magnetar/actions/workflows/ci.yml/badge.svg)](https://github.com/Lulzx/open-magnetar/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 ![Rust: MSRV 1.90](https://img.shields.io/badge/rust-1.90%2B-orange.svg)
-![Tests: 331 Rust + 223 Python](https://img.shields.io/badge/tests-331%20Rust%20%2B%20223%20Python-brightgreen.svg)
 
 **A transparent, hash-based, post-quantum zkVM for RV64I — implemented from scratch in Rust, proved correct against an independent Python reference model, byte for byte.**
 
