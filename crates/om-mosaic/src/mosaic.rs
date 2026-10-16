@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use om_field::K;
 use om_sumcheck::{
-    SumcheckProof, VerificationError, batch_claims, eq_eval, eq_table, mle_eval_bits,
-    sumcheck_prove, sumcheck_verify,
+    PackedBits, SumcheckProof, VerificationError, batch_claims, eq_eval, eq_table,
+    interpolate_eval, mle_eval_bits, sumcheck_init, sumcheck_verify,
 };
 use om_transcript::Transcript;
 
@@ -169,6 +169,30 @@ pub struct BatchProof {
     pub v_g: K,
 }
 
+/// [`build_g`] in packed form: component tables are packed bit
+/// tables and the assembled `G` is returned packed, so neither is
+/// ever expanded to a byte per bit. The bits are identical.
+///
+/// # Panics
+/// As [`build_g`].
+pub fn build_g_packed(layout: &Layout, tables: &BTreeMap<i64, PackedBits>) -> PackedBits {
+    let mut g = PackedBits::zero(1usize << layout.ell);
+    for pl in &layout.placements {
+        let table = tables
+            .get(&pl.comp_id)
+            .unwrap_or_else(|| panic!("missing table for component {}", pl.comp_id));
+        assert_eq!(
+            table.len(),
+            1usize << pl.log_size,
+            "component must be a bit table of 2^log_size entries"
+        );
+        for idx in table.iter_ones() {
+            g.set(pl.offset + idx);
+        }
+    }
+    g
+}
+
 /// The table `E(x) = Σ_j α_j eq(r_j ∥ s_j, x)` (spec 05 §5.4). The
 /// suffix factor is an indicator, so claim `j` only touches its own
 /// subcube; several claims on one component accumulate there.
@@ -221,26 +245,168 @@ pub fn batch_prove(
     for c in claims {
         lift_point(layout, c).unwrap_or_else(|e| panic!("batch_prove: {}", e.message()));
     }
+    assert_eq!(
+        g.len(),
+        1usize << layout.ell,
+        "batch_prove: g must have length 2^ell"
+    );
+    let set_bits: Vec<usize> = g
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &b)| b.then_some(i))
+        .collect();
+    sparse_batch_prove(layout, claims, &set_bits, transcript)
+}
+
+/// [`batch_prove`] over a packed `G`: the same proof, without ever
+/// expanding `G` (or the eq table) to field elements per bit.
+///
+/// # Panics
+/// As [`batch_prove`], plus if the packed length is not `2^ell`.
+pub fn batch_prove_packed(
+    layout: &Layout,
+    claims: &[Claim],
+    g: &PackedBits,
+    transcript: &mut Transcript,
+) -> (BatchProof, Vec<K>, K) {
+    assert!(
+        claims.len() <= MAX_CLAIMS,
+        "too many Mosaic claims for powers-of-gamma batching (05.4)"
+    );
+    for c in claims {
+        lift_point(layout, c).unwrap_or_else(|e| panic!("batch_prove: {}", e.message()));
+    }
+    assert_eq!(
+        g.len(),
+        1usize << layout.ell,
+        "batch_prove: g must have length 2^ell"
+    );
+    let set_bits: Vec<usize> = g.iter_ones().collect();
+    sparse_batch_prove(layout, claims, &set_bits, transcript)
+}
+
+/// The batching sum-check over the set bits of `G`, shared by
+/// [`batch_prove`] and [`batch_prove_packed`]. Entries are keyed by
+/// the remaining suffix after the rounds so far and carry the bound
+/// `(E, G)` values at that suffix; suffixes with bound `G = 0` are
+/// dropped and their `E` is recomputed on demand from the lifted
+/// claim points when a sibling needs it. No table of `2^ell` field
+/// elements is materialised; transcript and proof bytes match the
+/// dense definition.
+fn sparse_batch_prove(
+    layout: &Layout,
+    claims: &[Claim],
+    set_bits: &[usize],
+    transcript: &mut Transcript,
+) -> (BatchProof, Vec<K>, K) {
+    let ell = layout.ell;
+    let lifted: Vec<Vec<K>> = claims
+        .iter()
+        .map(|c| lift_point(layout, c).expect("claims pre-checked by caller"))
+        .collect();
     let values: Vec<K> = claims.iter().map(|c| c.value).collect();
     let (alphas, claim) = batch_claims(&values, transcript, b"mos/batch");
-    let e_table = eq_sum_table(layout, claims, &alphas);
-    let g_table: Vec<K> = g.iter().map(|&b| K::from_bit(b)).collect();
-    let (proof, r_g, fin) = sumcheck_prove(
-        claim,
-        vec![e_table, g_table],
-        &|v: &[K]| v[0] * v[1],
-        2,
-        transcript,
-        b"mos/batch",
-    );
-    let v_g = fin[1];
+    // eq factor of bit position `b` for point coordinate `p` and
+    // variable value `v`: multilinear extension `1 + p + v` (C2).
+    let eqfac = |p: K, v: K| K::ONE + p + v;
+    // E at the remaining suffix `key` in round `r`, given the bound
+    // prefix products `prefix[j] = prod_{b<r} eqfac(p_{j,b}, chal_b)`.
+    let e_at = |key: usize, r: usize, prefix: &[K]| -> K {
+        let mut acc = K::ZERO;
+        for (j, pt) in lifted.iter().enumerate() {
+            let mut prod = alphas[j] * prefix[j];
+            for (i, &pb) in pt.iter().enumerate().skip(r) {
+                prod *= eqfac(pb, K::from_bit((key >> (i - r)) & 1 == 1));
+                if prod.is_zero() {
+                    break;
+                }
+            }
+            acc += prod;
+        }
+        acc
+    };
+    let mut prefix = vec![K::ONE; claims.len()];
+    // Suffix -> bound G value; only suffixes with bound G != 0 are
+    // stored. E is never stored: `e_at` recomputes it exactly.
+    let mut entries: BTreeMap<usize, K> = set_bits.iter().map(|&x| (x, K::ONE)).collect();
+    let label = b"mos/batch".as_slice();
+    sumcheck_init(transcript, label, claim, ell, 2);
+    let msg_label: Vec<u8> = [label, b"/msg"].concat();
+    let chal_label: Vec<u8> = [label, b"/chal"].concat();
+    let (mut msgs, mut rs): (Vec<Vec<K>>, Vec<K>) = (Vec::new(), Vec::new());
+    let mut cur = claim;
+    for r in 0..ell {
+        let mut ev = [K::ZERO; 3];
+        let mut iter = entries.iter().peekable();
+        while let Some((&k, &gv)) = iter.next() {
+            let parent = k / 2;
+            let (mut gp, mut ep) = ([gv, K::ZERO], [K::ZERO, K::ZERO]);
+            if k % 2 == 0 {
+                ep[0] = e_at(k, r, &prefix);
+                ep[1] = e_at(k + 1, r, &prefix);
+                if let Some(&(&k2, &g2)) = iter.peek()
+                    && k2 == k + 1
+                {
+                    gp[1] = g2;
+                    iter.next();
+                }
+            } else {
+                gp[1] = gp[0];
+                gp[0] = K::ZERO;
+                ep[0] = e_at(k - 1, r, &prefix);
+                ep[1] = e_at(k, r, &prefix);
+            }
+            let _ = parent;
+            for (kk, slot) in ev.iter_mut().enumerate() {
+                let tv = K::t(kk as u128);
+                let e_t = ep[0] + tv * (ep[0] + ep[1]);
+                let g_t = gp[0] + tv * (gp[0] + gp[1]);
+                *slot += e_t * g_t;
+            }
+        }
+        assert_eq!(
+            ev[0] + ev[1],
+            cur,
+            "claim inconsistent with tables (g(0)+g(1) != claim)"
+        );
+        let msg = vec![ev[0], ev[2]];
+        transcript.absorb_ks(&msg_label, &msg);
+        let chal = transcript.challenge_k(&chal_label);
+        msgs.push(msg);
+        rs.push(chal);
+        cur = interpolate_eval(&ev, chal);
+        for (j, pt) in lifted.iter().enumerate() {
+            prefix[j] *= eqfac(pt[r], chal);
+        }
+        let mut next: BTreeMap<usize, K> = BTreeMap::new();
+        let mut iter = entries.into_iter().peekable();
+        while let Some((k, g0)) = iter.next() {
+            let (ga, gb) = if k % 2 == 0 {
+                match iter.peek() {
+                    Some((k2, _)) if *k2 == k + 1 => {
+                        let (_, g1) = iter.next().expect("peeked entry");
+                        (g0, g1)
+                    }
+                    _ => (g0, K::ZERO),
+                }
+            } else {
+                (K::ZERO, g0)
+            };
+            let g_new = ga + chal * (ga + gb);
+            if !g_new.is_zero() {
+                next.insert(k / 2, g_new);
+            }
+        }
+        entries = next;
+    }
+    let v_g = entries.get(&0).copied().unwrap_or(K::ZERO);
     transcript.absorb_k(b"mos/vg", v_g);
     (
         BatchProof {
-            sumcheck: proof,
+            sumcheck: SumcheckProof { round_msgs: msgs },
             v_g,
         },
-        r_g,
+        rs,
         v_g,
     )
 }

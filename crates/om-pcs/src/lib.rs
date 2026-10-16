@@ -33,5 +33,5 @@ pub mod pcs;
 pub mod ring_switch;
 
 pub use ligerito::{LevelData, LevelOpening, LigeritoParams, LigeritoProof};
-pub use pcs::{BitPCS, BitProof, BitState, Commitment, LigeritoPCS, Pcs};
+pub use pcs::{BitPCS, BitProof, BitState, BitStatePacked, Commitment, LigeritoPCS, Pcs};
 pub use ring_switch::RingSwitchProof;

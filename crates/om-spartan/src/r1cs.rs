@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use om_field::K;
-use om_sumcheck::eq_table;
+use om_sumcheck::{PackedBits, eq_table};
 
 /// The field a relation's matrix entries live in (Python's `"B"` / `"K"`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,6 +26,43 @@ pub enum RelationField {
     B,
     /// Entries in `K = GF(2^128)`.
     K,
+}
+
+/// A row of witness bits, either unpacked (`Vec<bool>`) or packed
+/// ([`PackedBits`]). The prover reads witness bits only through this
+/// trait, so a packed witness never has to be expanded.
+pub trait BitRow: Sync {
+    /// Number of bits in the row.
+    fn bit_len(&self) -> usize;
+    /// Bit `i` of the row.
+    fn bit(&self, i: usize) -> bool;
+}
+
+impl BitRow for Vec<bool> {
+    fn bit_len(&self) -> usize {
+        self.len()
+    }
+    fn bit(&self, i: usize) -> bool {
+        self[i]
+    }
+}
+
+impl BitRow for [bool] {
+    fn bit_len(&self) -> usize {
+        self.len()
+    }
+    fn bit(&self, i: usize) -> bool {
+        self[i]
+    }
+}
+
+impl BitRow for PackedBits {
+    fn bit_len(&self) -> usize {
+        PackedBits::len(self)
+    }
+    fn bit(&self, i: usize) -> bool {
+        PackedBits::bit(self, i)
+    }
 }
 
 /// A `2^rho x 2^nu` sparse matrix: the list of non-zero entries
@@ -214,6 +251,26 @@ pub fn build_z(w: &[bool], x: &[K], nu: usize) -> Vec<K> {
     z
 }
 
+/// [`build_z`] for any bit row (packed witness rows included).
+///
+/// # Panics
+/// As [`build_z`].
+pub fn build_z_row<R: BitRow>(w: &R, x: &[K], nu: usize) -> Vec<K> {
+    assert!(nu >= 1, "nu must be at least 1");
+    let half = 1usize << (nu - 1);
+    assert_eq!(
+        w.bit_len(),
+        half,
+        "witness must have exactly 2^(nu-1) entries (pad with zeros)"
+    );
+    assert!(x.len() < half, "public input too long");
+    let mut z: Vec<K> = (0..half).map(|i| K::from_bit(w.bit(i))).collect();
+    z.push(K::ONE);
+    z.extend_from_slice(x);
+    z.resize(1 << nu, K::ZERO);
+    z
+}
+
 /// `(1, x)` zero padded to `2^(nu-1)` (the public part `P` of spec 06
 /// §6.1).
 ///
@@ -236,11 +293,11 @@ pub fn public_part(x: &[K], nu: usize) -> Vec<K> {
 /// # Panics
 /// Panics if `nu == 0` or a row has the wrong length (Python raises
 /// `ValueError`).
-pub fn check_witness_bits(w: &[Vec<bool>], nu: usize) {
+pub fn check_witness_bits<R: BitRow>(w: &[R], nu: usize) {
     assert!(nu >= 1, "nu must be at least 1");
     for row in w {
         assert_eq!(
-            row.len(),
+            row.bit_len(),
             1usize << (nu - 1),
             "W must be a bit matrix with 2^(nu-1) columns"
         );
@@ -254,19 +311,21 @@ pub fn check_witness_bits(w: &[Vec<bool>], nu: usize) {
 /// Panics if `structs` is empty, if `w` and `x` have different row
 /// counts, or if a witness row is malformed (Python raises
 /// `ValueError` / `IndexError`).
-pub fn simd_satisfied(structs: &[R1CS], w: &[Vec<bool>], x: &[Vec<K>]) -> bool {
+pub fn simd_satisfied<R: BitRow>(structs: &[R1CS], w: &[R], x: &[Vec<K>]) -> bool {
     assert_eq!(w.len(), x.len(), "W and X must have one row per instance");
     let nu = structs.first().expect("no relations").nu;
     check_witness_bits(w, nu);
     structs.iter().all(|s| {
         w.iter()
             .zip(x)
-            .all(|(wi, xi)| s.check_instance(&build_z(wi, xi, nu)))
+            .all(|(wi, xi)| s.check_instance(&build_z_row(wi, xi, nu)))
     })
 }
 
 /// Row-major flattening of `W`: index = column + `2^(nu-1)` * instance
 /// (CONVENTIONS C2 witness-matrix exception).
-pub fn flatten_w(w: &[Vec<bool>]) -> Vec<bool> {
-    w.iter().flat_map(|row| row.iter().copied()).collect()
+pub fn flatten_w<R: BitRow>(w: &[R]) -> Vec<bool> {
+    w.iter()
+        .flat_map(|row| (0..row.bit_len()).map(move |i| row.bit(i)))
+        .collect()
 }

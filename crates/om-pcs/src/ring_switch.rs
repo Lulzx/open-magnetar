@@ -5,7 +5,9 @@
 //! `P̃(r_s) = v` for the packed vector of length `2^(ℓ-7)`.
 
 use om_field::K;
-use om_sumcheck::{SumcheckProof, VerificationError, eq_table, sumcheck_prove, sumcheck_verify};
+use om_sumcheck::{
+    PackedBits, SumcheckProof, VerificationError, eq_table, sumcheck_prove, sumcheck_verify,
+};
 use om_transcript::Transcript;
 use rayon::prelude::*;
 
@@ -40,6 +42,78 @@ pub fn pack(bits: &[bool]) -> Vec<K> {
     } else {
         bits.chunks(W).map(K::pack).collect()
     }
+}
+
+/// [`pack`] from packed words: word pair `(lo, hi)` is the packed
+/// element `K(hi · 2^64 + lo)`, the same value `K::pack` produces
+/// from the corresponding 128 bools.
+///
+/// # Panics
+/// If the packed length is not a multiple of 128.
+pub fn pack_packed(bits: &PackedBits) -> Vec<K> {
+    assert!(
+        bits.len().is_multiple_of(W),
+        "bit vector length must be a multiple of 128"
+    );
+    bits.words()
+        .chunks(2)
+        .map(|pair| {
+            let lo = u128::from(pair[0]);
+            let hi = pair.get(1).map_or(0, |&h| u128::from(h));
+            K::from_u128(lo | (hi << 64))
+        })
+        .collect()
+}
+
+/// [`partial_evals`] from packed bits: only set bits are visited.
+///
+/// # Panics
+/// If the packed length is not a multiple of 128.
+pub fn partial_evals_packed(bits: &PackedBits, r_hi: &[K]) -> Vec<K> {
+    assert!(
+        bits.len().is_multiple_of(W),
+        "bit vector length must be a multiple of 128"
+    );
+    let eqt = eq_table(r_hi);
+    let mut acc = [0u128; W];
+    for i in bits.iter_ones() {
+        acc[i % W] ^= eqt[i / W].value();
+    }
+    acc.into_iter().map(K::from_u128).collect()
+}
+
+/// [`rs_prove`] over packed bits: the same proof, without expanding
+/// the bit vector.
+///
+/// # Panics
+/// As [`rs_prove`].
+pub fn rs_prove_packed(
+    bits: &PackedBits,
+    r: &[K],
+    y: K,
+    tr: &mut Transcript,
+) -> (RingSwitchProof, Vec<K>, K) {
+    let ell = r.len();
+    assert!(
+        ell > KAPPA && bits.len() == 1 << ell,
+        "need ell >= 8 and 2^ell bits"
+    );
+    let p = pack_packed(bits);
+    let s = partial_evals_packed(bits, &r[KAPPA..]);
+    absorb_claim(tr, r, y);
+    tr.absorb_ks(b"rs/s", &s);
+    let rho = tr.challenge_ks(b"rs/rho", KAPPA);
+    let target = target_of(&s, &rho);
+    let a = a_table(&r[KAPPA..], &rho);
+    let (proof, r_s, finals) = sumcheck_prove(
+        target,
+        vec![p, a],
+        &|v: &[K]| v[0] * v[1],
+        2,
+        tr,
+        b"rs/sumcheck",
+    );
+    (RingSwitchProof { s, sumcheck: proof }, r_s, finals[0])
 }
 
 /// `s_j = Σ_v eq(r_hi, v) · bits[j + 128v]`.

@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 
 use om_field::K;
 use om_mosaic::{
-    BatchProof, Claim, MAX_CLAIMS, batch_prove, batch_verify, build_g, compute_layout, lift_point,
+    BatchProof, Claim, MAX_CLAIMS, batch_prove, batch_prove_packed, batch_verify, build_g,
+    build_g_packed, compute_layout, lift_point,
 };
 use om_sumcheck::mle_eval_bits;
 use om_transcript::Transcript;
@@ -253,4 +254,22 @@ fn claim_cap_300_verify_rejected() {
     ];
     let err = batch_verify(&lay, &many, &proof, &mut Transcript::new_default(b"m")).unwrap_err();
     assert!(err.message().contains("too many Mosaic claims"), "{err}");
+}
+
+#[test]
+fn batching_packed_matches_bool() {
+    let mut rng = Rng(77);
+    let (lay, tables, g) = setup(&mut rng, 0);
+    let cl = claims(&mut rng, &tables);
+    // The packed assembly is the same bits.
+    let packed_tables: BTreeMap<i64, om_sumcheck::PackedBits> = tables
+        .iter()
+        .map(|(&cid, tb)| (cid, om_sumcheck::PackedBits::from_bools(tb)))
+        .collect();
+    let g_packed = build_g_packed(&lay, &packed_tables);
+    assert_eq!(g_packed.to_bools(), g);
+    // And the packed batch proof is byte-identical to the bool one.
+    let (p1, r1, v1) = batch_prove(&lay, &cl, &g, &mut Transcript::new_default(b"m"));
+    let (p2, r2, v2) = batch_prove_packed(&lay, &cl, &g_packed, &mut Transcript::new_default(b"m"));
+    assert_eq!((p1, r1, v1), (p2, r2, v2));
 }

@@ -20,6 +20,7 @@ use om_isa::bytecode::{FLAG_NAMES, Program, Row, TraceRecord};
 use om_isa::riscv::M64;
 use om_spartan::r1cs::{R1CS, RelationField, SparseMatrix};
 use om_spartan::spartan::SegmentKind;
+use om_sumcheck::PackedBits;
 
 // ---------------------------------------------------------------------------
 // Parameters and layout
@@ -1341,6 +1342,21 @@ fn state_in(trace: &[TraceRecord], k: usize, exit_code: u64) -> Vec<bool> {
 /// If the trace is empty or its length is not a multiple of
 /// `2^log_cycles` (Python `assert`).
 pub fn witness(trace: &[TraceRecord], params: &Params, exit_code: Option<u64>) -> Vec<Vec<bool>> {
+    witness_packed(trace, params, exit_code)
+        .iter()
+        .map(|row| row.to_bools())
+        .collect()
+}
+
+/// [`witness`] with rows in packed form ([`PackedBits`], one bit per
+/// witness bit instead of one byte). The bits are identical; the
+/// prover consumes this form so a large trace's witness is never
+/// expanded.
+pub fn witness_packed(
+    trace: &[TraceRecord],
+    params: &Params,
+    exit_code: Option<u64>,
+) -> Vec<PackedBits> {
     let cc = Cols::new(params);
     let n = params.cycles();
     let exit_code = exit_code.unwrap_or_else(|| trace.last().map_or(0, |r| r.v1));
@@ -1350,14 +1366,14 @@ pub fn witness(trace: &[TraceRecord], params: &Params, exit_code: Option<u64>) -
     );
     let mut rows = Vec::with_capacity(trace.len() / n);
     for j in 0..trace.len() / n {
-        let mut w = vec![false; cc.nw];
+        let mut w = PackedBits::zero(cc.nw);
         for t in 0..n {
             for (name, val) in cycle_fields(&trace[j * n + t]).entries() {
                 let width = field(name).expect("field name").width;
                 let base = cc.c(name, 0, t);
                 for i in 0..width {
                     if (val >> i) & 1 == 1 {
-                        w[base + i] = true;
+                        w.set(base + i);
                     }
                 }
             }
@@ -1368,7 +1384,7 @@ pub fn witness(trace: &[TraceRecord], params: &Params, exit_code: Option<u64>) -
         ] {
             for (i, &v) in st.iter().enumerate() {
                 if v {
-                    w[cc.c(name, i, 0)] = true;
+                    w.set(cc.c(name, i, 0));
                 }
             }
         }

@@ -15,9 +15,12 @@
 //!   returned as `Err` from [`lift_point`] and [`batch_verify`],
 //!   matching the mapping already used by `om-transcript`,
 //!   `om-sumcheck` and `om-spartan`.
-//! - Bit tables and `G` are `bool` vectors (Python `list[int]` of 0/1);
+//! - Bit tables and `G` are `bool` vectors (Python `list[int]` of 0/1),
 //!   [`build_g`] takes them as a [`BTreeMap`] keyed by component id
 //!   (Python dict; a missing entry panics, as Python's `KeyError`).
+//!   [`build_g_packed`] and [`batch_prove_packed`] are the same
+//!   operations over packed bit tables, for provers that must not
+//!   expand `G` to a byte (or a field element) per bit.
 //! - [`Claim::comp_id`] is `i64`, not `u32`: Python's `spartan.py`
 //!   emits a whole-witness claim with the sentinel `comp_id = -1` in
 //!   its no-layout mode, and this crate owns the canonical `Claim`
@@ -31,6 +34,6 @@
 pub mod mosaic;
 
 pub use mosaic::{
-    BatchProof, Claim, LABEL, Layout, MAX_CLAIMS, Placement, batch_prove, batch_verify, build_g,
-    compute_layout, direct_g_eval, eq_sum_table, lift_point,
+    BatchProof, Claim, LABEL, Layout, MAX_CLAIMS, Placement, batch_prove, batch_prove_packed,
+    batch_verify, build_g, build_g_packed, compute_layout, direct_g_eval, eq_sum_table, lift_point,
 };

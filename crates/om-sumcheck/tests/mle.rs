@@ -120,6 +120,32 @@ fn test_bind_low_odd_panics() {
 }
 
 #[test]
+fn test_packed_bits_roundtrip() {
+    let mut rng = Rng(3);
+    for len in [0usize, 1, 63, 64, 65, 129, 1000] {
+        let bits: Vec<bool> = (0..len).map(|_| rng.bit()).collect();
+        let packed = om_sumcheck::PackedBits::from_bools(&bits);
+        assert_eq!(packed.len(), len);
+        assert_eq!(packed.to_bools(), bits, "len={len}");
+        let ones: Vec<usize> = bits
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| b.then_some(i))
+            .collect();
+        assert_eq!(packed.iter_ones().collect::<Vec<_>>(), ones, "len={len}");
+        assert_eq!(packed.count_ones(), ones.len());
+        if len > 0 && len.is_power_of_two() {
+            let r: Vec<K> = (0..len.trailing_zeros()).map(|_| rng.k()).collect();
+            assert_eq!(
+                om_sumcheck::mle_eval_packed(&packed, &r),
+                mle_eval_bits(&bits, &r),
+                "len={len}"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_bind_low_in_place_matches() {
     let mut rng = Rng(9);
     for n in 1..=8usize {

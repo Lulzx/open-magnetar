@@ -89,14 +89,25 @@ far, and only the instance rounds run densely, on tables of length
 `q`. The shared sum-check prover also binds its tables in place now,
 which cuts the transient peak of every sum-check including the
 Mosaic batch. Proof bytes are unchanged again (all reference vectors
-still reproduce byte for byte, 332 Rust tests). What remains dense at
-`T = 2^22` is the Mosaic batch step and the commitment: the layout
-has `ell` of about 33 there, so its `eq` and `G` tables have `2^ell`
-field entries each, and the witness itself is held as one byte per
-bit. No attempt at this size has been made since these changes, on
-purpose: the Mosaic step alone would still not fit in a laptop's
-memory, so `radix-sort-u64` remains unproved until that step (and
-the witness representation) are made sparse or packed as well.
+still reproduce byte for byte, 332 Rust tests).
+
+The Mosaic batch step and the witness representation were then made
+sparse and packed in the same spirit. The batch sum-check keeps
+only suffixes whose bound `G` value is nonzero and recomputes the
+`eq` side from the lifted claim points, so neither `2^ell` field
+table is built. The circuit witness is generated directly in
+packed form (one bit per bit, in `u64` words), the Spartan prover
+reads it through a bit-row trait without expanding it, `G` is
+assembled and committed in packed form, and ring switching packs
+from words. Proof bytes unchanged again (335 tests). What remains
+dense at `T = 2^22` is the commitment itself: the packed polynomial
+has `2^(ell-7)` field entries (about `2^26` there) and the Ligerito
+and ring-switching sum-checks work on tables of that size, the
+Twist component tables are still held as bools inside their
+witnesses, and the execution trace itself is one record per cycle.
+No attempt at this size has been made since these changes, on
+purpose, so `radix-sort-u64` remains unproved until the remaining
+dense parts are streamed as well or a larger machine is used.
 
 ## Test suites
 

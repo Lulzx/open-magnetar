@@ -2,7 +2,7 @@
 //! Mirrors `reference/openmagnetar/pcs.py`.
 
 use om_field::K;
-use om_sumcheck::{VerificationError, mle_eval, mle_eval_bits};
+use om_sumcheck::{PackedBits, VerificationError, mle_eval, mle_eval_bits, mle_eval_packed};
 use om_transcript::{Hasher, Transcript};
 
 use crate::ligerito::{self as lg, LevelData, LigeritoParams, LigeritoProof};
@@ -150,6 +150,10 @@ impl Pcs for LigeritoPCS {
 
 /// Prover state of [`BitPCS`]: the packed commitment state and the bits.
 pub type BitState = (LevelData, Vec<bool>);
+
+/// Prover state of the packed [`BitPCS::commit_packed`] path: the
+/// packed commitment state and the bits in packed form.
+pub type BitStatePacked = (LevelData, PackedBits);
 /// Proof of [`BitPCS`]: ring-switching proof and Ligerito proof.
 pub type BitProof = (RingSwitchProof, LigeritoProof);
 
@@ -193,6 +197,40 @@ impl BitPCS {
     /// # Panics
     /// Panics if the packed opening value disagrees with ring switching
     /// (the Python `assert yp == v`).
+    /// Commit to a packed bit vector: the same commitment as
+    /// [`BitPCS::commit`] on the unpacked bits, without expanding
+    /// them.
+    ///
+    /// # Panics
+    /// As [`BitPCS::commit`].
+    pub fn commit_packed(
+        &self,
+        bits: &PackedBits,
+        tr: &mut Transcript,
+    ) -> (Commitment, BitStatePacked) {
+        let (cm, st) = self.pcs.commit(&rsw::pack_packed(bits), tr);
+        (cm, (st, bits.clone()))
+    }
+
+    /// The packed counterpart of [`BitPCS::open`]: same transcript
+    /// and proof bytes, computed from the packed state.
+    ///
+    /// # Panics
+    /// As [`BitPCS::open`].
+    pub fn open_packed(
+        &self,
+        state: &BitStatePacked,
+        r: &[K],
+        tr: &mut Transcript,
+    ) -> (K, BitProof) {
+        let (st, bits) = state;
+        let y = mle_eval_packed(bits, r);
+        let (rs_proof, r_s, v) = rsw::rs_prove_packed(bits, r, y, tr);
+        let (yp, pf) = self.pcs.open(st, &r_s, tr);
+        assert_eq!(yp, v, "packed opening must match the ring-switching output");
+        (y, (rs_proof, pf))
+    }
+
     pub fn open(&self, state: &BitState, r: &[K], tr: &mut Transcript) -> (K, BitProof) {
         let (st, bits) = state;
         let y = mle_eval_bits(bits, r);

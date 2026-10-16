@@ -29,10 +29,10 @@ pub mod r1cs;
 pub mod spartan;
 
 pub use r1cs::{
-    R1CS, RelationField, SparseMatrix, build_z, check_witness_bits, flatten_w, public_part,
-    simd_satisfied,
+    BitRow, R1CS, RelationField, SparseMatrix, build_z, build_z_row, check_witness_bits, flatten_w,
+    public_part, simd_satisfied,
 };
 pub use spartan::{
     Claim, CrossStep, Segment, SegmentKind, SpartanProof, check_layout, next_mle, prove,
-    segment_table, verify, xs_weights,
+    segment_table, segment_table_packed, verify, xs_weights,
 };

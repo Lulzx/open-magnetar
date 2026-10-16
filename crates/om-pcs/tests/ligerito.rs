@@ -123,6 +123,30 @@ fn params_and_queries() {
 }
 
 #[test]
+fn bitpcs_packed_matches_bool() {
+    let ell = 11usize; // packed n = 4
+    let p = LigeritoParams::new(ell - 7, vec![2], vec![1], vec![6]);
+    let mut rng = Rng(3);
+    let bits = rng.bits(1 << ell);
+    let packed = om_sumcheck::PackedBits::from_bools(&bits);
+    let b = BitPCS::new(p.clone());
+
+    let mut tr1 = Transcript::new_default(b"t");
+    let (cm1, st1) = b.commit(&bits, &mut tr1);
+    let r = rng.ks(ell);
+    let (y1, pf1) = b.open(&st1, &r, &mut tr1);
+
+    let mut tr2 = Transcript::new_default(b"t");
+    let (cm2, st2) = b.commit_packed(&packed, &mut tr2);
+    let (y2, pf2) = b.open_packed(&st2, &r, &mut tr2);
+
+    assert_eq!((&cm1, y1, &pf1), (&cm2, y2, &pf2));
+    let mut tv = Transcript::new_default(b"t");
+    b.pcs.absorb_commitment(&cm2, &mut tv);
+    b.verify(&cm2, &r, y2, &pf2, &mut tv).unwrap();
+}
+
+#[test]
 fn bitpcs_end_to_end_and_negative() {
     let ell = 11usize; // packed n = 4
     let p = LigeritoParams::new(ell - 7, vec![2], vec![1], vec![6]);

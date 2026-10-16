@@ -16,17 +16,17 @@ use om_isa::riscv::Trap;
 use om_memcheck::onehot::comp_tables;
 use om_memcheck::shout::shout_prove;
 use om_memcheck::twist::{self as tw, FinalMem, TwistClaims};
-use om_mosaic::{batch_prove, build_g};
+use om_mosaic::{batch_prove_packed, build_g_packed};
 use om_pcs::pcs::BitPCS;
 use om_router as rt;
 use om_spartan::SegmentKind;
-use om_spartan::spartan::{CrossStep, segment_table};
-use om_sumcheck::{VerificationError, mle_eval_bits};
+use om_spartan::spartan::{CrossStep, segment_table_packed};
+use om_sumcheck::{PackedBits, VerificationError, mle_eval_bits};
 use om_transcript::Transcript;
 
 use crate::common::{
     LABEL, ShoutPlan, absorb_commitment, absorb_statement, m0_words, mosaic_claims, same_point,
-    seg_claims, transparent_root,
+    seg_claims, transparent_root_packed,
 };
 use crate::keygen::{Derived, KeyError, WORD_BITS};
 
@@ -251,7 +251,7 @@ pub fn prove_execution(
     }
     let trace = &ex.trace;
     let public = cpu::public_inputs(&derived.program, ex.exit_code);
-    let w = cpu::witness(trace, &derived.cpu_params, Some(ex.exit_code));
+    let w = cpu::witness_packed(trace, &derived.cpu_params, Some(ex.exit_code));
 
     let (reg_wit, reg_info) = tw::build_witness(
         &di.reg,
@@ -315,10 +315,10 @@ pub fn prove_execution(
         derived.rom_d,
     );
 
-    let mut tables: BTreeMap<i64, Vec<bool>> = BTreeMap::new();
+    let mut tables: BTreeMap<i64, PackedBits> = BTreeMap::new();
     for (i, sg) in derived.spartan_segments.iter().enumerate() {
         if sg.kind == SegmentKind::Direct {
-            tables.insert(i as i64, segment_table(&w, sg));
+            tables.insert(i as i64, segment_table_packed(&w, sg));
         }
     }
     for (x, comps) in [
@@ -327,30 +327,45 @@ pub fn prove_execution(
         ("wa", &reg_wit.wa),
     ] {
         for (i, c) in comps.iter().enumerate() {
-            tables.insert(di.ids[&format!("twist/reg/{x}/{}", i + 1)], c.clone());
+            tables.insert(
+                di.ids[&format!("twist/reg/{x}/{}", i + 1)],
+                PackedBits::from_bools(c),
+            );
         }
     }
-    tables.insert(di.ids["twist/reg/inc"], reg_wit.inc.clone());
+    tables.insert(
+        di.ids["twist/reg/inc"],
+        PackedBits::from_bools(&reg_wit.inc),
+    );
     for (i, c) in ram_wit.ra[0].iter().enumerate() {
-        tables.insert(di.ids[&format!("twist/ram/ra0/{}", i + 1)], c.clone());
+        tables.insert(
+            di.ids[&format!("twist/ram/ra0/{}", i + 1)],
+            PackedBits::from_bools(c),
+        );
     }
-    tables.insert(di.ids["twist/ram/inc"], ram_wit.inc.clone());
+    tables.insert(
+        di.ids["twist/ram/inc"],
+        PackedBits::from_bools(&ram_wit.inc),
+    );
     for (i, c) in sh_comps.iter().enumerate() {
-        tables.insert(di.ids[&format!("shout/bytecode/ra/{}", i + 1)], c.clone());
+        tables.insert(
+            di.ids[&format!("shout/bytecode/ra/{}", i + 1)],
+            PackedBits::from_bools(c),
+        );
     }
-    let g = build_g(&di.layout, &tables);
+    let g = build_g_packed(&di.layout, &tables);
     drop(tables);
 
     // Step 1: statement, commitment.
     let mut tr = Transcript::new(LABEL, vk.hasher());
     absorb_statement(&mut tr, vk, &inst);
     let (pcs, pcs_state, root) = if vk.pcs == PcsMode::Transparent {
-        let root = transparent_root(vk, &g);
+        let root = transparent_root_packed(vk, &g);
         absorb_commitment(vk, derived, &di, &root, &mut tr)?;
         (None, None, root)
     } else {
         let pcs = BitPCS::with_hasher(derived.ligerito_params(di.ell)?, vk.hasher());
-        let (cm, st) = pcs.commit(&g, &mut tr);
+        let (cm, st) = pcs.commit_packed(&g, &mut tr);
         let root = cm.root.clone();
         (Some(pcs), Some(st), root)
     };
@@ -483,13 +498,13 @@ pub fn prove_execution(
         &st_claims,
         &shout_claims,
     );
-    let (batch, r_g, v_g) = batch_prove(&di.layout, &mclaims, &g, &mut tr);
+    let (batch, r_g, v_g) = batch_prove_packed(&di.layout, &mclaims, &g, &mut tr);
     let pcs_proof = if vk.pcs == PcsMode::Transparent {
-        PcsProof::Transparent(g)
+        PcsProof::Transparent(g.to_bools())
     } else {
         let pcs = pcs.expect("ligerito pcs built at commit");
         let st = pcs_state.expect("ligerito state from commit");
-        let (y, (rs_proof, lig_proof)) = pcs.open(&st, &r_g, &mut tr);
+        let (y, (rs_proof, lig_proof)) = pcs.open_packed(&st, &r_g, &mut tr);
         if y != v_g {
             return Err(ProverError::Internal("internal error: G(r_G) != v_G"));
         }

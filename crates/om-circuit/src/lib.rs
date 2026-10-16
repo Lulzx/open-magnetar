@@ -12,7 +12,9 @@
 //! - Python assert failures (bad parameters, malformed trace/witness)
 //!   **panic**, matching the other `om-*` crates.
 //! - Witness rows `W` are `Vec<Vec<bool>>` (Python's `list[list[int]]` of
-//!   0/1); the public-instance dict is [`circuit::PublicInputs`].
+//!   0/1), or the identical bits packed in `PackedBits` rows via
+//!   [`circuit::witness_packed`]; the public-instance dict is
+//!   [`circuit::PublicInputs`].
 //! - Sparse rows are `BTreeMap<usize, K>` (column → coefficient) rather
 //!   than dicts of plain ints; every Python coefficient is the integer
 //!   value of a `K` element (C1), and [`circuit::Structure::to_r1cs`]
@@ -31,5 +33,5 @@ pub use circuit::{
     PublicInputs, RomFields, Segment, SparseRow, Stats, Structure, build, build_s1, build_s2,
     check, cycle_fields, field, fin_vector, fl_pos, flag_pos, init_vector, is_instance_field,
     layout, num_w_cols, public_inputs, relations, rom_fields, segment, stats, used_bits,
-    violations, witness,
+    violations, witness, witness_packed,
 };

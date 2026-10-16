@@ -30,7 +30,9 @@ use om_sumcheck::{
 use om_transcript::{Transcript, u64le};
 use rayon::prelude::*;
 
-use crate::r1cs::{R1CS, check_witness_bits, public_part, simd_satisfied};
+use om_sumcheck::{PackedBits, mle_eval_packed};
+
+use crate::r1cs::{BitRow, R1CS, check_witness_bits, public_part, simd_satisfied};
 
 /// An evaluation claim `p~_{comp_id}(point) = value` on a component
 /// polynomial (Python `mosaic.Claim`, re-exported from `om-mosaic`;
@@ -183,11 +185,26 @@ pub fn xs_weights(tau_u: &[K], gamma: K, r_u: &[K]) -> (K, K) {
 /// The flat bit table of one segment over all instances:
 /// index = local column + `2^log_cols` * instance (Python
 /// `spartan._segment_table`, also used by `protocol.py`).
-pub fn segment_table(w: &[Vec<bool>], sg: &Segment) -> Vec<bool> {
+pub fn segment_table<R: BitRow>(w: &[R], sg: &Segment) -> Vec<bool> {
     let (off, n) = (sg.block << sg.log_cols, 1usize << sg.log_cols);
     w.iter()
-        .flat_map(|row| (0..n).map(move |y| row[off + y]))
+        .flat_map(|row| (0..n).map(move |y| row.bit(off + y)))
         .collect()
+}
+
+/// [`segment_table`] in packed form: the same bits, eight times
+/// smaller, never expanded to a bool table.
+pub fn segment_table_packed<R: BitRow>(w: &[R], sg: &Segment) -> PackedBits {
+    let (off, n) = (sg.block << sg.log_cols, 1usize << sg.log_cols);
+    let mut out = PackedBits::zero(w.len() * n);
+    for (u, row) in w.iter().enumerate() {
+        for y in 0..n {
+            if row.bit(off + y) {
+                out.set(y + n * u);
+            }
+        }
+    }
+    out
 }
 
 /// `g(t) = sum_i E(t)(A(t)B(t) + C(t))` at `t_0..t_3`, where
@@ -350,9 +367,9 @@ fn fold_sparse_rows(rows: SparseRows, r: K) -> SparseRows {
 
 /// `z[col]` for instance `(w_row, x_row)` without building `z`
 /// (`build_z` layout: `w`, then `1`, then `x`, then zeros).
-fn z_at(w_row: &[bool], x_row: &[K], half: usize, col: usize) -> K {
+fn z_at<R: BitRow>(w_row: &R, x_row: &[K], half: usize, col: usize) -> K {
     if col < half {
-        K::from_bit(w_row[col])
+        K::from_bit(w_row.bit(col))
     } else if col == half {
         K::ONE
     } else {
@@ -382,9 +399,9 @@ struct OuterRel {
 /// the SIMD R1CS (unless `unchecked`); public inputs of unequal
 /// length; invalid layout; invalid cross-step designation.
 #[allow(clippy::too_many_arguments)]
-pub fn prove(
+pub fn prove<R: BitRow>(
     rels: &[R1CS],
-    w: &[Vec<bool>],
+    w: &[R],
     x: &[Vec<K>],
     transcript: &mut Transcript,
     p: &[u8],
@@ -466,7 +483,7 @@ pub fn prove(
                                 let mut v = K::ZERO;
                                 for &(col, coef) in entries {
                                     if col < half {
-                                        if w[u][col] {
+                                        if w[u].bit(col) {
                                             v += coef;
                                         }
                                     } else {
@@ -522,7 +539,7 @@ pub fn prove(
             let mut v = K::ZERO;
             for &(col, coef) in &rows[0] {
                 if col < half {
-                    if w[u][col] {
+                    if w[u].bit(col) {
                         v += coef;
                     }
                 } else {
@@ -590,9 +607,9 @@ pub fn prove(
     let half = 1usize << (nu - 1);
     let mut wfold = vec![K::ZERO; half];
     for (u, wu) in w.iter().enumerate() {
-        for c in 0..half {
-            if wu[c] {
-                wfold[c] += eqi[u];
+        for (c, slot) in wfold.iter_mut().enumerate() {
+            if wu.bit(c) {
+                *slot += eqi[u];
             }
         }
     }
@@ -627,10 +644,10 @@ pub fn prove(
                 if sg.kind == SegmentKind::Pad {
                     continue;
                 }
-                let tbl = segment_table(w, sg);
+                let tbl = segment_table_packed(w, sg);
                 let mut point: Vec<K> = r_col[..sg.log_cols].to_vec();
                 point.extend_from_slice(&r_inst);
-                let v = mle_eval_bits(&tbl, &point);
+                let v = mle_eval_packed(&tbl, &point);
                 transcript.absorb_k(&lbl(p, &[b"seg"]), v);
                 seg_vals.push(v);
                 claims.push(Claim {
@@ -726,21 +743,28 @@ fn xs_setup(
 
 /// The bound table of instance `u`'s segment at `off` after the
 /// column challenges `chals`, rebuilt from its witness bits.
-fn bound_segment(w: &[Vec<bool>], u: usize, off: usize, n: usize, chals: &[K], out: &mut Vec<K>) {
+fn bound_segment<R: BitRow>(
+    w: &[R],
+    u: usize,
+    off: usize,
+    n: usize,
+    chals: &[K],
+    out: &mut Vec<K>,
+) {
     out.clear();
-    out.extend((0..n).map(|col| K::from_bit(w[u][off + col])));
+    out.extend((0..n).map(|col| K::from_bit(w[u].bit(off + col))));
     for &rho in chals {
         bind_low_in_place(out, rho);
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cross_prove(
+fn cross_prove<R: BitRow>(
     proof: &mut SpartanProof,
     claims: &mut Vec<Claim>,
     segments: Option<&[Segment]>,
     cross: &CrossStep,
-    w: &[Vec<bool>],
+    w: &[R],
     s: usize,
     transcript: &mut Transcript,
     p: &[u8],
@@ -775,10 +799,10 @@ fn cross_prove(
         // public claim.
         claim = K::ZERO;
         for u in 0..q {
-            for col in 0..n {
-                claim += eqk[col]
-                    * (a_out_u[u] * K::from_bit(w[u][off_out + col])
-                        + a_in_u[u] * K::from_bit(w[u][off_in + col]));
+            for (col, &ek) in eqk.iter().enumerate().take(n) {
+                claim += ek
+                    * (a_out_u[u] * K::from_bit(w[u].bit(off_out + col))
+                        + a_in_u[u] * K::from_bit(w[u].bit(off_in + col)));
             }
         }
     }

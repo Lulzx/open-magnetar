@@ -11,6 +11,7 @@ description = "CPU circuit (witness layout, B/K R1CS relations, witness generati
 om-field = { path = "../om-field" }
 om-isa = { path = "../om-isa" }
 om-spartan = { path = "../om-spartan" }
+om-sumcheck = { path = "../om-sumcheck" }
 
 [dev-dependencies]
 serde_json = "1"

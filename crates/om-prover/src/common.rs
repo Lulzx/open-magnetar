@@ -16,7 +16,7 @@ use om_memcheck::twist::TwistOutput;
 use om_mosaic::Claim;
 use om_pcs::pcs::{BitPCS, Commitment};
 use om_spartan::SegmentKind;
-use om_sumcheck::{VerificationError, eq_eval, eq_table};
+use om_sumcheck::{PackedBits, VerificationError, eq_eval, eq_table};
 use om_transcript::{Transcript, u64le};
 
 use crate::keygen::{Derived, Instance, REG_A};
@@ -460,4 +460,17 @@ pub fn mosaic_claims(
     }
     out.extend(shout_claims.iter().map(|c| to_mosaic(inst, c)));
     out
+}
+
+/// [`transparent_root`] over a packed `G`: identical preimage bytes
+/// (packed words are little-endian bit order, as the root encoding).
+pub fn transparent_root_packed(vk: &VerifyingKey, g: &PackedBits) -> Vec<u8> {
+    let mut b = Vec::with_capacity(g.len().div_ceil(8));
+    for &w in g.words() {
+        b.extend_from_slice(&w.to_le_bytes());
+    }
+    b.truncate(g.len().div_ceil(8));
+    let mut preimage = b"openmagnetar/transparent-G/v1".to_vec();
+    preimage.extend_from_slice(&b);
+    vk.hasher().digest(&preimage)
 }
