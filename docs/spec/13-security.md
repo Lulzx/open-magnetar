@@ -135,20 +135,23 @@ identity (04 4.5), and the Ligerito rows.
 ## 13.5 The PCS gap and its fix
 
 **Problem.** Per level `i` (04 4.7) the error terms are: sum-check `2k/F`, batching `t/F`, queries
-`((1+rho)/2)^t`, and the proximity gap of the tensor fold `eps_gap = k N / F` (BCHKS, ECCC TR25-169 and its predecessors,
-RS up to the unique-decoding radius: bad-challenge probability `<= N/|F|` per fold challenge; tensor fold loss `k` by induction
-over the `k` folded variables). With `F = 2^128` and `N = 2^(n_(i+1) + 2)` this is `2^-104.7` (level 0, `n = 24`) to
+`((1+rho)/2)^t`, and the proximity gap of the tensor fold `eps_gap = k N / F` (BCIKS ePrint 2020/654 Theorem 4.1, lifted to
+interleaved codes as in Diamond–Posen ePrint 2024/504, 2024-07 revision, Theorem 2.3; RS up to the unique-decoding radius:
+bad-challenge probability `<= N/|F|` per fold challenge; tensor fold loss `k` by induction over the `k` folded variables,
+04 4.4a Lemma B, matching DP Theorem 2.4). With `F = 2^128` and `N = 2^(n_(i+1) + 2)` this is `2^-104.7` (level 0, `n = 24`) to
 `2^-118.0` (last level): **every level misses `2^-120`**, because a 128-bit field cannot absorb the factor `N`. Lowering
 the rate does not help (it makes `N` larger); raising it by 1 bit gains 1 bit and costs queries.
 
 **Options considered.**
 
-1. *Sharper bound.* BCHKS TR25-169 states (abstract, which is all I could fetch; the full text is not available here) that
-   within the unique-decoding radius a proximity loss `eps* > 0` can be bought with only `O_{eps*}(1)` exceptional
-   challenges instead of `O(n)`. This could give a per-round error independent of `N`, but (a) the explicit dependence on
-   `eps*` and `q` is not available to me, (b) the guarantee is at a slightly smaller radius, which would force more queries,
-   so I cannot show that it gives `<= 2^-120` rigorously. **Not adopted.** It is the natural way to drop the factor 2 below
-   once someone checks the theorem; the size effect would be a return to the "1 rep" column.
+1. *Sharper bound.* BCHKS TR25-169 (full text, version of 7 November 2025, checked 2026-10-16; `papers/bchks-eccc-tr25-169.pdf`)
+   improves the unique-decoding regime in two ways, neither usable here as is. Theorem 1.3 needs only
+   `a >= max((delta/gamma - 1)/(delta - 2 gamma), 1 + gamma/eps*)` exceptional challenges, but with a proximity loss `eps*`
+   (the conclusion holds at radius `(1 + 1/(a-1)) gamma`), which Lemmas A–C of 04 4.4a do not handle. Corollary 1.4 is
+   lossless with `a > gamma n + 1`, but only for `gamma <= delta/2 - 3 delta/n` (`delta` the relative distance), slightly inside
+   our radius `delta/2 - 1/(2N)`. At rate 1/4 the latter would replace `N` by about `0.375 N` per challenge, about 1.4 bits
+   per level: level 0 would go from 104.7 to about 106 bits, still short of 120, so `gs_i = 2` would remain (and the
+   interleaved lift and the smaller query radius would have to be redone). **Not adopted.**
 2. *Lower rate at level 0:* no (above).
 3. **Repetition (adopted).** Run the fold of each level with `gs_i` independent challenge vectors, so the gap error is
    `(k N / F)^(gs_i)`. Smallest `gs_i` with `gs_i * (128 - log2(k_i N_i)) >= 120`: `gs_i = 2` for every level and every
@@ -168,7 +171,7 @@ the rate does not help (it makes `N` larger); raising it by 1 bit gains 1 bit an
 
 (The paper reports at most 599 KiB for the *whole* proof; the figure above is the Ligerito opening only, so the whole proof at `2^22` is about 656 KiB, in the paper's range.)
 
-**Status (audit 13.9(1)).** The composition is specified (04 4.4a), implemented in `reference/openmagnetar/ligerito.py` and tested (completeness for `gs = 2, 3`; a rejection test for every repetition block; the real `provable-120` profile through the whole protocol). The soundness argument is now a written proof in 04 4.4a (level-reduction theorem): the tensor factor `k` (Lemma B), the "all folds close" exponent `g` including `rho^(0)` coming from the sum-check with a shared prefix (Lemma C), the batching and query terms, and the final level are all proved there. The one external input is the single-step proximity gap (Lemma A, `N/|K|` per challenge, BCIKS/BCHKS [5]); checking its exact form against the source text remains in 13.9(1).
+**Status (audit 13.9(1)).** The composition is specified (04 4.4a), implemented in `reference/openmagnetar/ligerito.py` and tested (completeness for `gs = 2, 3`; a rejection test for every repetition block; the real `provable-120` profile through the whole protocol). The soundness argument is now a written proof in 04 4.4a (level-reduction theorem): the tensor factor `k` (Lemma B), the "all folds close" exponent `g` including `rho^(0)` coming from the sum-check with a shared prefix (Lemma C), the batching and query terms, and the final level are all proved there. The one external input is the single-step proximity gap (Lemma A, `N/|K|` per challenge); its exact form was checked against the source texts on 2026-10-16 (BCIKS ePrint 2020/654 Theorem 4.1, interleaved as in Diamond–Posen 2024/504 (2024-07) Theorem 2.3; 13.9(1), resolved).
 
 ## 13.6 The Fiat-Shamir transcript
 
@@ -219,8 +222,8 @@ challenge (request carried from 02); otherwise a proof for one statement could b
 Items derived without access to the source papers or whose composition is incomplete. Each MUST be checked against the
 source before this section moves to `stable`.
 
-1. **04 4.4/4.7, Ligerito.** Written from the structure of Novakovic-Angeris (ePrint 2025/1187), not its text:
-   the claim form `(star_i)`, the query batching, and the `t` derivation still need comparison against the paper.
+1. ~~**04 4.4/4.7, Ligerito.** Written from the structure of Novakovic-Angeris (ePrint 2025/1187), not its text:
+   the claim form `(star_i)`, the query batching, and the `t` derivation still need comparison against the paper.~~
    **Narrowed 2026-10-16 (later):** the paper was obtained from the first author's page
    (`angeris.github.io/papers/ligerito.pdf`, local copy `papers/ligerito-2025-1187.pdf`) and the `t`
    derivation was compared: the paper sets the per level query count from `((1 + rho)/2)^t` with
@@ -244,23 +247,94 @@ source before this section moves to `stable`.
    open except the Lemma A form below. The **tensor-fold gap loss `k`**
    and **the gap amplification of 13.5** are no longer in this item: 04 4.4a now proves them (Lemmas B and C and
    the level-reduction theorem), conditional only on the single-step proximity gap (Lemma A there). What remains
-   of the gap is bibliographic: the exact `N/|K|` per-challenge form of Lemma A against BCHKS [5] (I could
-   confirm only the abstract of TR25-169; the `N/|K|` statement is the earlier BCIKS/Ligero bound).
-2. **04 4.5, ring switching.** Derived from Diamond-Posen ePrint 2024/504 for `beta_j = X^j`; the tensor algebra step and the
-   `7/F` term have been checked by the reference tests only. **Narrowed 2026-10-16:** internal correctness
+   of the gap was bibliographic: the exact `N/|K|` per-challenge form of Lemma A.
+   **Resolved 2026-10-16 (Lemma A, against the full texts; Wayback copies in `papers/`).** (i) BCIKS,
+   *Proximity Gaps for Reed–Solomon Codes*, ePrint 2020/654 (revision of 3 July 2021), Theorem 4.1: for
+   `δ ≤ (1 − ρ)/2` with `ρ = (k+1)/n` (degree `≤ k`), if more than `n` values `z ∈ F_q` make `u_0 + z·u_1`
+   δ-close to RS, then all do and `(u_0, u_1)` agree with a pair of codewords outside a common set of
+   `≤ δn` positions; Theorem 1.2 states this as the error `ε_U = n/q`. Our radius `δN = (d − 1)/2` is
+   exactly this `δ` (`ρ = 2^m/N`), the challenge field is the code's own field `K`, and "close" is `≤` in
+   both. (ii) Lemma A's interleaved form (one `ρ` for every row pair, column distance) is stated and proved
+   verbatim, with the same `n/|L|`, as Theorem 2.3 of Diamond–Posen ePrint 2024/504 in its 2024-07
+   revision (`papers/ring-switching-2024-504-rev2024-07.pdf`): `Pr_r[d((1−r)U_0 + rU_1, C^{2^{ϑ−1}}) ≤ e] > n/|L|`
+   implies joint column distance `≤ e`, for `e ≤ ⌊(d−1)/2⌋`, derived from its Theorem 2.2 (= BCIKS
+   Thm 4.1 reparametrized). `U_0`, `U_1` are our even and odd rows and `(1+ρ, ρ)` is `(1−ρ, ρ)` in
+   characteristic 2. So Lemma A holds as stated at our exact radius with `N/|K|`. Lemma B's `kN/|K|` also
+   coincides with the published tensor gap (DP 2024/504 Theorem 2.4, `ϑ·n/|L|`, in both revisions; the
+   2025-09 revision attributes it to Diamond–Gruen Cor. 1), although 4.4a proves it by its own union bound.
+   **Citation correction:** [5] (BCHKS, ECCC TR25-169, version of 7 November 2025) is *not* the source of
+   the `N/|K|` form. Its new unique-decoding results (Theorem 1.3, Corollary 1.4) need `γ ≤ δ/2 − 1/n`
+   and `γ ≤ δ/2 − 3δ/n` respectively (`δ = 1 − k/n` its relative distance), which is strictly inside our
+   radius `δ/2 − 1/(2N)`, and it lists the BCIKS bound (`a > n`, no loss) only as prior work (Table 1).
+   04 4.4a and 4.7 and 13.5 now cite BCIKS Thm 4.1 with the DP Thm 2.3 lift. No error term or ledger
+   number changes. Nothing in this item remains open.
+2. ~~**04 4.5, ring switching.** Derived from Diamond-Posen ePrint 2024/504 for `beta_j = X^j`; the tensor algebra step and the
+   `7/F` term have been checked by the reference tests only.~~ **Narrowed 2026-10-16:** internal correctness
    does not depend on the paper — 04 4.5 states the key identity (left/right coordinates of `ŝ`), the
    verifier's tensor recursion, and a self-contained soundness proof (`7/|K|` is Schwartz–Zippel for the
    multilinear `Σ_i eq(ρ, i)(c_i − c*_i)` in the 7 variables of `ρ`, plus `2n/|K|` sum-check), and the
    reference cross-checks the tensor recursion against direct `O(2^n)` evaluation. What remains open is
    only the bibliographic comparison: that this matches Diamond-Posen §4's construction and error term for
-   a general `B`-basis specialized to `β_j = X^j` (PDF requested in `papers/README.md`).
-3. **07 7.10 and the prover algorithms.** Derived without [55] (Setty-Thaler-Zhu ePrint 2025/105).
+   a general `B`-basis specialized to `β_j = X^j`.
+   **Resolved 2026-10-16.** Compared against the 2025-09 revision of ePrint 2024/504 (50 pages, Wayback
+   capture of 2026-04-20, `papers/ring-switching-2024-504.pdf`), §3. *Matches* (their `K`, `L` are our
+   `B`, `K`; their `κ`, `ℓ'` are our 7, `n`): packing is Definition 2.2 (the low `κ` variables are packed,
+   `β_(0,…,0) = 1`, as `X^0 = 1` here); our `s` is the column representation of `ŝ` and our check 2 is
+   Construction 3.1 steps 1–2; `ρ ∈ K^7` is the batching vector `r''` (step 3); `c = transpose(s)` is the
+   row representation and `T` is `s_0` (step 5); `E_i(v)` is `A_{w,u}` of eq. (28) and `a[v]` is the
+   `A(w)` of step 4; the degree-2 sum-check of `a·P` over `n` rounds is step 6; our tensor recursion is
+   Remark 3.4's update `e ← e − e·φ_0(r_{κ+i}) − e·φ_1(r'_i)` (in characteristic 2,
+   `(1+r)⊗(1+z) + r⊗z = 1⊗1 + r⊗1 + 1⊗z`), and `a~(r_s) = Σ_i eq(ρ, i)·t_i` is
+   `Σ_u eq(u, r'')·e_u` of steps 8–9. *Error term:* the proof of Theorem 3.5 bounds the batching step by
+   `κ/|L|` (Schwartz–Zippel on `S(X_0..X_{κ−1}) = Σ_u (ŝ_u − s_u)·eq(u, X)`) and the sum-check by `2ℓ'/|L|`,
+   stated in §3.2 as `(2ℓ' + κ)/|L|`; with `κ = 7`, `ℓ' = n`, `|L| = |K|` this is exactly our
+   `(7 + 2n)/|K|`. *Deviations*, both **[OM-choice]** and neither affecting soundness: (a) the paper's
+   prover sends `s' = t'(r')` and the verifier checks `s_ℓ' = (Σ_u eq(u, r'')·e_u)·s'`; we instead
+   derive `v = F/a~(r_s)` and reject if `a~(r_s) = 0` (4.5 step 6). When `a~(r_s) ≠ 0` the paper's check
+   forces `s' = v`, so the claim handed to the PCS is the same; the extra rejection costs completeness
+   only (`≤ n/|K|`) and saves one element. (b) The verifier applies each factor of the recursion
+   as a bit-matrix action on the right coordinates (`O(n·128)` K multiplications plus `O(n·128²)` bit
+   operations) where Remark 3.4 scales columns and rows with transpositions (`2·ℓ'·2^κ` L
+   multiplications); same value, implementation only. *Revision note:* the 2024-07 revision (37 pages,
+   kept as `papers/ring-switching-2024-504-rev2024-07.pdf`) has ring switching in §4 (Construction 4.1,
+   Theorem 4.4) *without* the batching step: there the sum-check runs over the tensor algebra `A`
+   (root counting by its Lemma 4.5) and the error is `2ℓ'/|L|`. Our 4.5 is the 2025-09 construction;
+   its `7/|K|` is the price of the `K`-valued sum-check. 04 4.5 now cites §3 of that revision. No
+   discrepancy. Nothing in this item remains open.
+3. ~~**07 7.10 and the prover algorithms.** Derived without [55] (Setty-Thaler-Zhu ePrint 2025/105).~~
    **Narrowed 2026-10-16:** 7.10 is explicitly *informative* (prover algorithms and costs only); the
    normative relations and verifier checks of 7.4/7.5 were checked against the identities of Magnetar
    §4.4 (the `Φ` merge for Shout, the three `Val`/`rv`/`wv` identities and `LT` for Twist, Definition 7,
    Lemma 2 claim shapes) in `paper.pdf`. What remains open is only the comparison of 7.10's prover
-   algorithms/costs against [55] itself (PDF requested in `papers/README.md`). Completeness of our prover
+   algorithms/costs against [55] itself. Completeness of our prover
    algorithms is established by the reference tests, not by [55].
+   **Resolved 2026-10-16.** Compared against ePrint 2025/105 as served by ePrint through mid-2026
+   (96 pages, PDF dated 27 February 2025; Wayback captures of 2025-05-22, 2026-04-30 and 2026-06-08 are
+   byte-identical; `papers/twist-shout-2025-105.pdf`). That revision lists only Setty and Thaler as
+   authors; [55] in the Magnetar paper is the CRYPTO 2026 version with Zhu, which I could not obtain, so
+   the section numbers below are those of the ePrint revision. *Matches:* (a) Shout binds the address
+   variables first, and `ra~(k, r_c)` is the `eq(r_c, ·)`-weighted histogram of addresses (§6.1,
+   Theorem 5, `3K + T` multiplications; §6.2.1, array `C` of eq. (47)); (b) a one-hot component at a
+   bound point is a lookup into an `eq` table of size `2^{a_c}` (§6.2.1 eq. (46), §6.2.2), and the cycle
+   rounds of our 7.3 virtualization have the shape of §6.2.2's final `log T` rounds (degree `d+1`,
+   about `d²T`); (c) the Twist cycle-first, LSB-first order with increments tracked instead of a
+   materialized `Val` is the paper's "local algorithm" (§8.2.2, eqs. (70)–(73), Fact 8.1), and
+   obtaining a cell's value from its last write is the observation behind §8.2.5 eq. (80); the address rounds then run on
+   dense size-`K` tables; (d) the `LT` table in `O(T)` by the most-significant-differing-bit recurrence
+   is Appendix B.1 (`3T/2` multiplications), and the `Val` sum-check is §8.1. *Correction (informative
+   text only):* 7.10's target `O(T·(p+1) + NK)` for the `rw` sum-check was too optimistic. The paper's
+   worst case for the cycle-first algorithm (`d = 1`) is `(4 log K + 6)T` multiplications for reads and
+   `(3 log K + 5)T` for writes (§8.2.2, §8.3), i.e. `O(T log K)`, falling to `O(i)` per `2^i`-local
+   access (§8.2.3). The same bound applies to our sparse prover: after `i` cycle rounds a group of `2^i`
+   cycles holds up to `min(2^i, NK)` addresses. 7.10 now states `O((p+1)·T·a + NK)`. *Differences that
+   come from Magnetar §4.4 or our [OM-choice]s, not from 7.10:* [55]'s core Twist (Figure 9) commits an
+   address-indexed `Inc(k, j)` and runs separate read- and write-checking sum-checks with `Π_i ra_i`
+   inside (degree `d + 1` in the cycle variables, which is why its local algorithm is given only for
+   `d = 1`); ours has the cycle-only `Inc(o, j)` multiplied by `wa`, the merged `rw` sum-check (item 4)
+   and a separate virtualization (7.3), so the `rw` summand has degree 3 for every `d` and the
+   cycle-first algorithm applies for all `d`. One-hot correctness in [55] is Booleanity plus
+   Hamming-weight sum-checks (§4.1.2, Figure 8, §6.3); our `Δ⋆` (7.2) is Magnetar's binary-field
+   replacement and has no counterpart there. Nothing in this item remains open.
 4. ~~**07 7.5 Twist.** The one-sum-check merge of read/write/row-sum with `alpha_0`, and the cycle-first
    variable order.~~ **Resolved 2026-10-16.** This merge is an **[OM-choice]** deviation from the paper
    (Magnetar §4.4 uses one sum-check per identity plus a separate row-sum argument), so there is no paper
@@ -324,3 +398,5 @@ cross-check is possible there.
 * 2026-10-16: 04 4.4a now contains the written soundness proof of the repetition composition (Lemmas B/C and the level-reduction theorem), so the "all folds close" part of 13.9(1) is discharged; 13.9(1) now covers only the paper comparison of 04's claim form/query batching/`t` derivation and the exact form of the external Lemma A in [5]. Error terms and ledger numbers are unchanged. ePrint PDF downloads are blocked to automated fetches (Cloudflare), so the three source PDFs are requested in `papers/README.md`.
 
 * 2026-10-16 (audit pass against Magnetar `paper.pdf`, in repo): 13.9(5) resolved (07 7.2 formula is §4.4 verbatim; bound now derived in 7.2); 13.9(4) resolved (the merged Twist sum-check is an [OM-choice] deviation, now proved in 07 7.5 step 3); 13.9(6) resolved as [OM-choice] with in-spec proofs (7.6 MLE expansion written out); 13.9(3) narrowed to informative 7.10 vs [55]; 13.9(2) narrowed to the bibliographic comparison only (04 4.5 is internally proved and cross-checked); 13.9(7) resolved by re-derivation (params regenerates 13.2 exactly; Mosaic claims measured at 68 on the Fibonacci instance and now asserted in `test_protocol.py`). Remaining open: 13.9(1) paper comparison + Lemma A form, 13.9(2) bibliographic, 13.9(3) 7.10 costs — all blocked on the three PDFs in `papers/README.md`.
+
+* 2026-10-16 (audit pass against the source PDFs, fetched from the Wayback Machine; see `papers/README.md`): 13.9(1) resolved (Lemma A checked against BCIKS ePrint 2020/654 Theorem 4.1 and its interleaved lift, Diamond–Posen 2024/504 (2024-07) Theorem 2.3; citation of [5] for the `N/|K|` form corrected, since BCHKS's own unique-decoding results need a radius strictly inside ours; 13.5 option 1 rewritten from the full text of TR25-169, still not adopted). 13.9(2) resolved (04 4.5 is Construction 3.1 / Theorem 3.5 / Remark 3.4 of the 2025-09 revision of 2024/504 specialised to `β_j = X^j`, error `(κ + 2ℓ')/|L|` = our `(7 + 2n)/|K|`; two [OM-choice] deviations recorded; the 2024-07 revision's unbatched §4 variant noted). 13.9(3) resolved against the 2025-02 ePrint revision of Twist and Shout (Setty–Thaler only; the CRYPTO version with Zhu was not available): the algorithms of 7.10 match §6.1–6.2, §8.1–8.2 and Appendix B.1, and 7.10's `rw` cost target was corrected from `O(T·(p+1) + NK)` to `O((p+1)·T·a + NK)` (informative only). No protocol, transcript, error-term or ledger change; no code or vectors change. Every 13.9 item is now resolved.

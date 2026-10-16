@@ -382,20 +382,29 @@ The vk fixes `(a, d)` per instance; `d | a`.
 ### 7.10 Prover algorithms (informative)
 
 None of this changes a byte of the transcript. The reference model is dense and quadratic, and uses
-none of it. (The full text of [55] was not available to the author of this section; the following is
-the standard structure and must be checked against it.)
+none of it. (Checked on 2026-10-16 against the ePrint 2025/105 revision of February 2025, the version
+available, with authors Setty and Thaler; section numbers below are of that revision. Details in 13.9(3).)
 
-* One-hot components are stored as the index `chunk_i(addr[j])` per cycle. `Ã(r,j)` is `eq_table(r)[chunk]`,
-  so the one-hot check costs `O(T·d)`.
-* `ra~(k, r_c)` for Shout is a histogram of addresses weighted by `eq(r_c,j)`: `O(T + NK)`.
+* One-hot components are stored as the index `chunk_i(addr[j])` per cycle. `Ã(r,j)` is `eq_table(r)[chunk]`
+  ([55] §6.2.1 eq. (46), §6.2.2), so the one-hot check costs `O(T·d)`. ([55] checks one-hot encodings
+  with Booleanity and Hamming-weight sum-checks, §6.3; `Δ⋆` has no counterpart there.)
+* `ra~(k, r_c)` for Shout is a histogram of addresses weighted by `eq(r_c,j)`: `O(T + NK)` ([55] §6.1,
+  Theorem 5: `3K + T` multiplications; the cycle rounds of 7.3 correspond to §6.2.2, about `d²T`).
 * For the `rw` sum-check, the first `n` rounds are over cycles. `ra_x` and `wa` are sparse (one
   non-zero per cycle) and `Inc` is a single word per cycle; `Val(k,o,j)` is
   never materialized but obtained from the last write to `k` before `j` (an incremental state per
   address). After the cycle variables are bound the remaining `a` rounds work on dense tables of
-  size `NK`. The expensive part is the `V` table; the target is `O(T·(p+1) + NK)` field operations
-  plus `O(T·L)` bit operations.
+  size `NK`. This is the "local algorithm" of [55] §8.2.2 (cycle variables first, low bit first,
+  increments tracked instead of values, eqs. (70)–(73)); obtaining a cell's value from its last write is the observation behind §8.2.5 eq. (80).
+  The expensive part is the `V` table. Cost: in cycle round `i` a group of `2^i` cycles holds at most
+  `min(2^i, NK)` addresses, so the worst case is `O((p+1)·T·a + NK)` field operations plus `O(T·L)` bit
+  operations, matching [55]'s `(4 log K + 6)T` (read) and `(3 log K + 5)T` (write) multiplications for
+  `d = 1` (§8.3); an access to a cell touched within the last `2^i` cycles costs only `O(i)` (§8.2.3).
+  (An earlier draft of this bullet claimed `O(T·(p+1) + NK)`, which is too low.) [55]'s Twist puts
+  `Π_i ra_i` inside its read/write sum-checks and so describes the local algorithm only for `d = 1`;
+  here virtualization is a separate sum-check (7.3) and the `rw` summand has degree 3 for every `d`.
 * The `LT` table needed for the `val` sum-check is built in `O(T)` by the recurrence on the
-  most-significant differing bit.
+  most-significant differing bit ([55] Appendix B.1, `3T/2` multiplications; the `val` sum-check is §8.1).
 
 **Implementation status (Rust, 2026-10-16).** The `rw` sum-check of 7.5 is implemented sparsely
 in `crates/om-memcheck/src/twist.rs` (`rw_sumcheck_sparse`), following the third bullet: the cycle
@@ -460,3 +469,5 @@ write address), `test_vectors_07_08.py`. Vectors: `reference/vectors/07-twist-sh
 * 2026-10-16 (13): Shout batching error corrected from `2a + 1` to `2a + 2` in 7.4 (the `β` batching is a separate degree-1 challenge, 13.2 note 2). `params.py` already uses `tot_num = 2·rom_a + 2`.
 
 * 2026-10-16 (audit 13.9): 7.2 soundness now derives the `(5n + 5a_c + 1)/F` bound explicitly (formula checked verbatim against Magnetar §4.4); 7.5 step 3 gained the "Why the merge is sound" proof for our [OM-choice] one-sum-check merge and cycle-first order; 7.6 spells out the `Val_final~` MLE expansion. No protocol, transcript, or error-term changes, so vectors are unchanged. See 13.9 items 3–6 for the resulting audit status.
+
+* 2026-10-16 (audit 13.9(3), against ePrint 2025/105, February 2025 revision): 7.10's algorithms were checked against [55] §6.1–6.2, §8.1–8.2 and Appendix B.1 and now cite them; the `rw` cost target was corrected from `O(T·(p+1) + NK)` to `O((p+1)·T·a + NK)` (the paper's worst case is `O(T log K)`). 7.10 is informative, so no protocol, transcript or vector change.
