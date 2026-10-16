@@ -380,7 +380,11 @@ fn dispatch(args: &[String]) -> CliResult<()> {
     }
 }
 
+#[global_allocator]
+static ALLOC: om_sdk::memtrace::CountingAlloc = om_sdk::memtrace::CountingAlloc;
+
 fn main() -> ExitCode {
+    om_sdk::memtrace::CountingAlloc::enable_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match dispatch(&args) {
         Ok(()) => ExitCode::SUCCESS,

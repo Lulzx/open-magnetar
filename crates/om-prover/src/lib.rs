@@ -27,6 +27,7 @@
 
 pub mod common;
 pub mod keygen;
+pub mod memtrace;
 pub mod params;
 pub mod prove;
 

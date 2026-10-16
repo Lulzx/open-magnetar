@@ -225,6 +225,7 @@ fn prove_instance_inner(
     }
     let derived = Derived::new(vk);
     let ex = execute_with_derived(&derived, public_input, max_cycles)?;
+    crate::memtrace::mark("execute");
     prove_execution(&derived, ex, &mut hook)
 }
 
@@ -252,6 +253,7 @@ pub fn prove_execution(
     let trace = &ex.trace;
     let public = cpu::public_inputs(&derived.program, ex.exit_code);
     let w = cpu::witness_packed(trace, &derived.cpu_params, Some(ex.exit_code));
+    crate::memtrace::mark("witness");
 
     let (reg_wit, reg_info) = tw::build_witness(
         &di.reg,
@@ -314,6 +316,7 @@ pub fn prove_execution(
         derived.rom_a,
         derived.rom_d,
     );
+    crate::memtrace::mark("component witnesses");
 
     let mut tables: BTreeMap<i64, PackedBits> = BTreeMap::new();
     for (i, sg) in derived.spartan_segments.iter().enumerate() {
@@ -355,6 +358,7 @@ pub fn prove_execution(
     }
     let g = build_g_packed(&di.layout, &tables);
     drop(tables);
+    crate::memtrace::mark("build G");
 
     // Step 1: statement, commitment.
     let mut tr = Transcript::new(LABEL, vk.hasher());
@@ -369,6 +373,7 @@ pub fn prove_execution(
         let root = cm.root.clone();
         (Some(pcs), Some(st), root)
     };
+    crate::memtrace::mark("commit");
 
     // Step 2: Virtual Spartan.
     let x: Vec<Vec<om_field::K>> = vec![Vec::new(); 1usize << s];
@@ -390,6 +395,7 @@ pub fn prove_execution(
         unchecked,
     );
     drop(w);
+    crate::memtrace::mark("spartan");
     let (virt, direct, xs) = seg_claims(derived, &sp_claims)?;
 
     // Step 3: register Twist.
@@ -413,6 +419,7 @@ pub fn prove_execution(
         None,
         false,
     );
+    crate::memtrace::mark("register twist");
 
     // Step 4: RAM Twist with final memory; Inc claim at the Spartan point.
     let (r_or, r_cr) = same_point(&virt, &["rw", "ridx"], 6)?;
@@ -449,6 +456,7 @@ pub fn prove_execution(
         Some(&final_mem),
         false,
     );
+    crate::memtrace::mark("ram twist");
 
     // Step 5: routers.
     let (r_oy, r_cy) = same_point(&virt, &["Y"], 6)?;
@@ -472,6 +480,7 @@ pub fn prove_execution(
         b"router/store",
         WORD_BITS,
     );
+    crate::memtrace::mark("routers");
 
     // Step 6: bytecode Shout.
     let plan = ShoutPlan::new(derived, n, &virt, &reg_bits, &sh_claims, &st_claims[1])?;
@@ -483,6 +492,7 @@ pub fn prove_execution(
         &mut tr,
         b"shout/bytecode",
     );
+    crate::memtrace::mark("shout");
 
     // Step 7: Mosaic, ring switching, PCS.
     let mclaims = mosaic_claims(
@@ -498,7 +508,21 @@ pub fn prove_execution(
         &st_claims,
         &shout_claims,
     );
+    if std::env::var_os("OM_TRACE_LAYOUT").is_some() {
+        eprintln!("ell {} claims {}", di.layout.ell, mclaims.len());
+        for pl in &di.layout.placements {
+            let nnz = (0..1usize << pl.log_size)
+                .filter(|&i| g.bit(pl.offset + i))
+                .count();
+            let nc = mclaims.iter().filter(|c| c.comp_id == pl.comp_id).count();
+            eprintln!(
+                "  comp {:>4} log {:>2} offset {:#x} claims {nc} nnz {nnz}",
+                pl.comp_id, pl.log_size, pl.offset
+            );
+        }
+    }
     let (batch, r_g, v_g) = batch_prove_packed(&di.layout, &mclaims, &g, &mut tr);
+    crate::memtrace::mark("mosaic batch");
     let pcs_proof = if vk.pcs == PcsMode::Transparent {
         PcsProof::Transparent(g.to_bools())
     } else {
@@ -510,6 +534,7 @@ pub fn prove_execution(
         }
         PcsProof::Ligerito(rs_proof, lig_proof)
     };
+    crate::memtrace::mark("pcs open");
 
     Ok((
         inst,

@@ -33,6 +33,7 @@ pub use om_format::{
     PcsMode, PcsProfile, PublicInstance, VerifyingKey, decode_instance, decode_vk, encode_instance,
     encode_vk, vk_digest,
 };
+pub use om_prover::memtrace;
 pub use om_transcript::Hasher;
 
 /// Parameters for key generation: the ABI parameters (§14.1) plus the
