@@ -1,136 +1,76 @@
 # open-magnetar
 
-[![CI](https://github.com/Lulzx/open-magnetar/actions/workflows/ci.yml/badge.svg)](https://github.com/Lulzx/open-magnetar/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-![Rust: MSRV 1.90](https://img.shields.io/badge/rust-1.90%2B-orange.svg)
+`open-magnetar` is a clean-room implementation of the [Magnetar](https://eprint.iacr.org/2026/2423) RV64I zkVM in Rust and Python. It proves the execution of strict RV64I ELF binaries using only standard hash functions (SHA-256 by default, SHA3-256 and SHA-384 optional) and arithmetic over $\mathrm{GF}(2)$ and $\mathrm{GF}(2^{128})$.
 
-open-magnetar is a zkVM for RV64I. It proves that a C program executed correctly and produces a proof that a verifier can check in tens of milliseconds. The cryptography uses standard hash functions only, SHA-256 by default. There are no elliptic curves, no trusted setup, and no lattice assumptions. At the default profile there are also no conjectured proximity gaps. The implementation is written in Rust and checked against an independent reference model in Python. The two implementations produce identical proof bytes.
+## Features
 
-> Srinath Setty. *Magnetar: High-speed post-quantum RV64 zkVM from standard hashes.* 2026. [ePrint 2026/2423](https://eprint.iacr.org/2026/2423)
+- **Standard hashes only**: no elliptic curves, lattices, or trusted setup.
+- **120-bit provable security** (`provable-120` profile): unique-decoding proximity bounds with gap amplification ($g_s = 2$), no conjectured gaps, no grinding ([spec §04.4a](docs/spec/04-pcs.md), [§13](docs/spec/13-security.md)).
+- **Architecture**: dual SIMD R1CS over $\mathrm{GF}(2)$ and $\mathrm{GF}(2^{128})$ on a shared bit-witness, reduced via Virtual Spartan ([§06](docs/spec/06-spartan.md), [§10](docs/spec/10-cpu-circuit.md)); BinaryTwist and BinaryShout for register, RAM, and ROM consistency ([§07](docs/spec/07-twist-shout.md)); BinaryRouter for shifts and sub-word stores ([§08](docs/spec/08-router.md)); single commitment and opening via MosaicPCS, ring switching, and Ligerito ([§04](docs/spec/04-pcs.md), [§05](docs/spec/05-mosaic.md)).
+- **Bit-exact cross-verification**: normative specification ([`docs/spec/`](docs/spec/)), zero-dependency Python reference model ([`reference/`](reference/)), and 16-crate Rust workspace ([`crates/`](crates/)) agree byte-for-byte across all 27 test vector files.
+- **Guest support**: C (`clang --target=riscv64`) and Rust (`no_std` via `guest/rust/om-guest`) guests; all 15 workloads from Table 1 of the paper are proved and verified end-to-end.
 
-> Disclaimer. This project is not affiliated with Microsoft or Microsoft Research and is not derived from their code. It is a clean room reimplementation of the public paper. Where the paper does not specify a detail, this project chooses one and records the choice in [`docs/spec/`](docs/spec/). Performance and proof sizes will differ from the paper.
+## Build and Usage
 
-> Not audited. Do not use this to secure anything of value. The proofs are not zero knowledge. A proof reveals information about the execution. See [Security status](#security-status).
-
-## Background
-
-Most zkVMs depend on elliptic curve or lattice assumptions and on some form of setup. Magnetar takes a different approach. If the only cryptographic primitive is a standard hash function, the system needs no setup and is plausibly post quantum. open-magnetar implements that design in the open. Work started with a written specification, then an executable model in Python, then the Rust implementation. Each proof byte can be traced back to the specification.
-
-## Current state
-
-C guests for strict RV64I are built with LLVM, then executed, proved, and verified with the `om` CLI. This works at the `provable-120` profile as well as at the smaller test profile. `provable-120` means 120 bits of provable security per round, with no grinding and no conjectured gaps.
-
-All 27 files in `reference/vectors/` are reproduced byte for byte by the Rust crates. That includes a complete Fibonacci proof of 15,630 bytes and its verifying key. Agreement between two independent implementations is the main correctness check used in this project, short of a formal proof.
-
-The specification in [`docs/spec/`](docs/spec/) covers sections 00 to 15. Choices that the paper does not dictate are marked **[OM-choice]**. Section 04 §4.4a contains a full soundness proof for the gap amplification composition used by the `provable-120` parameters.
-
-All 15 workloads from Table 1 of the paper are present as guests in [`guest/examples/`](guest/examples/) and pass 47 execution cases against a Python oracle. All 15 are proved and verified end to end. The largest, `radix-sort-u64`, runs T = 2²² cycles: at the `provable-120` profile it produces a 603,942 B (589.8 KiB) proof in 21.6 s (8.2 GiB peak RSS) and verifies in 60 ms; at the test profile it proves in 20.8 s (7.7 GiB peak RSS) and verifies in 20 ms.
-
-| Suite | Result |
-|---|---|
-| Rust workspace, `cargo test --workspace` | 346 tests, 0 failures |
-| Python reference model | 223 tests, 0 failures |
-| Reference vectors | 27 of 27 files reproduced byte for byte |
-| Guest execution cases | 47 cases, all pass |
-| Acceptance test at `provable-120` | exactly 68 Mosaic claims, asserted in tests |
-
-## Benchmarks
-
-Measured on an Apple M4 Pro (24 GiB) with a release build, `A = 16` unless stated. Method and comparison with the paper are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
-
-| Guest | Profile | Prove | Verify | Proof |
-|---|---|---:|---:|---:|
-| `fib(19)`, T = 256 | test | 0.03 s | 10 ms | 23,526 B |
-| `fib(19)`, T = 256 | provable-120 | 0.03 s | 20 ms | 83,654 B |
-| `sha256("abc")`, T = 8,192 | test | 0.15 s | 10 ms | 34,526 B |
-| `erc20-transfer`, T = 512 | test | 0.03 s | 10 ms | 25,398 B |
-| `keccak-f1600`, T = 32,768 | test | 0.27 s | 10 ms | 39,806 B |
-| `keccak-f1600`, T = 32,768 | provable-120 | 0.27 s | 30 ms | 289,406 B |
-| `radix-sort-u64`, T = 2²², `A = 17` | test | 20.8 s (7.7 GiB peak) | 20 ms | 60,806 B |
-| `radix-sort-u64`, T = 2²², `A = 17` | provable-120 | 21.6 s (8.2 GiB peak) | 60 ms | 603,942 B (589.8 KiB) |
-
-Verifier time (10–60 ms) and `provable-120` proof size (589.8 KiB at T = 2²², below the paper's 599 KiB bound) are close to the numbers in the paper. Prover throughput at T = 2²² is about 202 k cycles/s on the test profile and 194 k cycles/s on `provable-120` (up from 39 k cycles/s before the hardware SHA-256, column-major coset NTT, compiled sparse Spartan, and bitwise witness packing optimizations), against the paper's ~7M cycles/s. Every prover phase works from packed bits or compact per-cycle data, and proof bytes are unchanged across all optimizations. Measured numbers and per-phase breakdowns are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
-
-## Quick start
-
-You need Rust 1.90 or later. Building guests also needs LLVM and lld, for example `brew install llvm lld` on macOS.
+Requires Rust 1.90+, Python 3.12+ (for reference tests), and LLVM + `lld` (to build RV64I guests).
 
 ```sh
+# Run Rust and Python test suites (346 Rust tests, 223 Python tests, 27 vector files)
+cargo test --workspace --release
+python3 -m unittest discover -s reference/tests -t reference
+
+# Build C guest examples (A = log2(RAM words), I = log2(input words), O = log2(output words))
 export PATH=/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/lld/bin:$PATH
-make -C guest clean && make -C guest A=16   # clean first if ELFs were built with another A
+make -C guest clean && make -C guest A=16
+
+# Keygen, prove, and verify fib(19)
 ABI="--ram-log-words 16 --input-log-words 14 --output-log-words 14"
 cargo run -p om --release -- keygen --elf guest/examples/fib.elf --out /tmp/fib.vk $ABI
-printf '\x13\0\0\0\0\0\0\0' > /tmp/in.bin    # input: u64 19
+printf '\x13\0\0\0\0\0\0\0' > /tmp/in.bin
 cargo run -p om --release -- prove --vk /tmp/fib.vk --elf guest/examples/fib.elf \
     --input /tmp/in.bin --out /tmp/fib.pf --instance /tmp/fib.inst
 cargo run -p om --release -- verify --vk /tmp/fib.vk --instance /tmp/fib.inst --proof /tmp/fib.pf
-# prints OK
 ```
 
-The values of A, I, and O at guest build time must match the values passed to `keygen`. Set `OM_TRACE=1` to print the time and memory of each prover phase. See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Pass `--profile provable-120` to `keygen` for full 120-bit provable security (default is `test`). Set `OM_TRACE=1` to print per-phase timing and heap usage.
 
-Test suites:
+## Benchmarks
 
-```sh
-cargo test --workspace                                       # Rust, includes vector conformance
-python3 -m unittest discover -s reference/tests -t reference # Python reference model, 3.12+, stdlib only
-```
+Apple M4 Pro (14-core, 24 GiB), `rustc` release build, `A = 16` unless noted. Full breakdown in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-## How it works
+| Guest | Cycles ($T$) | Profile | Prove | Peak RSS | Verify | Proof Size |
+|---|---:|---|---:|---:|---:|---:|
+| `fib(19)` | $2^{8}$ | test | 0.03 s | 16 MiB | 10 ms | 23,526 B |
+| `fib(19)` | $2^{8}$ | provable-120 | 0.03 s | 23 MiB | 20 ms | 83,654 B |
+| `erc20-transfer` | $2^{9}$ | test | 0.03 s | 18 MiB | 10 ms | 25,398 B |
+| `sha256("abc")` | $2^{13}$ | test | 0.15 s | 41 MiB | 10 ms | 34,526 B |
+| `keccak-f1600` | $2^{15}$ | test | 0.27 s | 112 MiB | 10 ms | 39,806 B |
+| `keccak-f1600` | $2^{15}$ | provable-120 | 0.27 s | 121 MiB | 30 ms | 289,406 B |
+| `radix-sort-u64` (`A = 17`) | $2^{22}$ | test | 20.8 s | 7.7 GiB | 20 ms | 60,806 B |
+| `radix-sort-u64` (`A = 17`) | $2^{22}$ | provable-120 | 21.6 s | 8.2 GiB | 60 ms | 603,942 B (589.8 KiB) |
 
-A guest execution is encoded as two R1CS relations over one bit valued witness. One relation is over GF(2) and the other is over GF(2¹²⁸). Both come from a circuit that fetches, decodes, and executes strict RV64I instructions. Virtual Spartan reduces the two relations to one claim per witness segment. BinaryTwist and BinaryShout argue that registers, RAM, and bytecode were read and written consistently. A BinaryRouter handles shifts and sub word stores. All witness segments are committed under one MosaicPCS commitment, which uses Ligerito over GF(2¹²⁸) with ring switching, and opened at a single point. A SHA-256 Fiat Shamir transcript makes the proof non interactive.
+At $T = 2^{22}$, throughput is ~202k cycles/s (`test`) and ~194k cycles/s (`provable-120`), using hardware `PMULL`/`PCLMULQDQ` field arithmetic, ARMv8 SHA-256 intrinsics, column-major coset NTTs, compiled word-mask Spartan evaluation, and packed bit witnesses.
 
-| Component | Role | Spec |
-|---|---|---|
-| Dual SIMD R1CS over GF(2) and GF(2¹²⁸), one witness | CPU fetch, decode, execute | [06](docs/spec/06-spartan.md), [10](docs/spec/10-cpu-circuit.md) |
-| Virtual Spartan | Reduces both relations to one claim per witness segment | [06](docs/spec/06-spartan.md) |
-| BinaryTwist and BinaryShout | Register, RAM, and bytecode consistency | [07](docs/spec/07-twist-shout.md) |
-| BinaryRouter | Shifts and sub word stores | [08](docs/spec/08-router.md) |
-| MosaicPCS, ring switching, Ligerito | One commitment, one opening | [05](docs/spec/05-mosaic.md), [04](docs/spec/04-pcs.md) |
-| SHA-256 Fiat Shamir transcript | Makes the proof non interactive | [02](docs/spec/02-transcript.md) |
-
-Scope for version 1 is RV64I only. The M extension is planned later. The default profile aims at 120 bits of provable security. The per round error ledger is in [§13.2](docs/spec/13-security.md). All arithmetic is over GF(2) and GF(2¹²⁸). SHA3-256 and SHA-384 are available as options next to the SHA-256 default.
-
-## Repository layout
+## Directory Layout
 
 ```
-docs/spec/            normative specification, sections 00 to 15 plus CONVENTIONS.md
-reference/            executable Python reference model, stdlib only
-  openmagnetar/       one module per protocol component, plus protocol.py for the full protocol
-  tests/              unit tests, sub protocol tests, end to end tests, negative tests
-  vectors/            JSON test vectors that pin the exact bytes of each component
-guest/                guest toolchain and the 15 Table 1 workload guests
-  rust/               Rust guests: target JSON, om-guest runtime crate, examples, Makefile
-crates/               Rust workspace, 16 crates, listed below
-docs/BENCHMARKS.md    measured prover and verifier numbers, with comparison to the paper
-papers/               source paper PDFs for the §13.9 audit, gitignored, see the README there
+crates/               Rust workspace (om-field, om-transcript, om-sumcheck, om-pcs,
+                      om-mosaic, om-spartan, om-memcheck, om-router, om-isa,
+                      om-circuit, om-elf, om-format, om-prover, om-verifier, om-sdk, om)
+docs/spec/            Specification (00-overview .. 15-testing, CONVENTIONS.md)
+docs/BENCHMARKS.md    Prover/verifier benchmarks and memory profiles
+guest/                C and Rust RV64I guest runtime and 15 benchmark programs
+reference/            Self-contained Python reference implementation and JSON test vectors
 ```
 
-The Rust crates start at the field and go up to the CLI. `om-field` implements GF(2¹²⁸) with PMULL and PCLMULQDQ. Then come `om-transcript`, `om-sumcheck`, `om-pcs` with Merkle trees, an additive NTT, Ligerito with `gs > 1`, ring switching, and a `Pcs` trait. The remaining crates are `om-spartan`, `om-mosaic`, `om-memcheck`, `om-router`, `om-isa`, `om-circuit`, `om-elf`, `om-format`, `om-prover`, `om-verifier`, `om-sdk`, and the `om` CLI. All cryptography is written from scratch in this repository. CI runs `cargo fmt`, clippy with `-D warnings`, the Rust tests including vector conformance, and the Python test suite.
+## Notes and Limitations
 
-## Security status
-
-The default `provable-120` profile targets 120 bits of provable security per round. The analysis treats SHA-256 as a random oracle. The full error ledger is in [spec §13](docs/spec/13-security.md).
-
-No third party has audited this code or the specification. The system is not zero knowledge, so proofs leak information about the execution and about any data the guest handled. Do not prove executions that involve secrets. Against a quantum adversary, SHA-256 collision resistance is about 85 bits by the BHT bound. The `sha384` profile raises that to about 128 bits. The prover is not constant time.
-
-Audit items are tracked in [§13.9](docs/spec/13-security.md), and all seven are resolved. Items 4 to 7 were checked against the Magnetar paper, proved inside the specification, or rederived and then asserted by tests. Items 1 to 3 were compared against the source papers for Ligerito, ring switching (Diamond–Posen), Twist and Shout, and the proximity gap (BCIKS). No soundness discrepancy was found. The comparison corrected one citation and one informative cost figure. [`papers/README.md`](papers/README.md) lists which revision of each paper was used.
-
-## Roadmap
-
-1. Prover throughput. T = 2²² now proves in 20.8 s (test) / 21.6 s (`provable-120`) on a laptop (~194–202 k cycles/s, 5× faster than the initial 107 s bounded-memory run). The paper reports about 7M cycles per second, so further algorithmic and SIMD work remains.
-2. Full-security T = 2²² proof. Done: `radix-sort-u64` at `provable-120` (`T = 2²²`, `A = 17`) is proved and verified end to end, measuring 603,942 B (589.8 KiB) against the 656 KiB model.
-3. Rust guests. Done for the basic path. The runtime crate `guest/rust/om-guest` provides the entry point, a bump allocator, and I/O helpers, and the Fibonacci example in `guest/rust/examples/fib` is proved and verified end to end. Build it with `make -C guest/rust`. See [§14](docs/spec/14-guest-abi.md). More Rust examples would still be useful.
-
-## Contributing
-
-Contributions are welcome. To keep the two implementations in agreement, change the specification first, then the Python reference model and its vectors, then the Rust code, with tests at each step. Before opening a pull request, run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and the Python suite. Unless you state otherwise, contributions are dual licensed under the terms below.
+- **Unaudited**: experimental research code; do not use in production.
+- **Not zero-knowledge**: proofs reveal information about the execution trace and witness. Do not prove secret inputs.
+- **ISA scope**: strict RV64I (no `M`/`A`/`F`/`D`/`C` extensions).
+- **Post-quantum hash bound**: SHA-256 provides ~85-bit quantum collision resistance (BHT bound); use `--hash sha384` for ~128-bit quantum collision resistance.
+- **Attribution**: independent implementation of Setty ([ePrint 2026/2423](https://eprint.iacr.org/2026/2423)); not affiliated with or derived from Microsoft Research. Protocol details left unspecified by the paper are documented as **[OM-choice]** in [`docs/spec/`](docs/spec/).
 
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
