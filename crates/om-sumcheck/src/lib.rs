@@ -39,5 +39,6 @@ pub use sumcheck::{
     BoxedCombine, MAX_BATCH_CLAIMS, SumcheckProof, UnivariateSkipProof, VerificationError,
     batch_claims, batched_combine, bind_low_subspace, combine_sum, interpolate_eval,
     lagrange_subspace_weights, sumcheck_init, sumcheck_prove, sumcheck_prove_rounds,
-    sumcheck_prove_skip, sumcheck_round_evals, sumcheck_verify, sumcheck_verify_skip,
+    sumcheck_prove_skip, sumcheck_round_evals, sumcheck_round_evals_mul2, sumcheck_verify,
+    sumcheck_verify_skip,
 };

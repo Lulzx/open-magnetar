@@ -39,14 +39,19 @@ pub fn eq_eval(x: &[K], y: &[K]) -> K {
 pub fn eq_table(r: &[K]) -> Vec<K> {
     let n = r.len();
     if (1usize << n) >= PAR_THRESHOLD && n >= 4 {
-        let h = n / 2;
+        let h = (n / 2).clamp(2, 13);
         let lo = eq_table(&r[..h]);
         let hi = eq_table(&r[h..]);
-        let mask = (1usize << h) - 1;
-        return (0..(1usize << n))
-            .into_par_iter()
-            .map(|i| lo[i & mask] * hi[i >> h])
-            .collect();
+        let lo_len = 1usize << h;
+        let mut out = vec![K::ZERO; 1usize << n];
+        out.par_chunks_mut(lo_len)
+            .zip(hi.par_iter())
+            .for_each(|(row, &h_val)| {
+                for (dst, &l_val) in row.iter_mut().zip(&lo) {
+                    *dst = l_val * h_val;
+                }
+            });
+        return out;
     }
     let mut t = vec![K::ONE];
     for &rj in r {
@@ -74,11 +79,20 @@ pub fn bind_low_in_place(table: &mut Vec<K>, r: K) {
     );
     let half = table.len() / 2;
     if table.len() >= PAR_THRESHOLD {
-        table.par_chunks_mut(2).for_each(|pair| {
-            pair[0] += r * (pair[0] + pair[1]);
+        const CHUNK: usize = 8192;
+        table.par_chunks_mut(CHUNK).for_each(|chunk| {
+            let h = chunk.len() / 2;
+            for i in 0..h {
+                let (a, b) = (chunk[2 * i], chunk[2 * i + 1]);
+                chunk[i] = a + r * (a + b);
+            }
         });
-        for i in 1..half {
-            table[i] = table[2 * i];
+        let half_chunk = CHUNK / 2;
+        let n_chunks = table.len().div_ceil(CHUNK);
+        for c in 1..n_chunks {
+            let src_start = c * CHUNK;
+            let len = half_chunk.min(half - c * half_chunk);
+            table.copy_within(src_start..src_start + len, c * half_chunk);
         }
     } else {
         for i in 0..half {

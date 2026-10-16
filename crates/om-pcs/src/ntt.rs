@@ -109,84 +109,24 @@ pub fn encode_naive(msg: &[K], log_rate: usize) -> Vec<K> {
         .collect()
 }
 
+/// Tile size (in `K` elements = 16 bytes each) for fusing the bottom NTT
+/// stages inside L2 cache: `32,768 * 16 B = 512 KiB`.
+const TILE_ELEMS: usize = 1 << 15;
+
 /// Fast `O(m 2^m)` LCH additive NTT encoding (§4.3):
 /// `codeword[q] = Σ_j msg[j] X_j(ω_q)`.
 ///
 /// # Panics
 /// Panics if `msg.len()` is not a power of two.
 pub fn encode(msg: &[K], log_rate: usize) -> Vec<K> {
-    let mu = check_msg(msg);
-    let m = mu + log_rate;
-    let wh = wh_table(m);
+    let _mu = check_msg(msg);
     let cols = msg.len();
     let num_cosets = 1usize << log_rate;
     let mut a = Vec::with_capacity(cols << log_rate);
-    for _ in 0..num_cosets {
+    for coset in 0..num_cosets {
+        let start = a.len();
         a.extend_from_slice(msg);
-    }
-    for i in (0..mu).rev() {
-        let half = 1 << i;
-        let blocks = 1usize << (m - 1 - i);
-        let tks: Vec<K> = (0..blocks)
-            .map(|c| {
-                let mut t = 0u128;
-                for d in 0..(m - 1 - i) {
-                    if (c >> d) & 1 == 1 {
-                        t ^= wh[i][i + 1 + d].value();
-                    }
-                }
-                K::from_u128(t)
-            })
-            .collect();
-        // Blocks of one stage touch disjoint pairs, as do the pairs within
-        // a block, so either level parallelises exactly.
-        let butterfly = |lo: &mut K, hi: &mut K, tk: K| {
-            let new_lo = *lo + tk * *hi;
-            *lo = new_lo;
-            *hi += new_lo;
-        };
-        if a.len() >= PAR_THRESHOLD && blocks >= 4 {
-            a.par_chunks_mut(2 * half)
-                .zip(tks.par_iter())
-                .for_each(|(block, &tk)| {
-                    let (lo, hi) = block.split_at_mut(half);
-                    if tk == K::ZERO {
-                        for (l, h) in lo.iter().zip(hi.iter_mut()) {
-                            *h += *l;
-                        }
-                    } else {
-                        for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
-                            butterfly(l, h, tk);
-                        }
-                    }
-                });
-        } else if a.len() >= PAR_THRESHOLD && half >= 4096 {
-            for (block, &tk) in a.chunks_mut(2 * half).zip(&tks) {
-                let (lo, hi) = block.split_at_mut(half);
-                if tk == K::ZERO {
-                    lo.par_iter()
-                        .zip(hi.par_iter_mut())
-                        .for_each(|(l, h)| *h += *l);
-                } else {
-                    lo.par_iter_mut()
-                        .zip(hi.par_iter_mut())
-                        .for_each(|(l, h)| butterfly(l, h, tk));
-                }
-            }
-        } else {
-            for (block, &tk) in a.chunks_mut(2 * half).zip(&tks) {
-                let (lo, hi) = block.split_at_mut(half);
-                if tk == K::ZERO {
-                    for (l, h) in lo.iter().zip(hi.iter_mut()) {
-                        *h += *l;
-                    }
-                } else {
-                    for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
-                        butterfly(l, h, tk);
-                    }
-                }
-            }
-        }
+        encode_coset_col_major(&mut a[start..start + cols], 1, cols, log_rate, coset);
     }
     a
 }
@@ -210,17 +150,38 @@ pub fn encode_coset_col_major(
         "encode_coset_col_major: dimensions must be powers of two matching buf.len()"
     );
     let mu = cols.trailing_zeros() as usize;
+    if mu == 0 {
+        return;
+    }
     let m = mu + log_rate;
     let wh = wh_table(m);
-    for i in (0..mu).rev() {
+
+    // Precompute coset contribution `t_coset[i]` for each stage `i < mu`.
+    let t_cosets: Vec<u128> = (0..mu)
+        .map(|i| {
+            let mut t = 0u128;
+            for d_hi in 0..log_rate {
+                if (coset >> d_hi) & 1 == 1 {
+                    t ^= wh[i][mu + d_hi].value();
+                }
+            }
+            t
+        })
+        .collect();
+
+    // Determine how many bottom stages `0..i_tile` fit inside a single L2 cache tile
+    // of size `TILE_ELEMS` (when the buffer is large enough to benefit from parallel tiles).
+    let i_tile = if buf.len() >= TILE_ELEMS * 2 && rows <= TILE_ELEMS / 2 {
+        ((TILE_ELEMS / rows).trailing_zeros() as usize).min(mu)
+    } else {
+        0
+    };
+
+    // 1. Top stages `i in (i_tile..mu).rev()`, where block size `2 * half > TILE_ELEMS`.
+    for i in (i_tile..mu).rev() {
         let half = (1usize << i) * rows;
         let blocks = 1usize << (mu - 1 - i);
-        let mut t_coset = 0u128;
-        for d_hi in 0..log_rate {
-            if (coset >> d_hi) & 1 == 1 {
-                t_coset ^= wh[i][mu + d_hi].value();
-            }
-        }
+        let t_coset = t_cosets[i];
         let tks: Vec<K> = (0..blocks)
             .map(|c_local| {
                 let mut t = t_coset;
@@ -253,15 +214,23 @@ pub fn encode_coset_col_major(
             for (block, &tk) in buf.chunks_mut(2 * half).zip(&tks) {
                 let (lo, hi) = block.split_at_mut(half);
                 if tk == K::ZERO {
-                    lo.par_iter()
-                        .zip(hi.par_iter_mut())
-                        .for_each(|(l, h)| *h += *l);
+                    lo.par_chunks(4096)
+                        .zip(hi.par_chunks_mut(4096))
+                        .for_each(|(lc, hc)| {
+                            for (l, h) in lc.iter().zip(hc.iter_mut()) {
+                                *h += *l;
+                            }
+                        });
                 } else {
-                    lo.par_iter_mut().zip(hi.par_iter_mut()).for_each(|(l, h)| {
-                        let new_lo = *l + tk * *h;
-                        *l = new_lo;
-                        *h += new_lo;
-                    });
+                    lo.par_chunks_mut(4096)
+                        .zip(hi.par_chunks_mut(4096))
+                        .for_each(|(lc, hc)| {
+                            for (l, h) in lc.iter_mut().zip(hc.iter_mut()) {
+                                let new_lo = *l + tk * *h;
+                                *l = new_lo;
+                                *h += new_lo;
+                            }
+                        });
                 }
             }
         } else {
@@ -280,5 +249,55 @@ pub fn encode_coset_col_major(
                 }
             }
         }
+    }
+
+    // 2. Bottom stages `i in (0..i_tile).rev()` fused inside L2-sized tiles.
+    if i_tile > 0 {
+        let tile_len = (1usize << i_tile) * rows;
+        let t_subs: Vec<Vec<u128>> = (0..i_tile)
+            .map(|i| {
+                let s = i_tile - 1 - i;
+                (0..(1usize << s))
+                    .map(|sb| {
+                        let mut t = 0u128;
+                        for d_lo in 0..s {
+                            if (sb >> d_lo) & 1 == 1 {
+                                t ^= wh[i][i + 1 + d_lo].value();
+                            }
+                        }
+                        t
+                    })
+                    .collect()
+            })
+            .collect();
+
+        buf.par_chunks_mut(tile_len)
+            .enumerate()
+            .for_each(|(tile_idx, tile)| {
+                for i in (0..i_tile).rev() {
+                    let half = (1usize << i) * rows;
+                    let mut t_tile = t_cosets[i];
+                    for d_tile in 0..(mu - i_tile) {
+                        if (tile_idx >> d_tile) & 1 == 1 {
+                            t_tile ^= wh[i][i_tile + d_tile].value();
+                        }
+                    }
+                    for (block, &t_sb) in tile.chunks_mut(2 * half).zip(&t_subs[i]) {
+                        let tk = K::from_u128(t_tile ^ t_sb);
+                        let (lo, hi) = block.split_at_mut(half);
+                        if tk == K::ZERO {
+                            for (l, h) in lo.iter().zip(hi.iter_mut()) {
+                                *h += *l;
+                            }
+                        } else {
+                            for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
+                                let new_lo = *l + tk * *h;
+                                *l = new_lo;
+                                *h += new_lo;
+                            }
+                        }
+                    }
+                }
+            });
     }
 }

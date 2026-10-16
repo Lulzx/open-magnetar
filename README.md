@@ -41,16 +41,16 @@ Apple M4 Pro (14-core, 24 GiB), `rustc` release build, `A = 16` unless noted. Fu
 
 | Guest | Cycles (`T`) | Profile | Prove | Peak RSS | Verify | Proof Size |
 |---|---:|---|---:|---:|---:|---:|
-| `fib(19)` | `2^8` | test | 0.03 s | 16 MiB | 10 ms | 23,526 B |
-| `fib(19)` | `2^8` | provable-120 | 0.03 s | 23 MiB | 20 ms | 83,654 B |
-| `erc20-transfer` | `2^9` | test | 0.03 s | 18 MiB | 10 ms | 25,398 B |
-| `sha256("abc")` | `2^13` | test | 0.15 s | 41 MiB | 10 ms | 34,526 B |
-| `keccak-f1600` | `2^15` | test | 0.27 s | 112 MiB | 10 ms | 39,806 B |
-| `keccak-f1600` | `2^15` | provable-120 | 0.27 s | 121 MiB | 30 ms | 289,406 B |
-| `radix-sort-u64` (`A = 17`) | `2^22` | test | 19.9 s | 8.4 GiB | 10 ms (27 MiB) | 60,806 B |
-| `radix-sort-u64` (`A = 17`) | `2^22` | provable-120 | 20.7 s | 8.4 GiB | 50 ms (47 MiB) | 603,942 B (589.8 KiB) |
+| `fib(19)` | `2^8` | test | 0.02 s | 16 MiB | 10 ms | 23,526 B |
+| `fib(19)` | `2^8` | provable-120 | 0.02 s | 23 MiB | 20 ms | 83,654 B |
+| `erc20-transfer` | `2^9` | test | 0.02 s | 18 MiB | 10 ms | 25,398 B |
+| `sha256("abc")` | `2^13` | test | 0.07 s | 41 MiB | 10 ms | 34,526 B |
+| `keccak-f1600` | `2^15` | test | 0.14 s | 112 MiB | 10 ms | 39,806 B |
+| `keccak-f1600` | `2^15` | provable-120 | 0.14 s | 121 MiB | 30 ms | 288,926 B |
+| `radix-sort-u64` (`A = 17`) | `2^22` | test | **8.55 s** | 8.3 GiB | 10 ms (27 MiB) | 60,806 B |
+| `radix-sort-u64` (`A = 17`) | `2^22` | provable-120 | **8.82 s** | 8.4 GiB | 50 ms (48 MiB) | 603,942 B (589.8 KiB) |
 
-At `T = 2^22`, throughput is ~211k cycles/s (`test`) and ~203k cycles/s (`provable-120`), using hardware `PMULL`/`PCLMULQDQ` field arithmetic with unreduced 256-bit carryless accumulators, ARMv8 SHA-256 intrinsics, flat zero-allocation Merkle trees, column-major coset NTTs, compiled word-mask Spartan evaluation with round-0 `GF(2)` fast paths, and packed bit witnesses.
+At `T = 2^22`, throughput is **~491k cycles/s** (`test`) and **~476k cycles/s** (`provable-120`), using hardware `PMULL`/`PCLMULQDQ` field arithmetic with unreduced 256-bit carryless accumulators, ARMv8 SHA-256 intrinsics, flat zero-allocation Merkle trees, L2-tiled column-major coset NTTs, multi-round bit-table deferral and LUT-based sum-checks in Virtual Spartan / Mosaic / Ring Switching, incremental write-log Twist folding, and packed bit witnesses.
 
 ## Directory Layout
 

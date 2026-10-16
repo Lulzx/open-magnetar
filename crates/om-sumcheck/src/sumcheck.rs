@@ -4,7 +4,7 @@
 
 use core::fmt;
 
-use om_field::K;
+use om_field::{K, U256};
 use om_transcript::{Transcript, u64le};
 
 use rayon::prelude::*;
@@ -142,6 +142,51 @@ pub fn combine_sum(tables: &[Vec<K>], combine: &(dyn Fn(&[K]) -> K + Sync)) -> K
     }
 }
 
+/// Fast degree-2 round evaluations `[g(0), g(1), g(t_2)]` for the product of
+/// two tables `a[i] * b[i]`, accumulating unreduced `U256` products and
+/// using the characteristic-2 identity `g(X) = s0 + (s0 + s1 + sd) X + sd X^2`
+/// where `sd = Σ_i (a[2i] + a[2i+1])(b[2i] + b[2i+1])`.
+pub fn sumcheck_round_evals_mul2(a: &[K], b: &[K]) -> [K; 3] {
+    let half = a.len() / 2;
+    let [u0, u1, ud] = if a.len() >= PAR_THRESHOLD {
+        (0..half)
+            .into_par_iter()
+            .with_min_len(2048)
+            .fold(
+                || [U256::ZERO; 3],
+                |mut acc, i| {
+                    let (a0, a1) = (a[2 * i], a[2 * i + 1]);
+                    let (b0, b1) = (b[2 * i], b[2 * i + 1]);
+                    acc[0] += a0.clmul(b0);
+                    acc[1] += a1.clmul(b1);
+                    acc[2] += (a0 + a1).clmul(b0 + b1);
+                    acc
+                },
+            )
+            .reduce(
+                || [U256::ZERO; 3],
+                |mut x, y| {
+                    x[0] += y[0];
+                    x[1] += y[1];
+                    x[2] += y[2];
+                    x
+                },
+            )
+    } else {
+        let mut acc = [U256::ZERO; 3];
+        for i in 0..half {
+            let (a0, a1) = (a[2 * i], a[2 * i + 1]);
+            let (b0, b1) = (b[2 * i], b[2 * i + 1]);
+            acc[0] += a0.clmul(b0);
+            acc[1] += a1.clmul(b1);
+            acc[2] += (a0 + a1).clmul(b0 + b1);
+        }
+        acc
+    };
+    let (s0, s1, sd) = (u0.reduce(), u1.reduce(), ud.reduce());
+    [s0, s1, s0 + (s0 + s1 + sd).mul_x() + sd.mul_x().mul_x()]
+}
+
 /// One round's evaluations `[g(t_0), …, g(t_degree)]` for the low variable
 /// of `tables`, i.e. `Σ_i combine` of the pair interpolants
 /// `T[2i] + t·(T[2i] + T[2i+1])` at each `t_k`, `k = 0..=degree`.
@@ -153,11 +198,21 @@ pub fn sumcheck_round_evals(
     combine: &(dyn Fn(&[K]) -> K + Sync),
     degree: usize,
 ) -> Vec<K> {
+    if tables.len() == 2
+        && degree == 2
+        && combine(&[K::ONE, K::ONE]) == K::ONE
+        && combine(&[K::ONE, K::ZERO]) == K::ZERO
+        && combine(&[K::ZERO, K::ONE]) == K::ZERO
+        && combine(&[K::ZERO, K::ZERO]) == K::ZERO
+    {
+        return sumcheck_round_evals_mul2(&tables[0], &tables[1]).to_vec();
+    }
     let half = tables[0].len() / 2;
     let n = tables.len();
     if tables[0].len() >= PAR_THRESHOLD {
         let (ev, ..) = (0..half)
             .into_par_iter()
+            .with_min_len(1024)
             .fold(
                 || {
                     (

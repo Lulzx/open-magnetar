@@ -496,35 +496,48 @@ fn split_batch_prove(
         chal
     };
 
+    use om_sumcheck::sumcheck_round_evals_mul2;
+
     // Phase 1: rounds computed from the bits of G.
+    // Since variables m..ell remain boolean throughout rounds 0..m, we scan G
+    // once at block size 2^m to build each claim's 2^m-entry table M_j, then
+    // bind M_j in place after each round.
     let m = bit_rounds.min(ell);
-    for r in 0..m {
-        // Claims sharing a region (same component, or small components
-        // inside one block of 2^(r+1) bits) share one scan of its bits.
+    if m > 0 {
         let mut groups: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
         for (j, t) in terms.iter().enumerate() {
-            let nfree = t.log_size.saturating_sub(r + 1);
-            let base = t.offset & !((1usize << (r + 1)) - 1);
+            let nfree = t.log_size.saturating_sub(m);
+            let base = t.offset & !((1usize << m) - 1);
             groups.entry((base, nfree)).or_default().push(j);
         }
-        let eqc = eq_table(&rs[..r]);
-        let half = 1usize << r;
-        let mut ev = [K::ZERO; 3];
+        let mut m_tables = vec![Vec::new(); terms.len()];
         for ((base, nfree), js) in &groups {
             let group: Vec<&BatchTerm<'_>> = js.iter().map(|&j| &terms[j]).collect();
-            let sums = region_sums(words, *base, r, *nfree, &group);
-            for (t, tot) in group.iter().zip(&sums) {
-                let s0 = (0..half).fold(K::ZERO, |a, b| a + eqc[b] * tot[b]);
-                let s1 = (0..half).fold(K::ZERO, |a, b| a + eqc[b] * tot[half + b]);
+            let sums = region_sums(words, *base, m - 1, *nfree, &group);
+            for (&j, sum) in js.iter().zip(sums) {
+                m_tables[j] = sum;
+            }
+        }
+        for r in 0..m {
+            let mut ev = [K::ZERO; 3];
+            for (t, mj) in terms.iter().zip(&m_tables) {
+                let eq_rem = eq_table(&t.lifted[r + 1..m]);
+                let mut s0 = K::ZERO;
+                let mut s1 = K::ZERO;
+                for (phi, &e) in eq_rem.iter().enumerate() {
+                    s0 += e * mj[2 * phi];
+                    s1 += e * mj[2 * phi + 1];
+                }
                 let pr = t.lifted[r];
                 for (slot, &x) in ev.iter_mut().zip(&tv) {
                     *slot += t.coef * eqfac(pr, x) * ((K::ONE + x) * s0 + x * s1);
                 }
             }
-        }
-        let chal = round(ev, &mut cur, &mut rs, transcript);
-        for t in &mut terms {
-            t.coef *= eqfac(t.lifted[r], chal);
+            let chal = round(ev, &mut cur, &mut rs, transcript);
+            for (t, mj) in terms.iter_mut().zip(&mut m_tables) {
+                t.coef *= eqfac(t.lifted[r], chal);
+                bind_low_in_place(mj, chal);
+            }
         }
     }
 
@@ -536,8 +549,18 @@ fn split_batch_prove(
     for t in &terms {
         let z0 = t.offset >> m;
         if t.log_size > m {
-            for (i, e) in eq_table(&t.point[m..]).iter().enumerate() {
-                et[z0 + i] += t.coef * *e;
+            let eq_t = eq_table(&t.point[m..]);
+            let coef = t.coef;
+            let dst = &mut et[z0..z0 + eq_t.len()];
+            if eq_t.len() >= PAR_BITS {
+                dst.par_iter_mut()
+                    .zip(eq_t.par_iter())
+                    .with_min_len(4096)
+                    .for_each(|(d, &e)| *d += coef * e);
+            } else {
+                for (d, &e) in dst.iter_mut().zip(&eq_t) {
+                    *d += coef * e;
+                }
             }
         } else {
             et[z0] += t.coef;
@@ -547,21 +570,7 @@ fn split_batch_prove(
 
     // Phase 2: dense rounds on the bound tables.
     for _ in m..ell {
-        let half = gt.len() / 2;
-        let pair = |i: usize| {
-            let (e0, e1, g0, g1) = (et[2 * i], et[2 * i + 1], gt[2 * i], gt[2 * i + 1]);
-            [e0 * g0, e1 * g1, (e0 + e1) * (g0 + g1)]
-        };
-        let sum3 = |a: [K; 3], b: [K; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-        let [s0, s1, sd] = if half >= PAR_BITS {
-            (0..half)
-                .into_par_iter()
-                .map(pair)
-                .reduce(|| [K::ZERO; 3], sum3)
-        } else {
-            (0..half).map(pair).fold([K::ZERO; 3], sum3)
-        };
-        let ev = [s0, s1, s0 + (s0 + s1 + sd).mul_x() + sd.mul_x().mul_x()];
+        let ev = sumcheck_round_evals_mul2(&et, &gt);
         let chal = round(ev, &mut cur, &mut rs, transcript);
         bind_low_in_place(&mut et, chal);
         bind_low_in_place(&mut gt, chal);
@@ -606,6 +615,34 @@ fn bind_bits(words: &[u64], eqm: &[K], m: usize, n_out: usize) -> Vec<K> {
             t
         })
         .collect();
+    if m >= 6 {
+        let nwords = 1usize << (m - 6);
+        let one_word_aligned = |z: usize| {
+            let base_w = z * nwords;
+            let mut acc = K::ZERO;
+            for wi in 0..nwords {
+                let w = words[base_w + wi];
+                if w == 0 {
+                    continue;
+                }
+                let tb = &tables[8 * wi..8 * wi + 8];
+                acc += tb[0][(w & 0xff) as usize]
+                    + tb[1][((w >> 8) & 0xff) as usize]
+                    + tb[2][((w >> 16) & 0xff) as usize]
+                    + tb[3][((w >> 24) & 0xff) as usize]
+                    + tb[4][((w >> 32) & 0xff) as usize]
+                    + tb[5][((w >> 40) & 0xff) as usize]
+                    + tb[6][((w >> 48) & 0xff) as usize]
+                    + tb[7][((w >> 56) & 0xff) as usize];
+            }
+            acc
+        };
+        return if n_out << m >= PAR_BITS {
+            (0..n_out).into_par_iter().map(one_word_aligned).collect()
+        } else {
+            (0..n_out).map(one_word_aligned).collect()
+        };
+    }
     let byte_at = |i: usize| ((words[i / 8] >> (8 * (i % 8))) & 0xff) as usize;
     let one = |z: usize| (0..nbytes).fold(K::ZERO, |a, q| a + tables[q][byte_at(z * nbytes + q)]);
     if n_out << m >= PAR_BITS {

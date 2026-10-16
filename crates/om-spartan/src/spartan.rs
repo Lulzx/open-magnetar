@@ -500,8 +500,9 @@ struct CompiledRow {
     /// `(word_idx, shift, mask, base_coef)` for consecutive columns in one word
     /// where `coef[j] == base_coef * X^j` and `base_coef != K::ONE`.
     scaled_geom_runs: Vec<(usize, u32, u64, K)>,
-    /// Remaining columns `< half` with `coef != K::ONE`, grouped by distinct `coef`
-    /// so parity is XORed across all `(word_idx, bit_mask)` before adding `coef` once.
+    /// Single-word `(word_idx, bit_mask, coef)` entries (no inner `Vec` allocation).
+    single_coef_masks: Vec<(u16, u64, K)>,
+    /// Multi-word `(coef, [(word_idx, bit_mask)])` entries.
     coef_groups: Vec<(K, Vec<(usize, u64)>)>,
     /// Coefficient at `col == half` (where `z[half] == 1`).
     const_term: K,
@@ -518,7 +519,7 @@ impl CompiledRow {
         let mut ones_masks: Vec<(usize, u64)> = Vec::new();
         let mut unit_geom_runs: Vec<(usize, u32, u64)> = Vec::new();
         let mut scaled_geom_runs: Vec<(usize, u32, u64, K)> = Vec::new();
-        let mut coef_groups: Vec<(K, Vec<(usize, u64)>)> = Vec::new();
+        let mut raw_coef_groups: Vec<(K, Vec<(usize, u64)>)> = Vec::new();
         let mut const_term = K::ZERO;
         let mut pub_terms: Vec<(usize, K)> = Vec::new();
 
@@ -571,20 +572,33 @@ impl CompiledRow {
                     } else {
                         ones_masks.push((wi, bit));
                     }
-                } else if let Some((_, masks)) = coef_groups.iter_mut().find(|(c, _)| *c == coef) {
+                } else if let Some((_, masks)) =
+                    raw_coef_groups.iter_mut().find(|(c, _)| *c == coef)
+                {
                     if let Some(last) = masks.last_mut().filter(|(w, _)| *w == wi) {
                         last.1 |= bit;
                     } else {
                         masks.push((wi, bit));
                     }
                 } else {
-                    coef_groups.push((coef, vec![(wi, bit)]));
+                    raw_coef_groups.push((coef, vec![(wi, bit)]));
                 }
                 idx += 1;
             }
         }
+        let mut single_coef_masks = Vec::new();
+        let mut coef_groups = Vec::new();
+        for (coef, masks) in raw_coef_groups {
+            if masks.len() == 1 {
+                let (wi, mask) = masks[0];
+                single_coef_masks.push((wi as u16, mask, coef));
+            } else {
+                coef_groups.push((coef, masks));
+            }
+        }
         let is_gf2_only = unit_geom_runs.is_empty()
             && scaled_geom_runs.is_empty()
+            && single_coef_masks.is_empty()
             && coef_groups.is_empty()
             && pub_terms.is_empty()
             && (const_term.is_zero() || const_term.is_one());
@@ -593,11 +607,26 @@ impl CompiledRow {
             ones_masks,
             unit_geom_runs,
             scaled_geom_runs,
+            single_coef_masks,
             coef_groups,
             const_term,
             pub_terms,
             is_gf2_only,
             const_bit,
+        }
+    }
+
+    fn empty() -> Self {
+        CompiledRow {
+            ones_masks: Vec::new(),
+            unit_geom_runs: Vec::new(),
+            scaled_geom_runs: Vec::new(),
+            single_coef_masks: Vec::new(),
+            coef_groups: Vec::new(),
+            const_term: K::ZERO,
+            pub_terms: Vec::new(),
+            is_gf2_only: true,
+            const_bit: 0,
         }
     }
 
@@ -637,6 +666,11 @@ impl CompiledRow {
             }
             v += acc_u.reduce();
         }
+        for &(wi, mask, coef) in &self.single_coef_masks {
+            if (words[wi as usize] & mask).count_ones() & 1 != 0 {
+                v += coef;
+            }
+        }
         for (coef, masks) in &self.coef_groups {
             let mut p = 0u32;
             for &(wi, mask) in masks {
@@ -654,6 +688,327 @@ impl CompiledRow {
             }
         }
         v
+    }
+}
+
+/// Compiled 64-row block evaluator for a purely GF(2) R1CS matrix (`rho <= 10`).
+struct FlatGf2Mat {
+    const_words: [u64; 16],
+    /// Per 64-row output word: `(src_wi, delta_shift, src_mask)` where `delta_shift = dst_bit - src_bit`.
+    shift_terms: Vec<Vec<(u16, i8, u64)>>,
+    /// Per 64-row output word: `(src_wi, dst_bit, src_mask)` for multi-bit parity masks.
+    pop_terms: Vec<Vec<(u16, u8, u64)>>,
+}
+
+impl FlatGf2Mat {
+    fn from_rows(rows: &SparseRows, half: usize, n_w: usize) -> Self {
+        let mut const_words = [0u64; 16];
+        let mut shift_terms = vec![Vec::new(); n_w];
+        let mut pop_terms = vec![Vec::new(); n_w];
+        for (w_out, (st, pt)) in shift_terms.iter_mut().zip(pop_terms.iter_mut()).enumerate() {
+            let mut shift_map: std::collections::BTreeMap<(u16, i8), u64> =
+                std::collections::BTreeMap::new();
+            for b in 0..64usize {
+                let r = 64 * w_out + b;
+                if r >= rows.len() {
+                    break;
+                }
+                let cr = CompiledRow::from_entries(&rows[r], half);
+                if cr.const_bit != 0 {
+                    const_words[w_out] ^= 1u64 << b;
+                }
+                for &(wi, mask) in &cr.ones_masks {
+                    if mask.count_ones() == 1 {
+                        let src_bit = mask.trailing_zeros() as i8;
+                        let delta = (b as i8) - src_bit;
+                        *shift_map.entry((wi as u16, delta)).or_insert(0) ^= mask;
+                    } else if mask != 0 {
+                        pt.push((wi as u16, b as u8, mask));
+                    }
+                }
+            }
+            for ((wi, delta), mask) in shift_map {
+                if mask != 0 {
+                    st.push((wi, delta, mask));
+                }
+            }
+        }
+        FlatGf2Mat {
+            const_words,
+            shift_terms,
+            pop_terms,
+        }
+    }
+
+    #[inline(always)]
+    fn eval_word(&self, words: &[u64], w_out: usize) -> u64 {
+        let mut out = self.const_words[w_out];
+        for &(wi, delta, mask) in &self.shift_terms[w_out] {
+            let v = words[wi as usize] & mask;
+            if delta >= 0 {
+                out ^= v << (delta as u32);
+            } else {
+                out ^= v >> ((-delta) as u32);
+            }
+        }
+        for &(wi, b, mask) in &self.pop_terms[w_out] {
+            let p = (words[wi as usize] & mask).count_ones() & 1;
+            out ^= (p as u64) << b;
+        }
+        out
+    }
+}
+
+/// Cached bit-packed `A^{(0)}(z_u)` and `B^{(0)}(z_u)` words across all `q` instances
+/// for a purely GF(2) relation (`rho <= 10`).
+struct Gf2RelCache {
+    n_w: usize,
+    a_bits: Vec<[u64; 16]>,
+    b_bits: Vec<[u64; 16]>,
+}
+
+impl Gf2RelCache {
+    /// Evaluates the final bound column tables `[A(r_row, u), B(r_row, u), C(r_row, u)]`
+    /// across all `q` instances using byte-level subset-sum tables.
+    fn eval_final_cols(&self, r_row: &[K], rho: usize) -> [Vec<K>; 3] {
+        let eqr = eq_table(r_row);
+        let nbytes = 1usize << (rho - 3);
+        let tables: Vec<[K; 256]> = (0..nbytes)
+            .map(|q_byte| {
+                let mut t = [K::ZERO; 256];
+                for p in 1..256usize {
+                    let b = p.trailing_zeros() as usize;
+                    t[p] = t[p & (p - 1)] + eqr[8 * q_byte + b];
+                }
+                t
+            })
+            .collect();
+        let q = self.a_bits.len();
+        let n_w = self.n_w;
+        let eval_words = |words: &[u64; 16]| -> K {
+            let mut acc = K::ZERO;
+            for (wi, &w) in words.iter().enumerate().take(n_w) {
+                if w == 0 {
+                    continue;
+                }
+                let tb = &tables[8 * wi..8 * wi + 8];
+                acc += tb[0][(w & 0xff) as usize]
+                    + tb[1][((w >> 8) & 0xff) as usize]
+                    + tb[2][((w >> 16) & 0xff) as usize]
+                    + tb[3][((w >> 24) & 0xff) as usize]
+                    + tb[4][((w >> 32) & 0xff) as usize]
+                    + tb[5][((w >> 40) & 0xff) as usize]
+                    + tb[6][((w >> 48) & 0xff) as usize]
+                    + tb[7][((w >> 56) & 0xff) as usize];
+            }
+            acc
+        };
+        let mut col_a = vec![K::ZERO; q];
+        let mut col_b = vec![K::ZERO; q];
+        let mut col_c = vec![K::ZERO; q];
+        col_a
+            .par_iter_mut()
+            .zip(col_b.par_iter_mut().zip(col_c.par_iter_mut()))
+            .zip(self.a_bits.par_iter().zip(self.b_bits.par_iter()))
+            .with_min_len(1024)
+            .for_each(|((ca, (cb, cc)), (au, bu))| {
+                *ca = eval_words(au);
+                *cb = eval_words(bu);
+                let mut cu = [0u64; 16];
+                for wi in 0..n_w {
+                    cu[wi] = au[wi] & bu[wi];
+                }
+                *cc = eval_words(&cu);
+            });
+        [col_a, col_b, col_c]
+    }
+}
+
+/// Round-specific LUT for evaluating `A^{(round)}` and `B^{(round)}` from `Gf2RelCache`.
+enum Gf2RoundLut {
+    Round1 {
+        /// Indexed by `(nib_a << 4) | nib_b` (`0..256`), holding `[a0*b0, a1*b1, (a0+a1)*(b0+b1)]`.
+        pair_lut: Box<[[K; 3]; 256]>,
+    },
+    Round2 {
+        lut4: Box<[K; 16]>,
+    },
+    ByteLut {
+        nbytes_per_row: usize,
+        tables: Vec<[K; 256]>,
+    },
+}
+
+impl Gf2RoundLut {
+    fn new(round: usize, r_row_prefix: &[K]) -> Self {
+        let eqr = eq_table(r_row_prefix);
+        if round == 1 {
+            let l2 = [K::ZERO, eqr[0], eqr[1], eqr[0] + eqr[1]];
+            let mut pair_lut = Box::new([[K::ZERO; 3]; 256]);
+            for na in 0..16usize {
+                let (a0, a1) = (l2[na & 3], l2[na >> 2]);
+                let da = a0 + a1;
+                for nb in 0..16usize {
+                    let (b0, b1) = (l2[nb & 3], l2[nb >> 2]);
+                    let db = b0 + b1;
+                    pair_lut[(na << 4) | nb] = [a0 * b0, a1 * b1, da * db];
+                }
+            }
+            Gf2RoundLut::Round1 { pair_lut }
+        } else if round == 2 {
+            let mut lut4 = Box::new([K::ZERO; 16]);
+            for p in 1..16usize {
+                let b = p.trailing_zeros() as usize;
+                lut4[p] = lut4[p & (p - 1)] + eqr[b];
+            }
+            Gf2RoundLut::Round2 { lut4 }
+        } else {
+            let nbytes_per_row = 1usize << (round - 3);
+            let tables = (0..nbytes_per_row)
+                .map(|q_byte| {
+                    let mut t = [K::ZERO; 256];
+                    for p in 1..256usize {
+                        let b = p.trailing_zeros() as usize;
+                        t[p] = t[p & (p - 1)] + eqr[8 * q_byte + b];
+                    }
+                    t
+                })
+                .collect();
+            Gf2RoundLut::ByteLut {
+                nbytes_per_row,
+                tables,
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn eval_row_bytes(words: &[u64; 16], row: usize, nbytes: usize, tables: &[[K; 256]]) -> K {
+        let byte_start = row * nbytes;
+        if nbytes == 1 {
+            let b = ((words[byte_start / 8] >> (8 * (byte_start % 8))) & 0xff) as usize;
+            return tables[0][b];
+        }
+        if nbytes == 2 {
+            let w = words[byte_start / 8] >> (8 * (byte_start % 8));
+            if (w & 0xffff) == 0 {
+                return K::ZERO;
+            }
+            return tables[0][(w & 0xff) as usize] + tables[1][((w >> 8) & 0xff) as usize];
+        }
+        if nbytes == 4 {
+            let w = words[byte_start / 8] >> (8 * (byte_start % 8));
+            if (w & 0xffff_ffff) == 0 {
+                return K::ZERO;
+            }
+            return tables[0][(w & 0xff) as usize]
+                + tables[1][((w >> 8) & 0xff) as usize]
+                + tables[2][((w >> 16) & 0xff) as usize]
+                + tables[3][((w >> 24) & 0xff) as usize];
+        }
+        let nwords = nbytes / 8;
+        let base_w = byte_start / 8;
+        let mut acc = K::ZERO;
+        for wi in 0..nwords {
+            let w = words[base_w + wi];
+            if w == 0 {
+                continue;
+            }
+            let tb = &tables[8 * wi..8 * wi + 8];
+            acc += tb[0][(w & 0xff) as usize]
+                + tb[1][((w >> 8) & 0xff) as usize]
+                + tb[2][((w >> 16) & 0xff) as usize]
+                + tb[3][((w >> 24) & 0xff) as usize]
+                + tb[4][((w >> 32) & 0xff) as usize]
+                + tb[5][((w >> 40) & 0xff) as usize]
+                + tb[6][((w >> 48) & 0xff) as usize]
+                + tb[7][((w >> 56) & 0xff) as usize];
+        }
+        acc
+    }
+
+    #[inline(always)]
+    fn accum_instance(
+        &self,
+        au: &[u64; 16],
+        bu: &[u64; 16],
+        active: &[usize],
+        equ: K,
+        rel_acc: &mut [[U256; 3]],
+    ) {
+        match self {
+            Gf2RoundLut::Round1 { pair_lut } => {
+                for (k_idx, &i) in active.iter().enumerate() {
+                    let wi = i / 16;
+                    let shift = (i % 16) * 4;
+                    let na = ((au[wi] >> shift) & 0xf) as usize;
+                    let nb = ((bu[wi] >> shift) & 0xf) as usize;
+                    if na == 0 || nb == 0 {
+                        continue;
+                    }
+                    let [p0, p1, p2] = pair_lut[(na << 4) | nb];
+                    let slot = &mut rel_acc[k_idx];
+                    if !p0.is_zero() {
+                        slot[0] += equ.clmul(p0);
+                    }
+                    if !p1.is_zero() {
+                        slot[1] += equ.clmul(p1);
+                    }
+                    if !p2.is_zero() {
+                        slot[2] += equ.clmul(p2);
+                    }
+                }
+            }
+            Gf2RoundLut::Round2 { lut4 } => {
+                for (k_idx, &i) in active.iter().enumerate() {
+                    let wi = i / 8;
+                    let shift = (i % 8) * 8;
+                    let ba = ((au[wi] >> shift) & 0xff) as usize;
+                    let bb = ((bu[wi] >> shift) & 0xff) as usize;
+                    if ba == 0 || bb == 0 {
+                        continue;
+                    }
+                    let (a0, a1) = (lut4[ba & 0xf], lut4[ba >> 4]);
+                    let (b0, b1) = (lut4[bb & 0xf], lut4[bb >> 4]);
+                    let slot = &mut rel_acc[k_idx];
+                    if !a0.is_zero() && !b0.is_zero() {
+                        slot[0] += equ.clmul(a0 * b0);
+                    }
+                    if !a1.is_zero() && !b1.is_zero() {
+                        slot[1] += equ.clmul(a1 * b1);
+                    }
+                    let da = a0 + a1;
+                    let db = b0 + b1;
+                    if !da.is_zero() && !db.is_zero() {
+                        slot[2] += equ.clmul(da * db);
+                    }
+                }
+            }
+            Gf2RoundLut::ByteLut {
+                nbytes_per_row,
+                tables,
+            } => {
+                let nb = *nbytes_per_row;
+                for (k_idx, &i) in active.iter().enumerate() {
+                    let (r0, r1) = (2 * i, 2 * i + 1);
+                    let a0 = Self::eval_row_bytes(au, r0, nb, tables);
+                    let a1 = Self::eval_row_bytes(au, r1, nb, tables);
+                    let b0 = Self::eval_row_bytes(bu, r0, nb, tables);
+                    let b1 = Self::eval_row_bytes(bu, r1, nb, tables);
+                    let slot = &mut rel_acc[k_idx];
+                    if !a0.is_zero() && !b0.is_zero() {
+                        slot[0] += equ.clmul(a0 * b0);
+                    }
+                    if !a1.is_zero() && !b1.is_zero() {
+                        slot[1] += equ.clmul(a1 * b1);
+                    }
+                    let da = a0 + a1;
+                    let db = b0 + b1;
+                    if !da.is_zero() && !db.is_zero() {
+                        slot[2] += equ.clmul(da * db);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -788,15 +1143,122 @@ pub fn prove<R: BitRow>(
     let mut r_row: Vec<Vec<K>> = vec![Vec::new(); t];
     let mut r_inst: Vec<K> = Vec::new();
     let unsatisfied = AtomicBool::new(false);
+
+    // Pre-evaluate purely GF(2) relations (`is_gf2_only`, e.g. `bin` / R1CS 1)
+    // into compact bit-packed words (`a_bits[u]`, `b_bits[u]`) and pre-fold linear
+    // `C` sums (`c_sums[ti]`) across instances when `!unchecked && nx == 0`.
+    let has_packed_w = !w.is_empty() && w[0].packed_words().is_some();
+    let use_c_sums = !unchecked && nx == 0 && rho >= 1;
+    let mut c_sums: Vec<Vec<K>> = if use_c_sums {
+        (0..t).map(|_| vec![K::ZERO; 1usize << rho]).collect()
+    } else {
+        Vec::new()
+    };
+    let mut gf2_round0_p2: Vec<Option<Vec<K>>> = (0..t).map(|_| None).collect();
+    let mut gf2_caches: Vec<Option<Gf2RelCache>> = (0..t).map(|_| None).collect();
+
+    if use_c_sums && has_packed_w && (3..=10).contains(&rho) {
+        let is_gf2_mat = |rows: &SparseRows| {
+            rows.iter()
+                .all(|r| r.iter().all(|&(col, coef)| col <= half && coef.is_one()))
+        };
+        for (ti, orel) in orels.iter().enumerate() {
+            if is_gf2_mat(&orel.mats[0]) && is_gf2_mat(&orel.mats[1]) && is_gf2_mat(&orel.mats[2]) {
+                let max_active = (0..(1usize << rho))
+                    .rev()
+                    .find(|&r| {
+                        !orel.mats[0][r].is_empty()
+                            || !orel.mats[1][r].is_empty()
+                            || !orel.mats[2][r].is_empty()
+                    })
+                    .unwrap_or(0);
+                let n_w = (max_active + 1).div_ceil(64).max(1);
+                let flat_a = FlatGf2Mat::from_rows(&orel.mats[0], half, n_w);
+                let flat_b = FlatGf2Mat::from_rows(&orel.mats[1], half, n_w);
+                let flat_c = FlatGf2Mat::from_rows(&orel.mats[2], half, n_w);
+                let mut a_bits = vec![[0u64; 16]; q];
+                let mut b_bits = vec![[0u64; 16]; q];
+                let n_rows = 1usize << rho;
+                let half_rows = 1usize << (rho - 1);
+                let chunk = q.div_ceil(4 * rayon::current_num_threads()).max(1);
+                let (c_raw, p2_raw) = a_bits
+                    .par_chunks_mut(chunk)
+                    .zip(b_bits.par_chunks_mut(chunk))
+                    .zip(w.par_chunks(chunk).zip(orel.eq_inst.par_chunks(chunk)))
+                    .map(|((ab_c, bb_c), (w_c, eq_c))| {
+                        let mut c_acc = vec![0u128; n_rows];
+                        let mut p2_acc = vec![0u128; half_rows];
+                        for ((au, bu), (wu, &equ)) in
+                            ab_c.iter_mut().zip(bb_c.iter_mut()).zip(w_c.iter().zip(eq_c))
+                        {
+                            let words = wu.packed_words().expect("packed_words");
+                            let equ_val = equ.value();
+                            for w_idx in 0..n_w {
+                                let aw = flat_a.eval_word(words, w_idx);
+                                let bw = flat_b.eval_word(words, w_idx);
+                                let cw = flat_c.eval_word(words, w_idx);
+                                au[w_idx] = aw;
+                                bu[w_idx] = bw;
+                                if (aw & bw) != cw {
+                                    unsatisfied.store(true, Ordering::Relaxed);
+                                }
+                                let mut cm = cw;
+                                while cm != 0 {
+                                    let b = cm.trailing_zeros() as usize;
+                                    cm &= cm - 1;
+                                    c_acc[64 * w_idx + b] ^= equ_val;
+                                }
+                                let mut pm =
+                                    (aw ^ (aw >> 1)) & (bw ^ (bw >> 1)) & 0x5555_5555_5555_5555;
+                                while pm != 0 {
+                                    let b = (pm.trailing_zeros() as usize) >> 1;
+                                    pm &= pm - 1;
+                                    p2_acc[32 * w_idx + b] ^= equ_val;
+                                }
+                            }
+                        }
+                        (c_acc, p2_acc)
+                    })
+                    .reduce(
+                        || (vec![0u128; n_rows], vec![0u128; half_rows]),
+                        |(mut ca, mut pa), (cb, pb)| {
+                            for (x, y) in ca.iter_mut().zip(&cb) {
+                                *x ^= *y;
+                            }
+                            for (x, y) in pa.iter_mut().zip(&pb) {
+                                *x ^= *y;
+                            }
+                            (ca, pa)
+                        },
+                    );
+                for (r_idx, slot) in c_sums[ti].iter_mut().enumerate() {
+                    *slot = K::from_u128(c_raw[r_idx]);
+                }
+                gf2_round0_p2[ti] = Some(
+                    (0..half_rows)
+                        .map(|i| K::from_u128(p2_raw[i]))
+                        .collect(),
+                );
+                gf2_caches[ti] = Some(Gf2RelCache {
+                    n_w,
+                    a_bits,
+                    b_bits,
+                });
+            }
+        }
+    }
+
     for round in 0..rho {
         // Identify active row pairs `i` where at least one of the three
         // matrices has a non-empty row at `2i` or `2i+1` and compile
         // only those active pairs in parallel.
         let check = round == 0 && !unchecked;
+        let skip_c = use_c_sums && round > 0;
         type CompiledRelPairs = (Vec<usize>, Vec<([CompiledRow; 6], bool)>);
         let compiled: Vec<CompiledRelPairs> = orels
             .iter()
-            .map(|orel| {
+            .enumerate()
+            .map(|(ti, orel)| {
                 let half_rows = orel.eq_row.len() / 2;
                 let is_active = |&i: &usize| {
                     !orel.mats[0][2 * i].is_empty()
@@ -811,6 +1273,9 @@ pub fn prove<R: BitRow>(
                 } else {
                     (0..half_rows).filter(is_active).collect()
                 };
+                if gf2_caches[ti].is_some() {
+                    return (active, Vec::new());
+                }
                 let compile_pair = |&i: &usize| -> ([CompiledRow; 6], bool) {
                     let (r0, r1) = (2 * i, 2 * i + 1);
                     let arr = [
@@ -818,10 +1283,18 @@ pub fn prove<R: BitRow>(
                         CompiledRow::from_entries(&orel.mats[0][r1], half),
                         CompiledRow::from_entries(&orel.mats[1][r0], half),
                         CompiledRow::from_entries(&orel.mats[1][r1], half),
-                        CompiledRow::from_entries(&orel.mats[2][r0], half),
-                        CompiledRow::from_entries(&orel.mats[2][r1], half),
+                        if skip_c {
+                            CompiledRow::empty()
+                        } else {
+                            CompiledRow::from_entries(&orel.mats[2][r0], half)
+                        },
+                        if skip_c {
+                            CompiledRow::empty()
+                        } else {
+                            CompiledRow::from_entries(&orel.mats[2][r1], half)
+                        },
                     ];
-                    let gf2 = arr.iter().all(|c| c.is_gf2_only);
+                    let gf2 = !skip_c && arr.iter().all(|c| c.is_gf2_only);
                     (arr, gf2)
                 };
                 let cmats: Vec<([CompiledRow; 6], bool)> = if active.len() >= PAR_THRESHOLD {
@@ -830,6 +1303,17 @@ pub fn prove<R: BitRow>(
                     active.iter().map(compile_pair).collect()
                 };
                 (active, cmats)
+            })
+            .collect();
+
+        // Precompute round-specific LUTs for any `gf2_caches[ti]`.
+        let gf2_luts: Vec<Option<Gf2RoundLut>> = (0..t)
+            .map(|ti| {
+                if gf2_caches[ti].is_some() && round >= 1 {
+                    Some(Gf2RoundLut::new(round, &r_row[ti]))
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -855,6 +1339,22 @@ pub fn prove<R: BitRow>(
                     for (ti, (orel, (active, cmats))) in orels.iter().zip(&compiled).enumerate() {
                         let equ = orel.eq_inst[u];
                         let rel_acc = &mut acc[ti];
+                        if let Some(cache) = &gf2_caches[ti] {
+                            if round == 0 {
+                                // Already computed during Gf2RelCache initialization.
+                                continue;
+                            }
+                            if let Some(lut) = &gf2_luts[ti] {
+                                lut.accum_instance(
+                                    &cache.a_bits[u],
+                                    &cache.b_bits[u],
+                                    active,
+                                    equ,
+                                    rel_acc,
+                                );
+                            }
+                            continue;
+                        }
                         if let Some(words) = words_opt {
                             for (k_idx, (cm, is_gf2)) in cmats.iter().enumerate() {
                                 if *is_gf2 {
@@ -868,20 +1368,67 @@ pub fn prove<R: BitRow>(
                                     let p1 = (a1 & b1) ^ c1;
                                     let p2 = (a0 ^ a1) & (b0 ^ b1);
                                     let slot = &mut rel_acc[k_idx];
-                                    if p0 != 0 {
-                                        if check {
+                                    if use_c_sums && round == 0 {
+                                        if (p0 | p1) != 0 {
                                             unsatisfied.store(true, Ordering::Relaxed);
                                         }
-                                        slot[0] += U256::from_k(equ);
-                                    }
-                                    if p1 != 0 {
-                                        if check {
-                                            unsatisfied.store(true, Ordering::Relaxed);
+                                        if c0 != 0 {
+                                            slot[0] += U256::from_k(equ);
                                         }
-                                        slot[1] += U256::from_k(equ);
+                                        if c1 != 0 {
+                                            slot[1] += U256::from_k(equ);
+                                        }
+                                        if p2 != 0 {
+                                            slot[2] += U256::from_k(equ);
+                                        }
+                                    } else {
+                                        if p0 != 0 {
+                                            if check {
+                                                unsatisfied.store(true, Ordering::Relaxed);
+                                            }
+                                            slot[0] += U256::from_k(equ);
+                                        }
+                                        if p1 != 0 {
+                                            if check {
+                                                unsatisfied.store(true, Ordering::Relaxed);
+                                            }
+                                            slot[1] += U256::from_k(equ);
+                                        }
+                                        if p2 != 0 {
+                                            slot[2] += U256::from_k(equ);
+                                        }
                                     }
-                                    if p2 != 0 {
-                                        slot[2] += U256::from_k(equ);
+                                } else if skip_c {
+                                    let a0 = cm[0].eval_words(words, xu);
+                                    let a1 = cm[1].eval_words(words, xu);
+                                    let b0 = cm[2].eval_words(words, xu);
+                                    let b1 = cm[3].eval_words(words, xu);
+                                    let slot = &mut rel_acc[k_idx];
+                                    if !a0.is_zero() && !b0.is_zero() {
+                                        let ab0 = a0 * b0;
+                                        slot[0] += if ab0.is_one() {
+                                            U256::from_k(equ)
+                                        } else {
+                                            equ.clmul(ab0)
+                                        };
+                                    }
+                                    if !a1.is_zero() && !b1.is_zero() {
+                                        let ab1 = a1 * b1;
+                                        slot[1] += if ab1.is_one() {
+                                            U256::from_k(equ)
+                                        } else {
+                                            equ.clmul(ab1)
+                                        };
+                                    }
+                                    let da = a0 + a1;
+                                    let db = b0 + b1;
+                                    if !da.is_zero() && !db.is_zero() {
+                                        let p2 = da * db;
+                                        slot[2] += if p2.is_one() {
+                                            U256::from_k(equ)
+                                        } else {
+                                            equ.clmul(p2)
+                                        };
                                     }
                                 } else {
                                     let a0 = cm[0].eval_words(words, xu);
@@ -897,19 +1444,36 @@ pub fn prove<R: BitRow>(
                                     }
                                     let p2 = (a0 + a1) * (b0 + b1);
                                     let slot = &mut rel_acc[k_idx];
-                                    if !p0.is_zero() {
-                                        slot[0] += if p0.is_one() {
-                                            U256::from_k(equ)
-                                        } else {
-                                            equ.clmul(p0)
-                                        };
-                                    }
-                                    if !p1.is_zero() {
-                                        slot[1] += if p1.is_one() {
-                                            U256::from_k(equ)
-                                        } else {
-                                            equ.clmul(p1)
-                                        };
+                                    if use_c_sums && round == 0 {
+                                        if !c0.is_zero() {
+                                            slot[0] += if c0.is_one() {
+                                                U256::from_k(equ)
+                                            } else {
+                                                equ.clmul(c0)
+                                            };
+                                        }
+                                        if !c1.is_zero() {
+                                            slot[1] += if c1.is_one() {
+                                                U256::from_k(equ)
+                                            } else {
+                                                equ.clmul(c1)
+                                            };
+                                        }
+                                    } else {
+                                        if !p0.is_zero() {
+                                            slot[0] += if p0.is_one() {
+                                                U256::from_k(equ)
+                                            } else {
+                                                equ.clmul(p0)
+                                            };
+                                        }
+                                        if !p1.is_zero() {
+                                            slot[1] += if p1.is_one() {
+                                                U256::from_k(equ)
+                                            } else {
+                                                equ.clmul(p1)
+                                            };
+                                        }
                                     }
                                     if !p2.is_zero() {
                                         slot[2] += if p2.is_one() {
@@ -927,23 +1491,49 @@ pub fn prove<R: BitRow>(
                                 let a1 = eval_sparse_row(&orel.mats[0][r1], &cm[1], wu, xu, half);
                                 let b0 = eval_sparse_row(&orel.mats[1][r0], &cm[2], wu, xu, half);
                                 let b1 = eval_sparse_row(&orel.mats[1][r1], &cm[3], wu, xu, half);
-                                let c0 = eval_sparse_row(&orel.mats[2][r0], &cm[4], wu, xu, half);
-                                let c1 = eval_sparse_row(&orel.mats[2][r1], &cm[5], wu, xu, half);
-                                let p0 = (a0.clmul(b0) + U256::from_k(c0)).reduce();
-                                let p1 = (a1.clmul(b1) + U256::from_k(c1)).reduce();
-                                if check && (!p0.is_zero() || !p1.is_zero()) {
-                                    unsatisfied.store(true, Ordering::Relaxed);
-                                }
-                                let p2 = (a0 + a1) * (b0 + b1);
                                 let slot = &mut rel_acc[k_idx];
-                                if !p0.is_zero() {
-                                    slot[0] += equ.clmul(p0);
-                                }
-                                if !p1.is_zero() {
-                                    slot[1] += equ.clmul(p1);
-                                }
-                                if !p2.is_zero() {
-                                    slot[2] += equ.clmul(p2);
+                                if skip_c {
+                                    let ab0 = a0 * b0;
+                                    let ab1 = a1 * b1;
+                                    let p2 = (a0 + a1) * (b0 + b1);
+                                    if !ab0.is_zero() {
+                                        slot[0] += equ.clmul(ab0);
+                                    }
+                                    if !ab1.is_zero() {
+                                        slot[1] += equ.clmul(ab1);
+                                    }
+                                    if !p2.is_zero() {
+                                        slot[2] += equ.clmul(p2);
+                                    }
+                                } else {
+                                    let c0 =
+                                        eval_sparse_row(&orel.mats[2][r0], &cm[4], wu, xu, half);
+                                    let c1 =
+                                        eval_sparse_row(&orel.mats[2][r1], &cm[5], wu, xu, half);
+                                    let p0 = (a0.clmul(b0) + U256::from_k(c0)).reduce();
+                                    let p1 = (a1.clmul(b1) + U256::from_k(c1)).reduce();
+                                    if check && (!p0.is_zero() || !p1.is_zero()) {
+                                        unsatisfied.store(true, Ordering::Relaxed);
+                                    }
+                                    let p2 = (a0 + a1) * (b0 + b1);
+                                    if use_c_sums && round == 0 {
+                                        if !c0.is_zero() {
+                                            slot[0] += equ.clmul(c0);
+                                        }
+                                        if !c1.is_zero() {
+                                            slot[1] += equ.clmul(c1);
+                                        }
+                                    } else {
+                                        if !p0.is_zero() {
+                                            slot[0] += equ.clmul(p0);
+                                        }
+                                        if !p1.is_zero() {
+                                            slot[1] += equ.clmul(p1);
+                                        }
+                                    }
+                                    if !p2.is_zero() {
+                                        slot[2] += equ.clmul(p2);
+                                    }
                                 }
                             }
                         }
@@ -964,9 +1554,36 @@ pub fn prove<R: BitRow>(
 
         let mut evs = vec![[K::ZERO; 4]; t];
         for (ti, (orel, (active, _))) in orels.iter().zip(&compiled).enumerate() {
+            if round == 0
+                && let Some(p2_vec) = &gf2_round0_p2[ti]
+            {
+                for &i in active {
+                    let s2 = p2_vec[i];
+                    let (e0, e1) = (orel.eq_row[2 * i], orel.eq_row[2 * i + 1]);
+                    let px = s2.mul_x() + s2.mul_x().mul_x();
+                    let de = e0 + e1;
+                    let ex = e0 + de.mul_x();
+                    let ex1 = ex + de;
+                    evs[ti][2] += ex * px;
+                    evs[ti][3] += ex1 * px;
+                }
+                continue;
+            }
             for (k_idx, &i) in active.iter().enumerate() {
                 let [u0, u1, u2] = pair_sums[ti][k_idx];
-                let (s0, s1, s2) = (u0.reduce(), u1.reduce(), u2.reduce());
+                let (s0, s1, s2) = if use_c_sums && round == 0 {
+                    c_sums[ti][2 * i] = u0.reduce();
+                    c_sums[ti][2 * i + 1] = u1.reduce();
+                    (K::ZERO, K::ZERO, u2.reduce())
+                } else if skip_c {
+                    (
+                        u0.reduce() + c_sums[ti][2 * i],
+                        u1.reduce() + c_sums[ti][2 * i + 1],
+                        u2.reduce(),
+                    )
+                } else {
+                    (u0.reduce(), u1.reduce(), u2.reduce())
+                };
                 let (e0, e1) = (orel.eq_row[2 * i], orel.eq_row[2 * i + 1]);
                 let s_mid = s0 + s1 + s2;
                 let px = s0 + s_mid.mul_x() + s2.mul_x().mul_x();
@@ -997,13 +1614,30 @@ pub fn prove<R: BitRow>(
             msgs[ti].push(msg);
             r_row[ti].push(r);
             bind_low_in_place(&mut orels[ti].eq_row, r);
+            if use_c_sums {
+                bind_low_in_place(&mut c_sums[ti], r);
+            }
             let mats = std::mem::take(&mut orels[ti].mats);
             orels[ti].mats = mats.map(|rows| fold_sparse_rows(rows, r));
         }
     }
+    drop(c_sums);
+    drop(gf2_round0_p2);
+
     // Instance phase tables: one scalar per instance and matrix.
     let mut tabs: Vec<[Vec<K>; 4]> = Vec::with_capacity(t);
-    for orel in &orels {
+    for (ti, orel) in orels.iter().enumerate() {
+        let e0 = orel.eq_row[0];
+        let eq0 = if q >= 1 << 14 {
+            orel.eq_inst.par_iter().map(|&e| e0 * e).collect()
+        } else {
+            orel.eq_inst.iter().map(|&e| e0 * e).collect()
+        };
+        if let Some(cache) = gf2_caches[ti].take() {
+            let [col_a, col_b, col_c] = cache.eval_final_cols(&r_row[ti], rho);
+            tabs.push([eq0, col_a, col_b, col_c]);
+            continue;
+        }
         let c0 = CompiledRow::from_entries(&orel.mats[0][0], half);
         let c1 = CompiledRow::from_entries(&orel.mats[1][0], half);
         let c2 = CompiledRow::from_entries(&orel.mats[2][0], half);
@@ -1024,12 +1658,6 @@ pub fn prove<R: BitRow>(
                     })
                     .collect()
             }
-        };
-        let e0 = orel.eq_row[0];
-        let eq0 = if q >= 1 << 14 {
-            orel.eq_inst.par_iter().map(|&e| e0 * e).collect()
-        } else {
-            orel.eq_inst.iter().map(|&e| e0 * e).collect()
         };
         tabs.push([
             eq0,
@@ -1220,13 +1848,38 @@ fn xs_setup(
 
 /// Evaluate instance `u`'s segment at `(off, n)` against `eq_col = eq_table(col_chals)`.
 #[inline]
-fn eval_segment_with_eq<R: BitRow>(row: &R, off: usize, n: usize, eq_col: &[K]) -> K {
+fn eval_segment_with_eq<R: BitRow>(
+    row: &R,
+    off: usize,
+    n: usize,
+    eq_col: &[K],
+    byte_lut: Option<&[[K; 256]]>,
+) -> K {
     if let Some(words) = row.packed_words()
         && off.is_multiple_of(64)
         && n.is_multiple_of(64)
     {
         let wpr = n / 64;
         let base_wi = off / 64;
+        if let Some(tables) = byte_lut {
+            let mut acc = K::ZERO;
+            for w_idx in 0..wpr {
+                let w = words[base_wi + w_idx];
+                if w == 0 {
+                    continue;
+                }
+                let tb = &tables[8 * w_idx..8 * w_idx + 8];
+                acc += tb[0][(w & 0xff) as usize]
+                    + tb[1][((w >> 8) & 0xff) as usize]
+                    + tb[2][((w >> 16) & 0xff) as usize]
+                    + tb[3][((w >> 24) & 0xff) as usize]
+                    + tb[4][((w >> 32) & 0xff) as usize]
+                    + tb[5][((w >> 40) & 0xff) as usize]
+                    + tb[6][((w >> 48) & 0xff) as usize]
+                    + tb[7][((w >> 56) & 0xff) as usize];
+            }
+            return acc;
+        }
         let mut acc = K::ZERO;
         for w_idx in 0..wpr {
             let mut wv = words[base_wi + w_idx];
@@ -1381,13 +2034,31 @@ fn cross_prove<R: BitRow>(
     }
     // Instance rounds over per-instance scalars.
     let eq_col = eq_table(&col_chals);
+    let byte_lut: Option<Vec<[K; 256]>> = if n.is_multiple_of(64) {
+        let nbytes = n / 8;
+        Some(
+            (0..nbytes)
+                .map(|q_byte| {
+                    let mut t = [K::ZERO; 256];
+                    for p in 1..256usize {
+                        let b = p.trailing_zeros() as usize;
+                        t[p] = t[p & (p - 1)] + eq_col[8 * q_byte + b];
+                    }
+                    t
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+    let lut_ref = byte_lut.as_deref();
     let (out_s, in_s): (Vec<K>, Vec<K>) = if q >= 1 << 12 {
         (0..q)
             .into_par_iter()
             .map(|u| {
                 (
-                    eval_segment_with_eq(&w[u], off_out, n, &eq_col),
-                    eval_segment_with_eq(&w[u], off_in, n, &eq_col),
+                    eval_segment_with_eq(&w[u], off_out, n, &eq_col, lut_ref),
+                    eval_segment_with_eq(&w[u], off_in, n, &eq_col, lut_ref),
                 )
             })
             .unzip()
@@ -1395,8 +2066,8 @@ fn cross_prove<R: BitRow>(
         (0..q)
             .map(|u| {
                 (
-                    eval_segment_with_eq(&w[u], off_out, n, &eq_col),
-                    eval_segment_with_eq(&w[u], off_in, n, &eq_col),
+                    eval_segment_with_eq(&w[u], off_out, n, &eq_col, lut_ref),
+                    eval_segment_with_eq(&w[u], off_in, n, &eq_col, lut_ref),
                 )
             })
             .unzip()

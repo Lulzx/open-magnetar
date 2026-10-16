@@ -68,7 +68,9 @@ pub fn pack_packed(bits: &PackedBits) -> Vec<K> {
     }
 }
 
-/// [`partial_evals`] from packed bits: only set bits are visited.
+/// [`partial_evals`] from packed bits: only set bits are visited, and the
+/// high eq factor `hi[vh]` is multiplied once per 128-entry block rather than
+/// on every `vl`.
 ///
 /// # Panics
 /// If the packed length is not a multiple of 128.
@@ -83,17 +85,34 @@ pub fn partial_evals_packed(bits: &PackedBits, r_hi: &[K]) -> Vec<K> {
     let (lo, hi) = (eq_table(&r_hi[..h]), eq_table(&r_hi[h..]));
     let words = bits.words();
     let block = |vh: usize| -> [u128; W] {
+        let mut local = [0u128; W];
+        let v_base = vh << h;
+        for (vl, e_lo) in lo.iter().enumerate() {
+            let v = v_base | vl;
+            let w0 = words[2 * v];
+            let w1 = words[2 * v + 1];
+            if (w0 | w1) == 0 {
+                continue;
+            }
+            let e = e_lo.value();
+            let mut m0 = w0;
+            while m0 != 0 {
+                let b = m0.trailing_zeros() as usize;
+                m0 &= m0 - 1;
+                local[b] ^= e;
+            }
+            let mut m1 = w1;
+            while m1 != 0 {
+                let b = m1.trailing_zeros() as usize;
+                m1 &= m1 - 1;
+                local[64 + b] ^= e;
+            }
+        }
+        let hi_v = hi[vh];
         let mut acc = [0u128; W];
-        for (vl, e) in lo.iter().enumerate() {
-            let e = (*e * hi[vh]).value();
-            let v = (vh << h) | vl;
-            for (half, &w) in words[2 * v..2 * v + 2].iter().enumerate() {
-                let mut w = w;
-                while w != 0 {
-                    let b = w.trailing_zeros() as usize;
-                    w &= w - 1;
-                    acc[64 * half + b] ^= e;
-                }
+        for i in 0..W {
+            if local[i] != 0 {
+                acc[i] = (K::from_u128(local[i]) * hi_v).value();
             }
         }
         acc
@@ -219,8 +238,8 @@ pub fn transpose_bits(s: &[K]) -> Vec<K> {
 /// `a[v] = Σ_i eq(ρ, i) · bit_i(eq(r_hi, v))`.
 pub fn a_table(r_hi: &[K], rho: &[K]) -> Vec<K> {
     let er: Vec<u128> = eq_table(rho).iter().map(|e| e.value()).collect();
-    let mut lut = [[0u128; 256]; 16];
-    for (byte_idx, table) in lut.iter_mut().enumerate() {
+    let mut base_lut = [[0u128; 256]; 16];
+    for (byte_idx, table) in base_lut.iter_mut().enumerate() {
         for b in 1..256usize {
             let bit = b.trailing_zeros() as usize;
             let idx = 8 * byte_idx + bit;
@@ -228,20 +247,58 @@ pub fn a_table(r_hi: &[K], rho: &[K]) -> Vec<K> {
             table[b] = table[b & (b - 1)] ^ val;
         }
     }
-    // eq(r_hi, v) = lo[v_lo] * hi[v_hi], computed per entry instead of
-    // holding a second table of the output's size.
+    let eval_l = |z: u128| -> u128 {
+        let bytes = z.to_le_bytes();
+        let mut acc = 0u128;
+        for (byte_idx, &b) in bytes.iter().enumerate() {
+            acc ^= base_lut[byte_idx][b as usize];
+        }
+        acc
+    };
+
+    let n = 1usize << r_hi.len();
+    if r_hi.len() >= 14 {
+        // Since L(z) = Σ_i eq(ρ, i) bit_i(z) is GF(2)-linear in z, for each
+        // fixed y = hi[v_hi] the composite map x ↦ L(x · y) is GF(2)-linear
+        // in x = lo[v_lo]. Building a 16-byte LUT per `v_hi` eliminates all
+        // 2^len(r_hi) field multiplications.
+        let h_lo = (r_hi.len() - 6).clamp(10, 18);
+        let (lo, hi) = (eq_table(&r_hi[..h_lo]), eq_table(&r_hi[h_lo..]));
+        let lo_len = 1usize << h_lo;
+        let mut out = vec![K::ZERO; n];
+        out.par_chunks_mut(lo_len)
+            .zip(hi.par_iter())
+            .for_each(|(chunk, &y)| {
+                let mut lut_y = [[0u128; 256]; 16];
+                for (byte_idx, table) in lut_y.iter_mut().enumerate() {
+                    let mut basis = [0u128; 8];
+                    for (bit, b_val) in basis.iter_mut().enumerate() {
+                        let k = 8 * byte_idx + bit;
+                        let prod = (K::from_u128(1u128 << k) * y).value();
+                        *b_val = eval_l(prod);
+                    }
+                    for b in 1..256usize {
+                        let bit = b.trailing_zeros() as usize;
+                        table[b] = table[b & (b - 1)] ^ basis[bit];
+                    }
+                }
+                for (dst, &x) in chunk.iter_mut().zip(&lo) {
+                    let bytes = x.value().to_le_bytes();
+                    let mut acc = 0u128;
+                    for (byte_idx, &b) in bytes.iter().enumerate() {
+                        acc ^= lut_y[byte_idx][b as usize];
+                    }
+                    *dst = K::from_u128(acc);
+                }
+            });
+        return out;
+    }
+
+    // Small tables: eq(r_hi, v) = lo[v_lo] * hi[v_hi] per entry.
     let h = r_hi.len() / 2;
     let (lo, hi) = (eq_table(&r_hi[..h]), eq_table(&r_hi[h..]));
     let mask = (1usize << h) - 1;
-    let at = |v: usize| {
-        let e = (lo[v & mask] * hi[v >> h]).value().to_le_bytes();
-        let mut acc = 0u128;
-        for (byte_idx, &b) in e.iter().enumerate() {
-            acc ^= lut[byte_idx][b as usize];
-        }
-        K::from_u128(acc)
-    };
-    let n = 1usize << r_hi.len();
+    let at = |v: usize| K::from_u128(eval_l((lo[v & mask] * hi[v >> h]).value()));
     if n >= PAR_THRESHOLD {
         (0..n).into_par_iter().map(at).collect()
     } else {

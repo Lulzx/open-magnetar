@@ -553,103 +553,143 @@ fn inc_claims(
 // arrays. After the cycle rounds, one group remains and the last `a`
 // rounds run densely on tables of size `2^a` only.
 
-/// Per-address write lists (CSR, cycle order) with the value `Val~`
-/// (at the fixed `r_o`) of the cell right after each write.
+/// Per-address write lists (CSR, group order) with the eq-weighted average
+/// value `v_avg` of the cell on that group and the value `v_after` of the
+/// cell right after that group's last cycle. Bound in-place after each cycle
+/// sum-check round so `v_group` is always a single binary search with zero
+/// inner loops over writes.
 struct WriteLog {
     off: Vec<usize>,
-    cyc: Vec<u32>,
-    val: Vec<K>,
+    len: Vec<usize>,
+    grp: Vec<u32>,
+    v_avg: Vec<K>,
+    v_after: Vec<K>,
     /// `Val~` of `M_0` per cell.
     m0val: Vec<K>,
 }
 
 impl WriteLog {
-    fn new(m0: &[u64], writes: &[u32], inc: &[u64], we: &WordEval) -> Self {
+    /// Builds the initial (cycle-level) write log along with `(aval0, inc_val)`:
+    /// `aval0[j * np + x]` is the `Val~` of cell `addrs[x][j]` just before
+    /// cycle `j`, and `inc_val[j] = we.eval(inc[j])`.
+    fn new(
+        m0: &[u64],
+        addrs: &[&[u32]],
+        inc: &[u64],
+        we: &WordEval,
+    ) -> (Self, Vec<K>, Vec<K>) {
         let nk = m0.len();
+        let np = addrs.len();
+        let writes = addrs[np - 1];
         let mut off = vec![0usize; nk + 1];
         for &k in writes {
             off[k as usize + 1] += 1;
         }
+        let len: Vec<usize> = (0..nk).map(|k| off[k + 1]).collect();
         for k in 0..nk {
             off[k + 1] += off[k];
         }
-        let mut pos = off[..nk].to_vec();
-        let mut cyc = vec![0u32; writes.len()];
-        let mut words = vec![0u64; writes.len()];
-        let mut cur = m0.to_vec();
-        for (j, &k) in writes.iter().enumerate() {
-            let k = k as usize;
-            cur[k] ^= inc[j];
-            cyc[pos[k]] = u32::try_from(j).expect("T fits in u32");
-            words[pos[k]] = cur[k];
-            pos[k] += 1;
-        }
-        drop((pos, cur));
         let eval = |w: &u64| we.eval(*w);
-        let (val, m0val) = if writes.len() + nk >= PAR_THRESHOLD {
+        let (inc_val, m0val): (Vec<K>, Vec<K>) = if writes.len() + nk >= PAR_THRESHOLD {
             (
-                words.par_iter().map(eval).collect(),
+                inc.par_iter().map(eval).collect(),
                 m0.par_iter().map(eval).collect(),
             )
         } else {
-            (
-                words.iter().map(eval).collect(),
-                m0.iter().map(eval).collect(),
-            )
+            (inc.iter().map(eval).collect(), m0.iter().map(eval).collect())
         };
-        WriteLog {
-            off,
-            cyc,
-            val,
-            m0val,
-        }
-    }
-
-    /// `Val~` of cell `k` just before cycle `j`.
-    #[inline]
-    fn state_val(&self, k: usize, j: usize) -> K {
-        let (lo, hi) = (self.off[k], self.off[k + 1]);
-        let cnt = self.cyc[lo..hi].partition_point(|&c| (c as usize) < j);
-        if cnt == 0 {
-            self.m0val[k]
-        } else {
-            self.val[lo + cnt - 1]
-        }
-    }
-
-    /// `V~(k)` of the group covering cycles `[base, base + len)` with
-    /// the cycle bits bound: `pre` is the prefix-sum table of the bound
-    /// eq weights (`pre[i] = Σ_{u < i} eqw[u]`, `len + 1` entries).
-    #[inline]
-    fn v_group(&self, k: usize, base: usize, len: usize, pre: &[K]) -> K {
-        if len == 1 {
-            return self.state_val(k, base);
-        }
-        let (lo, hi) = (self.off[k], self.off[k + 1]);
-        let cyc = &self.cyc[lo..hi];
-        let start = cyc.partition_point(|&c| (c as usize) < base);
-        let mut v = if start == 0 {
-            self.m0val[k]
-        } else {
-            self.val[lo + start - 1]
-        };
-        let (mut acc, mut cur) = (K::ZERO, 0usize);
-        for (idx, &c) in cyc.iter().enumerate().skip(start) {
-            let w = c as usize;
-            if w >= base + len {
-                break;
+        let mut pos = off[..nk].to_vec();
+        let mut grp = vec![0u32; writes.len()];
+        let mut v_avg = vec![K::ZERO; writes.len()];
+        let mut v_after = vec![K::ZERO; writes.len()];
+        let mut aval0 = vec![K::ZERO; writes.len() * np];
+        let mut cur = m0val.clone();
+        for (j, &k_u32) in writes.iter().enumerate() {
+            let base_a = j * np;
+            for (x, ad) in addrs.iter().enumerate() {
+                aval0[base_a + x] = cur[ad[j] as usize];
             }
-            // State is constant on cycles `cur..=w` (the write at `w`
-            // lands after cycle `w` reads the old value).
-            let o = w - base;
-            acc += (pre[o + 1] + pre[cur]) * v;
-            v = self.val[lo + idx];
-            cur = o + 1;
+            let k = k_u32 as usize;
+            let before = cur[k];
+            let after = before + inc_val[j];
+            cur[k] = after;
+            let idx = pos[k];
+            grp[idx] = u32::try_from(j).expect("T fits in u32");
+            v_avg[idx] = before;
+            v_after[idx] = after;
+            pos[k] = idx + 1;
         }
-        if cur < len {
-            acc += (pre[len] + pre[cur]) * v;
+        (
+            WriteLog {
+                off,
+                len,
+                grp,
+                v_avg,
+                v_after,
+                m0val,
+            },
+            aval0,
+            inc_val,
+        )
+    }
+
+    /// `V~(k)` of group `g` at the current cycle-binding round.
+    #[inline]
+    fn v_group(&self, k: usize, g: usize) -> K {
+        let lo = self.off[k];
+        let hi = lo + self.len[k];
+        let g32 = g as u32;
+        let idx = self.grp[lo..hi].partition_point(|&c| c < g32);
+        if lo + idx < hi && self.grp[lo + idx] == g32 {
+            self.v_avg[lo + idx]
+        } else if idx == 0 {
+            self.m0val[k]
+        } else {
+            self.v_after[lo + idx - 1]
         }
-        acc
+    }
+
+    /// Bind the low cycle variable of all write segments with challenge `chal`.
+    fn bind(&mut self, chal: K) {
+        let (c0, c1) = (K::ONE + chal, chal);
+        for k in 0..self.m0val.len() {
+            let lo = self.off[k];
+            let n_k = self.len[k];
+            if n_k == 0 {
+                continue;
+            }
+            let mut prev_after = self.m0val[k];
+            let mut r_idx = 0usize;
+            let mut w_idx = 0usize;
+            while r_idx < n_k {
+                let g0 = self.grp[lo + r_idx];
+                let m = g0 >> 1;
+                let gl = m << 1;
+                let gr = gl | 1;
+                let (avg_l, after_l) = if g0 == gl {
+                    let a = self.v_avg[lo + r_idx];
+                    let f = self.v_after[lo + r_idx];
+                    r_idx += 1;
+                    (a, f)
+                } else {
+                    (prev_after, prev_after)
+                };
+                let (avg_r, after_r) = if r_idx < n_k && self.grp[lo + r_idx] == gr {
+                    let a = self.v_avg[lo + r_idx];
+                    let f = self.v_after[lo + r_idx];
+                    r_idx += 1;
+                    (a, f)
+                } else {
+                    (after_l, after_l)
+                };
+                self.grp[lo + w_idx] = m;
+                self.v_avg[lo + w_idx] = c0 * avg_l + c1 * avg_r;
+                self.v_after[lo + w_idx] = after_r;
+                prev_after = after_r;
+                w_idx += 1;
+            }
+            self.len[k] = w_idx;
+        }
     }
 }
 
@@ -659,10 +699,9 @@ enum RwView<'a> {
     /// per-cycle data.
     Cycles {
         addrs: &'a [&'a [u32]],
-        inc: &'a [u64],
-        ie: &'a WordEval,
+        inc_val: Vec<K>,
+        aval0: Vec<K>,
         eqc: SplitEq,
-        log: &'a WriteLog,
     },
     /// Bound groups: per group `eq`, `inc`, `A_x` (`aval[g * (p+1) +
     /// x]`), and per access a CSR list of `(address, ra)` sorted by
@@ -680,7 +719,7 @@ enum RwView<'a> {
 impl RwView<'_> {
     fn len(&self) -> usize {
         match self {
-            RwView::Cycles { inc, .. } => inc.len(),
+            RwView::Cycles { inc_val, .. } => inc_val.len(),
             RwView::Csr { eq, .. } => eq.len(),
         }
     }
@@ -696,7 +735,7 @@ impl RwView<'_> {
     #[inline]
     fn inc(&self, g: usize) -> K {
         match self {
-            RwView::Cycles { inc, ie, .. } => ie.eval(inc[g]),
+            RwView::Cycles { inc_val, .. } => inc_val[g],
             RwView::Csr { inc, .. } => inc[g],
         }
     }
@@ -704,7 +743,7 @@ impl RwView<'_> {
     #[inline]
     fn aval(&self, g: usize, x: usize, np: usize) -> K {
         match self {
-            RwView::Cycles { addrs, log, .. } => log.state_val(addrs[x][g] as usize, g),
+            RwView::Cycles { aval0, .. } => aval0[g * np + x],
             RwView::Csr { aval, .. } => aval[g * np + x],
         }
     }
@@ -779,19 +818,6 @@ fn merge_into(
         o += 1;
     }
     debug_assert_eq!(o, keys.len());
-}
-
-/// Prefix sums of `eq_table(rhos)`: `pre[i] = Σ_{u < i} eqw[u]`.
-fn eq_prefix(rhos: &[K]) -> Vec<K> {
-    let eqw = eq_table(rhos);
-    let mut pre = Vec::with_capacity(eqw.len() + 1);
-    let mut acc = K::ZERO;
-    pre.push(acc);
-    for e in eqw {
-        acc += e;
-        pre.push(acc);
-    }
-    pre
 }
 
 /// Pairs per parallel work item when building the next CSR view.
@@ -901,7 +927,7 @@ fn rw_sumcheck_sparse(
     label: &[u8],
 ) -> (SumcheckProof, Vec<K>, Vec<K>) {
     let (a, p, n) = (params.a, params.p, params.n);
-    let (nk, t, np) = (1usize << a, 1usize << n, params.p + 1);
+    let (nk, _t, np) = (1usize << a, 1usize << n, params.p + 1);
     assert_eq!(m0.len(), nk, "twist_prove: m0 must have 2^a words");
 
     // Address of every access in every cycle (`p` is the write).
@@ -913,15 +939,14 @@ fn rw_sumcheck_sparse(
         .collect();
     let addrs: Vec<&[u32]> = addr_cows.iter().map(|c| &c[..]).collect();
     let ie = WordEval::new(&claims.r_o);
-    let log = WriteLog::new(m0, addrs[p], &wit.inc, &ie);
+    let (mut log, aval0, inc_val) = WriteLog::new(m0, &addrs, &wit.inc, &ie);
     let phis: Vec<Vec<K>> = (0..np).map(|x| phi_k(alpha0[x], &alphas[x], a)).collect();
 
     let mut view = RwView::Cycles {
         addrs: &addrs,
-        inc: &wit.inc,
-        ie: &ie,
+        inc_val,
+        aval0,
         eqc: SplitEq::new(&claims.r_c),
-        log: &log,
     };
     let msg_label = sublabel(label, b"/msg");
     let chal_label = sublabel(label, b"/chal");
@@ -946,8 +971,6 @@ fn rw_sumcheck_sparse(
 
     // Cycle rounds over the sparse groups.
     for r in 0..n {
-        let len = 1usize << r;
-        let pre = eq_prefix(&rs);
         let half = view.len() / 2;
         let par = view.len() >= PAR_THRESHOLD;
         let mut crosses = vec![K::ZERO; half * np];
@@ -955,41 +978,66 @@ fn rw_sumcheck_sparse(
         // contribution to the round evaluations.
         let pair = |mut ev: [K; 4], (m, cx): (usize, &mut [K])| -> [K; 4] {
             let (gl, gr) = (2 * m, 2 * m + 1);
-            let (base_l, base_r) = (gl * len, gr * len);
+            let (eql, eqr) = (view.eq(gl), view.eq(gr));
+            let (il, ir) = (view.inc(gl), view.inc(gr));
             let (mut al_sum, mut ar_sum, mut ac_sum) = (K::ZERO, K::ZERO, K::ZERO);
             let (mut bl_sum, mut br_sum) = (K::ZERO, K::ZERO);
             let (mut sl, mut sr) = (K::ZERO, K::ZERO);
-            for x in 0..np {
-                let (lk, lv) = view.entries(gl, x);
-                let (rk, rv) = view.entries(gr, x);
-                let mut cross = K::ZERO;
-                let (mut bl_x, mut br_x) = (K::ZERO, K::ZERO);
-                for (i, &k) in lk.iter().enumerate() {
-                    let v = entry_val(lv, i);
-                    cross += v * log.v_group(k as usize, base_r, len, &pre);
-                    bl_x += v * phis[x][k as usize];
-                    if x == p {
-                        sl += v;
+            if r == 0 {
+                let w_l = addrs[p][gl];
+                for x in 0..np {
+                    let k_l = addrs[x][gl];
+                    let k_r = addrs[x][gr];
+                    let v_l = view.aval(gl, x, np);
+                    let v_r = view.aval(gr, x, np);
+                    let mut cross = v_l + v_r;
+                    if k_l == w_l {
+                        cross += il;
                     }
-                }
-                for (i, &k) in rk.iter().enumerate() {
-                    let v = entry_val(rv, i);
-                    cross += v * log.v_group(k as usize, base_l, len, &pre);
-                    br_x += v * phis[x][k as usize];
-                    if x == p {
-                        sr += v;
+                    if k_r == w_l {
+                        cross += il;
                     }
+                    cx[x] = cross;
+                    let bx = beta[x];
+                    al_sum += bx * v_l;
+                    ar_sum += bx * v_r;
+                    ac_sum += bx * cross;
+                    bl_sum += bx * phis[x][k_l as usize];
+                    br_sum += bx * phis[x][k_r as usize];
                 }
-                cx[x] = cross;
-                let bx = beta[x];
-                al_sum += bx * view.aval(gl, x, np);
-                ar_sum += bx * view.aval(gr, x, np);
-                ac_sum += bx * cross;
-                bl_sum += bx * bl_x;
-                br_sum += bx * br_x;
+                sl = K::ONE;
+                sr = K::ONE;
+            } else {
+                for x in 0..np {
+                    let (lk, lv) = view.entries(gl, x);
+                    let (rk, rv) = view.entries(gr, x);
+                    let mut cross = K::ZERO;
+                    let (mut bl_x, mut br_x) = (K::ZERO, K::ZERO);
+                    for (i, &k) in lk.iter().enumerate() {
+                        let v = entry_val(lv, i);
+                        cross += v * log.v_group(k as usize, gr);
+                        bl_x += v * phis[x][k as usize];
+                        if x == p {
+                            sl += v;
+                        }
+                    }
+                    for (i, &k) in rk.iter().enumerate() {
+                        let v = entry_val(rv, i);
+                        cross += v * log.v_group(k as usize, gl);
+                        br_x += v * phis[x][k as usize];
+                        if x == p {
+                            sr += v;
+                        }
+                    }
+                    cx[x] = cross;
+                    let bx = beta[x];
+                    al_sum += bx * view.aval(gl, x, np);
+                    ar_sum += bx * view.aval(gr, x, np);
+                    ac_sum += bx * cross;
+                    bl_sum += bx * bl_x;
+                    br_sum += bx * br_x;
+                }
             }
-            let (eql, eqr) = (view.eq(gl), view.eq(gr));
-            let (il, ir) = (view.inc(gl), view.inc(gr));
             let bp = beta[p];
             ev[0] += eql * (al_sum + bl_sum + bp * il * sl);
             ev[1] += eqr * (ar_sum + br_sum + bp * ir * sr);
@@ -1037,6 +1085,7 @@ fn rw_sumcheck_sparse(
         let next = rw_bind(&view, &crosses, np, chal);
         drop(crosses);
         view = next;
+        log.bind(chal);
     }
 
     // Address rounds: dense tables of size `2^a` only.
@@ -1049,14 +1098,12 @@ fn rw_sumcheck_sparse(
     }
     let (eq0, inc0) = (view.eq(0), view.inc(0));
     drop(view);
-    let pre = eq_prefix(&rs);
-    let vat = |k: usize| log.v_group(k, 0, t, &pre);
+    let vat = |k: usize| log.v_group(k, 0);
     let vtab: Vec<K> = if nk >= PAR_THRESHOLD {
         (0..nk).into_par_iter().map(vat).collect()
     } else {
         (0..nk).map(vat).collect()
     };
-    drop(pre);
     drop(log);
     let mut tables: Vec<Vec<K>> = vec![vec![eq0; nk], vtab, vec![inc0; nk]];
     tables.extend(hist);

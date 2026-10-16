@@ -18,15 +18,15 @@ use crate::sublabel;
 
 /// Rounds computed directly from the row function before the bound
 /// tables (then `2^-DIRECT_ROUNDS` of full length) are materialised.
-pub(crate) const DIRECT_ROUNDS: usize = 3;
+pub(crate) const DIRECT_ROUNDS: usize = 1;
 
 /// `eq(r, j)` for all `j < 2^len(r)` from two tables of size about
 /// `2^(len/2)`: one multiplication per lookup instead of a `2^len(r)`
 /// table.
 pub(crate) struct SplitEq {
-    lo: Vec<K>,
-    hi: Vec<K>,
-    h: usize,
+    pub(crate) lo: Vec<K>,
+    pub(crate) hi: Vec<K>,
+    pub(crate) h: usize,
 }
 
 impl SplitEq {
@@ -113,15 +113,24 @@ impl WordEval {
 
 /// `Σ_j eq(r_c, j) · f(j)` over `j < 2^len(r_c)`.
 pub(crate) fn eq_weighted_sum(r_c: &[K], f: &(dyn Fn(usize) -> K + Sync)) -> K {
+    use om_field::U256;
     let t = 1usize << r_c.len();
     let se = SplitEq::new(r_c);
+    let block = |hi_idx: usize| -> K {
+        let base = hi_idx << se.h;
+        let mut u = U256::ZERO;
+        for (lo_idx, &e_lo) in se.lo.iter().enumerate() {
+            u += e_lo.clmul(f(base | lo_idx));
+        }
+        se.hi[hi_idx] * u.reduce()
+    };
     if t >= PAR_THRESHOLD {
-        (0..t)
+        (0..se.hi.len())
             .into_par_iter()
-            .map(|j| se.at(j) * f(j))
+            .map(block)
             .reduce(|| K::ZERO, |a, b| a + b)
     } else {
-        (0..t).fold(K::ZERO, |acc, j| acc + se.at(j) * f(j))
+        (0..se.hi.len()).fold(K::ZERO, |acc, hi_idx| acc + block(hi_idx))
     }
 }
 
@@ -135,6 +144,15 @@ fn bound_row(row: &RowFn<'_>, eqw: &[K], g: usize, out: &mut [K], scratch: &mut 
     let base = g * eqw.len();
     if eqw.len() == 1 {
         row(base, out);
+        return;
+    }
+    if eqw.len() == 2 {
+        let ch = eqw[1];
+        row(base, out);
+        row(base + 1, scratch);
+        for (o, &s) in out.iter_mut().zip(scratch.iter()) {
+            *o += ch * (*o + s);
+        }
         return;
     }
     out.iter_mut().for_each(|v| *v = K::ZERO);
@@ -176,7 +194,6 @@ pub(crate) fn sumcheck_prove_rows(
     let mut rs: Vec<K> = Vec::with_capacity(n);
     let (mut claim, mut cur) = (K::ZERO, K::ZERO);
     let direct = n.min(DIRECT_ROUNDS);
-    let ts: Vec<K> = (0..=degree).map(|k| K::t(k as u128)).collect();
     for r in 0..direct {
         let eqw = eq_table(&rs);
         let half = 1usize << (n - r - 1);
@@ -184,9 +201,13 @@ pub(crate) fn sumcheck_prove_rows(
             let [l, rr, vals, scratch] = bufs;
             bound_row(row, &eqw, 2 * m, l, scratch);
             bound_row(row, &eqw, 2 * m + 1, rr, scratch);
-            for (slot, &t) in acc.iter_mut().zip(&ts) {
+            acc[0] += combine(l);
+            if degree >= 1 {
+                acc[1] += combine(rr);
+            }
+            for (k, slot) in acc.iter_mut().enumerate().skip(2) {
                 for i in 0..width {
-                    vals[i] = l[i] + t * (l[i] + rr[i]);
+                    vals[i] = l[i] + (l[i] + rr[i]).mul_t(k as u128);
                 }
                 *slot += combine(vals);
             }
@@ -195,6 +216,7 @@ pub(crate) fn sumcheck_prove_rows(
         let ev: Vec<K> = if (1usize << n) >= PAR_THRESHOLD {
             (0..half)
                 .into_par_iter()
+                .with_min_len(1024)
                 .fold(
                     || (vec![K::ZERO; degree + 1], new_bufs()),
                     |(mut acc, mut bufs), m| {
@@ -301,21 +323,42 @@ pub(crate) fn addr_bit_evals(
 ) -> Vec<K> {
     let t = 1usize << r_c.len();
     let se = SplitEq::new(r_c);
-    let step = |mut acc: Vec<K>, j: usize| {
-        let (e, mut ad) = (se.at(j), addr(j));
-        while ad != 0 {
-            let b = ad.trailing_zeros() as usize;
-            if b < a {
-                acc[b] += e;
+    let mask = if a >= usize::BITS as usize {
+        usize::MAX
+    } else {
+        (1usize << a) - 1
+    };
+    let block = |hi_idx: usize| -> Vec<K> {
+        let mut local = vec![0u128; a];
+        let base = hi_idx << se.h;
+        for (lo_idx, &e_lo) in se.lo.iter().enumerate() {
+            let mut ad = addr(base | lo_idx) & mask;
+            if ad == 0 {
+                continue;
             }
-            ad &= ad - 1;
+            let ev = e_lo.value();
+            while ad != 0 {
+                let b = ad.trailing_zeros() as usize;
+                local[b] ^= ev;
+                ad &= ad - 1;
+            }
         }
-        acc
+        let hi_v = se.hi[hi_idx];
+        local
+            .into_iter()
+            .map(|v| {
+                if v == 0 {
+                    K::ZERO
+                } else {
+                    K::from_u128(v) * hi_v
+                }
+            })
+            .collect()
     };
     if t >= PAR_THRESHOLD {
-        (0..t)
+        (0..se.hi.len())
             .into_par_iter()
-            .fold(|| vec![K::ZERO; a], step)
+            .map(block)
             .reduce(
                 || vec![K::ZERO; a],
                 |mut x, y| {
@@ -326,6 +369,11 @@ pub(crate) fn addr_bit_evals(
                 },
             )
     } else {
-        (0..t).fold(vec![K::ZERO; a], step)
+        (0..se.hi.len()).fold(vec![K::ZERO; a], |mut acc, hi_idx| {
+            for (p, q) in acc.iter_mut().zip(block(hi_idx)) {
+                *p += q;
+            }
+            acc
+        })
     }
 }
